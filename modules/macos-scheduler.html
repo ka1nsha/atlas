@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Mach Zamanlayıcı</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: öncelik bantları (priority bands) + run queue */
+.bands { display: grid; gap: 7px; }
+.band { border: 1.5px solid var(--line); border-radius: 10px; padding: 8px 10px; background: var(--surface); display: grid; gap: 6px; min-width: 0; }
+.band.hi { border-color: var(--track); background: var(--track-soft); }
+.band-h { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.band-h b { font-family: var(--f-display); font-size: 14px; }
+.band.hi .band-h b { color: var(--track); }
+.band-h .pr { font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.thr { display: flex; flex-wrap: wrap; gap: 6px; }
+.th { font-family: var(--f-mono); font-size: 11.5px; padding: 3px 9px; border-radius: 999px; background: var(--sunk); color: var(--fg); border: 1px solid var(--line); }
+.th.run { background: var(--ok-soft); color: var(--ok); border-color: var(--ok); font-weight: 700; }
+.th.sel { background: var(--track-soft); color: var(--track); border-color: var(--track); font-weight: 700; }
+.band.empty .thr { color: var(--muted); }
+.cpu { border: 1.5px solid var(--ok); background: var(--ok-soft); border-radius: 10px; padding: 9px 11px; display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 2px; }
+.cpu b { font-family: var(--f-display); color: var(--ok); } .cpu .q { font-family: var(--f-mono); font-size: 12px; color: var(--muted); }
+.noteline { font-family: var(--f-mono); font-size: 12px; color: var(--muted); border-top: 1px dashed var(--line); padding-top: 8px; margin-top: 2px; }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'macos',
+  crumbs: 'macos › mach zamanlayıcı › modül 11',
+  eyebrow: 'Modül 11 · macOS / iOS · Mach zamanlayıcı',
+  titleHTML: 'Mach <code>zamanlayıcı</code>: öncelik bantları',
+  lede: 'XNU\'da zamanlama birimi task değil thread\'dir. Mach zamanlayıcı (scheduler), çalışmaya hazır thread\'leri önceliklerine göre bantlara (priority bands) yerleştirir ve her an en yüksek öncelikli hazır thread\'i seçer. GCD\'nin QoS sınıfları da burada bir önceliğe eşlenir. Linux\'un EEVDF\'iyle temel farkını adım adım göreceksin.',
+  meta: ['~18 dk', 'ön koşul: thread kavramı', 'bağlam: XNU'],
+  intuition: {
+    paras: [
+      'Mach\'ta bir <strong>task</strong> yalnızca kaynakların (bellek, port) kabıdır; işi yapan ve zamanlanan birim <strong>thread\'dir</strong>. Her thread\'in bir <strong>önceliği (priority, 0–127)</strong> vardır ve çalışmaya hazır thread\'ler önceliklerine göre <strong>bantlara (priority bands)</strong> ayrılmış çalıştırılabilir kuyrukta (run queue) bekler.',
+      'Zamanlayıcının temel kuralı basittir: her an <strong>en yüksek öncelikli hazır thread\'i</strong> seç ve ona bir <strong>zaman dilimi (quantum)</strong> ver. Linux EEVDF\'in "en az pay almış görevi seç" (vruntime) adalet mantığından farklı olarak, Mach öncelik-önceliklidir; ama normal thread\'lerin önceliği, CPU kullandıkça geçici olarak düşürülür (ve bekledikçe yükseltilir) ki açlık (starvation) olmasın. GCD\'nin <strong>QoS</strong> sınıfları (user-interactive → background) işte bu önceliğe eşlenir.'
+    ],
+    ideas: [
+      { b: 'Thread zamanlanır', span: 'Task değil, thread. Bir task\'ın çok sayıda thread\'i farklı önceliklerde koşabilir.' },
+      { b: 'Öncelik bandı seçer', span: 'En yüksek öncelikli hazır thread kazanır. Real-time bandı (96–127) her şeyin önüne geçer.' },
+      { b: 'QoS → öncelik', span: 'user-interactive yüksek banda, background düşük banda düşer. GCD modülündeki QoS burada somutlaşır.' }
+    ]
+  },
+  lab: {
+    intro: 'Run queue\'da farklı önceliklerde thread\'ler var: bir UI thread\'i (user-interactive), bir hesaplama thread\'i (utility) ve bir arka plan thread\'i (background). Zamanlayıcının neden hangisini seçtiğini, dilim bitince önceliğin nasıl ayarlandığını ve real-time bir thread girince ne olduğunu izle.',
+    codeLabel: 'Mach zamanlayıcı (kavramsal)', cmd: 'scheduler: thread_select()',
+    foot: 'Öncelik ve QoS değerleri temsilîdir; gerçek değerler sürüme göre değişir.',
+    code: [
+      { t: '<span class="cm">// QoS sınıfı bir temel önceliğe eşlenir</span>' },
+      { t: 'pri = <span class="f">qos_to_pri</span>(thread.qos);' },
+      { t: '' },
+      { t: '<span class="cm">// en yüksek öncelikli hazır thread seçilir</span>' },
+      { t: 'next = <span class="f">run_queue_dequeue_highest</span>(rq);' },
+      { t: '<span class="f">thread_run</span>(next, quantum);' },
+      { t: '' },
+      { t: '<span class="cm">// dilim bitince normal thread\'in önceliği düşer</span>' },
+      { t: '<span class="k">if</span> (next.sched_mode == <span class="n">TIMESHARE</span>)' },
+      { t: '    next.pri -= <span class="f">cpu_usage_penalty</span>(next);' },
+      { t: '<span class="cm">// bekleyen thread\'in önceliği zamanla geri yükselir</span>' },
+      { t: '<span class="cm">// real-time (96+) bandı bu ayara tabi değildir</span>' }
+    ],
+    steps: [
+      { pc: null, title: 'Thread\'ler kuyruğa girer', cpu: '—', q: '',
+        text: 'Üç thread çalışmaya hazır. QoS sınıfları farklı temel önceliklere eşlenmiş: UI thread (user-interactive, pri 47), hesaplama (utility, pri 20), arka plan (background, pri 4). Hepsi kendi bandında bekliyor.',
+        bands: [
+          { name: 'User-interactive', pr: 'pri ~47', hi: false, th: [{ n: 'UI thread', state: '' }] },
+          { name: 'Utility', pr: 'pri ~20', hi: false, th: [{ n: 'Hesaplama', state: '' }] },
+          { name: 'Background', pr: 'pri ~4', hi: false, th: [{ n: 'Arka plan', state: '' }] }
+        ],
+        note: 'GCD\'deki QoS sınıfları çekirdekte bir önceliğe dönüştü.' },
+      { pc: [4, 5], title: 'En yüksek öncelik seçilir', cpu: 'UI thread', q: 'quantum ≈ 10 ms', sel: 'UI thread',
+        text: 'Zamanlayıcı kuyruğun en tepesindeki, yani en yüksek öncelikli hazır thread\'i seçer: UI thread. Bir zaman dilimi (quantum) boyunca CPU\'da çalışır. Diğerleri bekler. Linux\'tan fark: burada "en az pay almış" değil, "en öncelikli" kazanır.',
+        bands: [
+          { name: 'User-interactive', pr: 'pri ~47', hi: true, th: [{ n: 'UI thread', state: 'run' }] },
+          { name: 'Utility', pr: 'pri ~20', hi: false, th: [{ n: 'Hesaplama', state: '' }] },
+          { name: 'Background', pr: 'pri ~4', hi: false, th: [{ n: 'Arka plan', state: '' }] }
+        ],
+        note: 'UI işleri bu yüzden akıcıdır: her zaman öne geçerler.' },
+      { pc: [8, 9], title: 'Dilim biter, öncelik düşer', cpu: 'Hesaplama', q: 'quantum ≈ 10 ms', sel: 'Hesaplama',
+        text: 'UI thread dilimini tüketince, CPU kullanımına bağlı bir ceza (penalty) ile önceliği geçici olarak düşürülür (47→~42). Böylece sürekli CPU tutamaz. Şimdi hazır thread\'ler içinde en yüksek olan utility bandındaki hesaplama thread\'i; o seçilir.',
+        bands: [
+          { name: 'User-interactive', pr: 'pri ~42 ↓', hi: false, th: [{ n: 'UI thread', state: '' }] },
+          { name: 'Utility', pr: 'pri ~20', hi: true, th: [{ n: 'Hesaplama', state: 'run' }] },
+          { name: 'Background', pr: 'pri ~4', hi: false, th: [{ n: 'Arka plan', state: '' }] }
+        ],
+        note: 'CPU kullanan düşer, bekleyen yükselir: açlık (starvation) böyle önlenir.' },
+      { pc: 11, title: 'Real-time araya girer', cpu: 'Ses (real-time)', q: 'sabit ayrıcalık', sel: 'Ses (real-time)',
+        text: 'Bir ses (audio) thread\'i real-time bandında (pri 96+) hazır hale gelir. Real-time thread\'ler CPU-kullanım cezasına tabi değildir ve normal bantların hepsinin önüne geçer. Zamanlayıcı çalışan thread\'i hemen durdurup (önalım / preemption) ses thread\'ine geçer — ses kesintisi olmaması için.',
+        bands: [
+          { name: 'Real-time', pr: 'pri 96–127', hi: true, th: [{ n: 'Ses (real-time)', state: 'run' }] },
+          { name: 'User-interactive', pr: 'pri ~42', hi: false, th: [{ n: 'UI thread', state: '' }] },
+          { name: 'Utility', pr: 'pri ~20', hi: false, th: [{ n: 'Hesaplama', state: 'önalındı' }] }
+        ],
+        note: 'Real-time bandı mutlak önceliklidir; gecikmeye duyarlı iş (ses/video) için.' },
+      { pc: [4, 5], title: 'Denge: öncelik + adalet', cpu: 'UI thread', q: 'quantum ≈ 10 ms', sel: 'UI thread',
+        text: 'Real-time thread işini bitirip uyuyunca döngü sürer. Beklerken öncelikleri geri yükselen normal thread\'ler tekrar yarışır. Sonuç: yüksek öncelikli (etkileşimli) işler çoğu zaman öne geçer, ama CPU-kullanım cezası sayesinde düşük öncelikliler de aç kalmaz. Mach\'ın dengesi budur.',
+        term: ['sched_mode: TIMESHARE (normal) · REALTIME (ses)', 'UI ≈ sık · hesaplama ≈ orta · arka plan ≈ seyrek'],
+        bands: [
+          { name: 'User-interactive', pr: 'pri ~45', hi: true, th: [{ n: 'UI thread', state: 'run' }] },
+          { name: 'Utility', pr: 'pri ~22', hi: false, th: [{ n: 'Hesaplama', state: '' }] },
+          { name: 'Background', pr: 'pri ~4', hi: false, th: [{ n: 'Arka plan', state: 'nadiren' }] }
+        ],
+        note: 'Öncelik-öncelikli seçim + dinamik ayar = Mach\'ın timeshare dengesi.' }
+    ],
+    render: function (s, stateEl, u) {
+      var bands = s.bands.map(function (b) {
+        var empty = (!b.th || !b.th.length);
+        var chips = (b.th || []).map(function (t) {
+          var cls = 'th' + (t.state === 'run' ? ' run' : (s.sel === t.n ? ' sel' : ''));
+          var tag = t.state === 'run' ? ' ◂ çalışıyor' : (t.state ? ' · ' + t.state : '');
+          return '<span class="' + cls + '">' + u.esc(t.n) + u.esc(tag) + '</span>';
+        }).join('');
+        return '<div class="band' + (b.hi ? ' hi' : '') + (empty ? ' empty' : '') + '"><div class="band-h"><b>' + u.esc(b.name) + '</b><span class="pr">' + u.esc(b.pr) + '</span></div><div class="thr">' + (chips || 'boş') + '</div></div>';
+      }).join('');
+      stateEl.innerHTML =
+        '<p class="lab-label">Öncelik bantları · çalıştırılabilir kuyruk (run queue)</p><div class="bands">' + bands + '</div>' +
+        '<div class="cpu"><b>CPU çekirdeği</b><span class="q">' + u.esc(s.cpu) + (s.q ? ' · ' + s.q : '') + '</span></div>' +
+        (s.note ? '<p class="noteline">' + u.esc(s.note) + '</p>' : '');
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: Mach thread'leri nasıl zamanlar?",
+    html: `<p class="lead">Mach scheduler, Linux'tan iki temel noktada ayrılır: zamanlama birimi task değil <strong>thread</strong>'dir ve öncelik, mutlak sayısal bir priority band sistemine dayanır (Linux'un göreli vruntime/fairness modelinin aksine). Bu bölüm Apple'ın Kernel Programming Guide'ına, XNU kaynağına ve Jonathan Levin'in OS Internals serisine dayanır.</p>
+
+<h3>1. Thread tabanlı zamanlama</h3>
+<p>Mach'ta bir task yalnızca bir kaynak konteyneridir (address space, port name space); gerçek işi thread'ler yapar ve zamanlanan da onlardır. Her thread'in bir base priority'si ve anlık bir sched_priority'si vardır. Bir process'in birden çok thread'i birbirinden bağımsız zamanlanır.</p>
+
+<h3>2. Priority band'ler (0–127)</h3>
+<p>Mach, 0–127 arası 128 öncelik seviyesini dört banda böler. Bir thread her zaman bir bandın içinde kalır; yalnızca band içinde yukarı/aşağı hareket eder.</p>
+<div class="manpage src-apple"><div class="ref">apple · kernel · scheduling</div><p class="orig">The priority levels are divided into four bands according to their characteristics.</p><p>Dört band: <strong>normal</strong> (0–63, sıradan uygulama thread'leri), <strong>system high priority</strong> (daha önemli ama real-time değil), <strong>kernel mode</strong> (çekirdek thread'leri) ve <strong>real-time</strong> (96–127, deadline garantisi isteyen ses/video).</p></div>
+<div class="deflist">
+<div><dt>normal (0–63)</dt><dd>Sıradan uygulama thread'leri. Timesharing bu bandda devreye girer.</dd></div>
+<div><dt>system high</dt><dd>Normalin üstünde ama real-time değil; sistem için önemli işler.</dd></div>
+<div><dt>kernel mode</dt><dd>Çekirdek içi thread'ler için ayrılmış band.</dd></div>
+<div><dt>real-time (96–127)</dt><dd>Deadline tabanlı; en yüksek öncelik, ses/video gibi zaman kritik iş.</dd></div>
+</div>
+
+<h3>3. Timesharing ve priority decay</h3>
+<p>Normal banddaki bir thread CPU'yu ne kadar çok kullanırsa, anlık önceliği o kadar düşer (CPU usage decay). Böylece CPU'yu uzun tutan bir thread yavaşça geri çekilir ve bekleyenler öne geçer; boşta kalan thread'in önceliği zamanla geri toparlanır. Bu, Linux'un vruntime fikriyle aynı amaca (adalet) farklı bir yolla ulaşır.</p>
+<div class="manpage src-apple"><div class="ref">apple · kernel · scheduling</div><p class="orig">Threads can migrate between priority levels for a number of reasons, largely as an artifact of the time sharing algorithm used. However, this migration is within a given band.</p><p>Thread'ler timesharing yüzünden seviyeler arasında gezer — ama yalnızca kendi bandı içinde. Bir normal-band thread'i asla kendiliğinden real-time banda çıkamaz.</p></div>
+
+<h3>4. QoS class'larının band'e eşlenmesi</h3>
+<p>GCD modülündeki QoS class'ları (userInteractive, userInitiated, utility, background) soyut niyet ifadeleridir; scheduler bunları somut priority seviyelerine çevirir. userInteractive yüksek önceliğe, background ise alt seviyelere düşer. Böylece geliştirici ham sayı yerine "bu iş kullanıcıyı mı bekletiyor" niyetini bildirir.</p>
+<div class="deflist">
+<div><dt>userInteractive</dt><dd>En yüksek (UI, animasyon). Anında yanıt beklenir.</dd></div>
+<div><dt>userInitiated</dt><dd>Kullanıcının başlattığı, sonucu beklenen iş.</dd></div>
+<div><dt>utility</dt><dd>Uzun süren, ilerleme gösterilen iş (indirme).</dd></div>
+<div><dt>background</dt><dd>En düşük. Kullanıcı farkında değil (senkronizasyon, yedekleme).</dd></div>
+</div>
+
+<h3>5. Real-time thread'ler</h3>
+<p>Real-time band, deadline garantisi isteyen thread'ler içindir: thread, scheduler'a "önümüzdeki B döngünün A'sında çalışmam gerek" der. Ama bu <em>soft</em> real-time'dır — kernel elinden geleni yapar, kesin garanti vermez.</p>
+<div class="manpage src-apple"><div class="ref">apple · kernel · scheduling</div><p class="orig">The kernel will make every effort to honor the request, but since this is soft real-time, it cannot be guaranteed.</p><p>Ses motorları (CoreAudio) bu bandı kullanır: bir ses buffer'ı zamanında dolmazsa duyulabilir bir çatırtı olur, bu yüzden deadline kritiktir.</p></div>
+
+<h3>6. Apple Silicon: P-core ve E-core</h3>
+<p>Apple Silicon'da iki tür çekirdek vardır: performance core (P-core, hızlı ama güç yiyen) ve efficiency core (E-core, yavaş ama tasarruflu). Scheduler, QoS'a göre çekirdek seçer: userInteractive iş P-core'a, background iş E-core'a yönlendirilir. Bu, hem performansı hem pil ömrünü QoS niyetinden türetir — Linux'un homojen çekirdek varsayımından farklı bir boyut.</p>
+
+<h3>Linux EEVDF ile karşılaştırma</h3>
+<p>Linux EEVDF, adaleti göreli vruntime ve virtual deadline ile sağlar; tüm normal thread'ler aynı havuzda yarışır. Mach ise mutlak priority band'lere dayanır: bir band tamamen başka bir bandın üstündedir, band içinde timesharing devreye girer. Mach'ın real-time bandı Linux'un SCHED_FIFO/SCHED_RR + SCHED_DEADLINE sınıflarına denk düşer. Pratik sonuç: Mach'ta öncelik daha katı ve öngörülebilir, Linux'ta daha akışkan ve adildir.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">Thread bir olayı (kilit, mesaj, uyku) beklemek için CPU\'yu bıraktığında ya da dilimi bittiğinde zamanlayıcı yeni bir thread seçer. Seçim ve bağlam değişimi (context switch) XNU\'da <code>osfmk/kern/sched_prim.c</code> altında yapılır.</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://github.com/apple-oss-distributions/xnu" target="_blank" rel="noopener">thread_block()</a><span class="where">osfmk/kern/sched_prim.c</span><p>Çalışan thread CPU\'yu gönüllü bırakır (bekleme) veya önalınır; yeniden zamanlama tetiklenir.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://github.com/apple-oss-distributions/xnu" target="_blank" rel="noopener">thread_select()</a><span class="where">osfmk/kern/sched_prim.c</span><p>Çalışacak sonraki thread\'i belirler; önce yerel çekirdeğin run queue\'suna bakar.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://github.com/apple-oss-distributions/xnu" target="_blank" rel="noopener">run_queue_dequeue()</a><span class="where">osfmk/kern/sched_prim.c</span><p>Öncelik bantlarına göre dizili kuyruktan en yüksek öncelikli hazır thread\'i çeker.</p></div></li>' +
+      '<li class="boundary"><div>seçim yapıldı · thread\'i CPU\'ya al</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://github.com/apple-oss-distributions/xnu" target="_blank" rel="noopener">machine_switch_context()</a><span class="where">osfmk/arm64 · x86_64</span><p>Eski thread\'in yazmaç/yığın durumunu kaydeder, yeninin durumuna geçer. Linux context_switch()\'in karşılığı.</p></div></li>' +
+      '</ol>' +
+      '<p class="prose" style="margin-top:14px"><strong>Linux ile fark:</strong> Linux EEVDF "en az pay almış uygun görevi" seçer (vruntime + sanal son tarih); Mach "en yüksek öncelikli hazır thread\'i" seçer ve normal thread\'lerin önceliğini CPU kullanımına göre dinamik ayarlar. İkisi de adaleti ve akıcılığı hedefler, ama mekanizma farklıdır.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. QoS → öncelik eşlemesini düşün', p: 'GCD modülündeki QoS sınıfları çekirdekte bir önceliğe eşlenir. Bir macOS\'ta thread önceliklerini görmek için (bu konteynerde çalışmaz, macOS\'ta dene):',
+        shells: [{ label: 'terminal (macOS) · temsilî', copy: 'ps -eM | head', pre: '<span class="c">$</span> ps -eM | head   <span class="c"># thread listesi ve öncelikleri (PRI)</span>\n<span class="c"># PRI 47 ≈ user-interactive, 31 ≈ default, 4 ≈ background</span>' }] },
+      { h3: '2. QoS ↔ öncelik tablosu', p: 'Kabaca eşleme (temsilî; sürüme göre değişir). Yüksek QoS, yüksek temel öncelik demektir.',
+        shells: [{ label: 'QoS → temel öncelik (temsilî)', pre: '<span class="c"># QoS sınıfı            temel öncelik</span>\nuser-interactive        ~47\nuser-initiated          ~37\ndefault                 ~31\nutility                 ~20\nbackground              ~4\n<span class="c"># real-time (ayrı mod)   96–127</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'XNU\'da zamanlanan temel birim nedir?', opts: ['Task', 'Thread', 'Port'], answer: 'Thread',
+        ok: 'Doğru. Task kaynakların kabıdır; CPU\'ya alınan ve önceliklendirilen birim thread\'dir. Bir task\'ın çok thread\'i farklı önceliklerde koşabilir.', no: 'İpucu: task kaynak kabı (bellek/port); işi yapan ve zamanlanan nedir?' },
+      { q: 'Normal (timeshare) bir thread dilimini (quantum) tüketince önceliğine ne olur?', opts: ['Yükselir', 'Geçici olarak düşer', 'Değişmez'], answer: 'Geçici olarak düşer',
+        ok: 'Doğru. CPU kullanımı bir ceza ile önceliği geçici düşürür; bekleyenler yükselir. Böylece yüksek öncelikli bir thread bile tüm CPU\'yu tutamaz, açlık önlenir.', no: 'İpucu: açlığı (starvation) önlemek için CPU kullananın ne olması gerekir?' },
+      { q: 'Real-time bandındaki (pri 96+) bir ses thread\'i hazır olunca ne olur?', opts: ['Sırasını bekler', 'Normal thread\'lerin hepsinin önüne geçer', 'Düşük önceliğe iner'], answer: 'Normal thread\'lerin hepsinin önüne geçer',
+        ok: 'Doğru. Real-time bandı mutlak önceliklidir ve CPU-kullanım cezasına tabi değildir; çalışan normal thread hemen önalınır. Ses/video kesintisizliği için.', no: 'İpucu: ses neden hiç takılmaz? Real-time bandının ayrıcalığı ne?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · macOS Modül 12', title: 'Mach sanal bellek', desc: 'VM object, pmap, zone allocator ve pager: XNU belleği nasıl yönetir?', href: 'macos-memory.html' },
+  sources: [
+    { href: 'https://newosxbook.com/TOC2-2.html', text: 'Levin — OS Internals Cilt II', note: 'Bölüm 11: Mach Scheduling' },
+    { href: 'https://github.com/apple-oss-distributions/xnu', text: 'XNU kaynağı', note: 'osfmk/kern/sched_prim.c' },
+    { href: 'https://developer.apple.com/library/archive/documentation/Performance/Conceptual/EnergyGuide-iOS/PrioritizeWorkWithQoS.html', text: 'Apple — QoS sınıfları' }
+  ],
+  pageTitle: 'Mach Zamanlayıcı'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

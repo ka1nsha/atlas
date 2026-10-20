@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Grafik ve Giriş</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: giriş + grafik hattı, BufferQueue, ekran */
+.flowcol { display: grid; gap: 5px; }
+.frow { display: flex; align-items: center; gap: 8px; font-family: var(--f-mono); font-size: 12px; padding: 6px 9px; border-radius: 7px; background: var(--sunk); color: var(--muted); border: 1px solid transparent; }
+.frow.done { color: var(--fg); }
+.frow.active { background: var(--track-soft); border-color: var(--track); color: var(--track); font-weight: 700; }
+.frow .tick { width: 14px; text-align: center; flex: none; }
+.frow .lane { font-size: 10px; margin-left: auto; opacity: .7; }
+.bq { margin-top: 12px; border: 1.5px solid var(--accent); border-radius: var(--r); background: var(--surface); padding: 10px; }
+.bq .bqh { font-family: var(--f-mono); font-size: 11px; color: var(--accent); font-weight: 700; margin-bottom: 6px; display: flex; justify-content: space-between; gap: 8px; }
+.bufs { display: flex; gap: 6px; flex-wrap: wrap; }
+.buf { font-family: var(--f-mono); font-size: 11px; padding: 5px 9px; border-radius: 6px; border: 1px solid var(--line); background: var(--sunk); color: var(--muted); min-width: 64px; text-align: center; }
+.buf.filling { border-color: var(--track); color: var(--track); background: var(--track-soft); font-weight: 700; }
+.buf.queued { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.buf.onscreen { border-color: var(--ok); color: var(--ok); background: var(--ok-soft); font-weight: 700; }
+.screen { margin-top: 12px; border: 2px solid var(--line); border-radius: 12px; background: var(--bg); height: 72px; display: grid; place-items: center; font-family: var(--f-mono); font-size: 12px; color: var(--muted); position: relative; overflow: hidden; }
+.screen.lit { border-color: var(--ok); color: var(--ok); }
+.screen .vsync { position: absolute; top: 6px; right: 10px; font-size: 10px; letter-spacing: .08em; }
+.screen .vsync.on { color: var(--ok); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'android',
+  crumbs: 'android › grafik ve giriş mimarisi › modül 21',
+  eyebrow: 'Modül 21 · Android · Grafik ve giriş',
+  titleHTML: 'Bir dokunuş ekrana nasıl döner?',
+  lede: 'Parmağın cama değdiği an ile ekranın güncellendiği an arasında iki boru hattı (pipeline) çalışır: olayı uygulamaya taşıyan giriş hattı ve çizimi ekrana basan grafik hattı. Bu modül ikisini uçtan uca, VSYNC ritmiyle birlikte izler.',
+  meta: ['~15 dk', 'ön koşul: uygulama anatomisi', 'bağlam: AOSP'],
+  intuition: {
+    paras: [
+      'Dokunma bir donanım olayıdır: ekran denetleyicisi çekirdeğe bir kesme gönderir, çekirdek bunu bir <strong>evdev</strong> olayı olarak <code>/dev/input/*</code>\'a yazar. Oradan kullanıcı alanında <strong>EventHub → InputReader → InputDispatcher</strong> zinciri olayı ham veriden anlamlı bir harekete (MotionEvent) çevirip doğru pencereye (uygulamaya) gönderir (giriş göndericisi / InputDispatcher).',
+      'Çizim tersine akar: uygulama kendi <strong>Surface</strong>\'ine çizer (CPU ya da GPU ile), biten kareyi bir <strong>BufferQueue</strong>\'ya (tampon kuyruğu) koyar. Sistem birleştiricisi <strong>SurfaceFlinger</strong>, tüm pencerelerin tamponlarını alıp tek bir kareye birleştirir (compositing / birleştirme) ve <strong>VSYNC</strong> (dikey eşitleme) sinyaliyle ekrana basar. Bu ritim, akıcılığın (jank olmaması) anahtarıdır.'
+    ],
+    ideas: [
+      { b: 'İki ayrı hat', span: 'Giriş hattı olayı içeri taşır (kernel → app); grafik hattı kareyi dışarı taşır (app → ekran). İkisi VSYNC ritminde buluşur.' },
+      { b: 'Üretici / tüketici', span: 'BufferQueue bir üretici-tüketici kuyruğudur: uygulama üretir (dequeue → çiz → queue), SurfaceFlinger tüketir (acquire → birleştir → release).' },
+      { b: 'VSYNC her şeyi hizalar', span: 'Çizim ve birleştirme ekranın yenileme hızına (60/120 Hz) kilitlenir; kare zamanında yetişmezse "jank" (takılma) olur.' }
+    ]
+  },
+  lab: {
+    intro: 'Kullanıcı bir butona dokunur. Sağda olayın çekirdekten uygulamaya yolculuğunu (giriş hattı), uygulamanın çizip BufferQueue\'ya koyduğu kareyi ve SurfaceFlinger\'ın VSYNC\'te birleştirip ekrana basışını izle.',
+    codeLabel: 'giriş + grafik hattı (temsilî)', cmd: 'touch → ekran',
+    foot: 'Değerler temsilîdir. Gerçek akış: InputDispatcher + SurfaceFlinger (AOSP).',
+    code: [
+      { t: '<span class="cm">// 1) GİRİŞ: olay içeri akar</span>' },
+      { t: 'kernel evdev  → /dev/input/event*' },
+      { t: 'EventHub → InputReader → <span class="f">InputDispatcher</span>' },
+      { t: '   → app penceresi (MotionEvent)' },
+      { t: '' },
+      { t: '<span class="cm">// 2) GRAFİK: kare dışarı akar</span>' },
+      { t: 'View.<span class="f">onTouch</span>() → invalidate()' },
+      { t: 'Choreographer (VSYNC) → <span class="f">draw</span>()' },
+      { t: 'Surface → <span class="t">BufferQueue</span>.queueBuffer()' },
+      { t: '<span class="f">SurfaceFlinger</span>.composite() → ekran' }
+    ],
+    steps: [
+      { pc: 2, title: 'Donanım olayı (evdev)', term: ['kernel: EV_ABS/EV_KEY → /dev/input/event3'],
+        text: 'Parmak cama değer. Dokunmatik denetleyici çekirdeğe bir kesme (interrupt) gönderir; çekirdek sürücüsü bunu bir <strong>evdev</strong> olayı olarak <code>/dev/input/event*</code>\'a yazar. Bu, ham veridir: hangi koordinat, hangi basınç.',
+        lane: 'giriş', stage: 0, bq: [], screen: 'ilk kare' },
+      { pc: 3, title: 'InputReader → InputDispatcher', term: ['InputReader: raw → MotionEvent(x=412,y=980)', 'InputDispatcher: hedef pencere = com.ornek.app'],
+        text: 'Kullanıcı alanında <strong>EventHub</strong> olayı okur, <strong>InputReader</strong> onu anlamlı bir <code>MotionEvent</code>\'e çevirir, <strong>InputDispatcher</strong> (giriş göndericisi) o anki odaklı pencereye — uygulamaya — iletir. Uygulama yanıt vermezse buradaki zaman aşımı ANR üretir.',
+        lane: 'giriş', stage: 1, bq: [], screen: 'ilk kare' },
+      { pc: 6, title: 'Uygulama olayı işler', term: ['app: dispatchTouchEvent → onClick', 'app: invalidate() — yeniden çizim istendi'],
+        text: 'Olay uygulamanın ana iş parçacığına (main thread) ulaşır; <code>onTouch/onClick</code> çalışır. Arayüz değişecekse <code>invalidate()</code> çağrılır: "beni bir sonraki karede yeniden çiz" demektir. Henüz çizim olmadı — sadece istek kuyruğa girdi.',
+        lane: 'köprü', stage: 2, bq: [], screen: 'ilk kare' },
+      { pc: 7, title: 'VSYNC gelir, uygulama çizer', term: ['Choreographer: VSYNC', 'app: RenderThread → GPU ile çizim'],
+        text: '<strong>Choreographer</strong> bir <strong>VSYNC</strong> (dikey eşitleme) sinyali bekler; geldiğinde çizim başlar. Uygulama bir tamponu kuyruktan alır (dequeue), üzerine GPU ile çizer. Çizim ekranın ritmine kilitli: erken de geç de değil, tam sırada.',
+        lane: 'grafik', stage: 3, bq: [{ t: 'Tampon 0', s: 'onscreen' }, { t: 'Tampon 1', s: 'filling' }], screen: 'ilk kare' },
+      { pc: 8, title: 'Kare BufferQueue\'ya girer', term: ['app: BufferQueue.queueBuffer(#1)'],
+        text: 'Çizim biten tampon <strong>BufferQueue</strong>\'ya (tampon kuyruğu) konur (queue). Uygulama üreticidir; SurfaceFlinger tüketici. Çift/üçlü tamponlama (double/triple buffering) sayesinde uygulama bir sonrakini çizerken ekran mevcut kareyi gösterebilir — ikisi birbirini beklemez.',
+        lane: 'grafik', stage: 4, bq: [{ t: 'Tampon 0', s: 'onscreen' }, { t: 'Tampon 1', s: 'queued' }], screen: 'ilk kare' },
+      { pc: 9, title: 'SurfaceFlinger birleştirir', term: ['SurfaceFlinger: acquire #1 + durum çubuğu + ...', 'VSYNC: composite → ekran güncellendi'],
+        text: '<strong>SurfaceFlinger</strong> bir sonraki VSYNC\'te hazır tamponu alır (acquire), onu durum çubuğu/gezinme gibi diğer pencerelerle <strong>birleştirir</strong> (compositing) — mümkünse donanım birleştirici (Hardware Composer / HWC) kullanır — ve sonucu ekrana basar. Parmağın değmesinden bu kareye kadar geçen süre, dokunma gecikmesidir (touch latency).',
+        lane: 'grafik', stage: 5, bq: [{ t: 'Tampon 0', s: 'queued' }, { t: 'Tampon 1', s: 'onscreen' }], screen: 'yeni kare' }
+    ],
+    render: function (s, stateEl, u) {
+      var input = [
+        { t: 'kernel evdev (/dev/input)', lane: 'giriş' },
+        { t: 'InputReader → InputDispatcher', lane: 'giriş' },
+        { t: 'uygulama: onTouch / invalidate', lane: 'köprü' },
+        { t: 'Choreographer + çizim (GPU)', lane: 'grafik' },
+        { t: 'BufferQueue.queueBuffer', lane: 'grafik' },
+        { t: 'SurfaceFlinger birleştir → ekran', lane: 'grafik' }
+      ];
+      var flow = input.map(function (r, i) {
+        var cls = 'frow' + (i < s.stage ? ' done' : '') + (i === s.stage ? ' active' : '');
+        var tick = i < s.stage ? '✓' : (i === s.stage ? '▸' : '·');
+        return '<div class="' + cls + '"><span class="tick">' + tick + '</span><span>' + u.esc(r.t) + '</span><span class="lane">' + r.lane + '</span></div>';
+      }).join('');
+      var bufs = s.bq.length
+        ? s.bq.map(function (b) {
+            var label = b.s === 'onscreen' ? ' (ekranda)' : b.s === 'queued' ? ' (kuyrukta)' : ' (çiziliyor)';
+            return '<div class="buf ' + b.s + '">' + u.esc(b.t) + label + '</div>';
+          }).join('')
+        : '<div class="buf">henüz kare yok</div>';
+      var vsyncOn = s.lane === 'grafik';
+      var lit = s.screen === 'yeni kare';
+      stateEl.innerHTML =
+        '<p class="lab-label">Boru hattı (giriş → grafik)</p><div class="flowcol">' + flow + '</div>' +
+        '<p class="lab-label" style="margin-top:14px">BufferQueue (üretici: uygulama · tüketici: SurfaceFlinger)</p>' +
+        '<div class="bq"><div class="bqh"><span>tamponlar</span><span>' + (vsyncOn ? 'VSYNC etkin' : 'VSYNC bekleniyor') + '</span></div><div class="bufs">' + bufs + '</div></div>' +
+        '<div class="screen ' + (lit ? 'lit' : '') + '"><span class="vsync ' + (vsyncOn ? 'on' : '') + '">VSYNC ' + (vsyncOn ? '▮▮▮' : '▯▯▯') + '</span>' + u.esc(s.screen === 'yeni kare' ? 'EKRAN: güncellendi ✓' : 'EKRAN: önceki kare') + '</div>';
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: dokunmadan piksele",
+    html: `<p class="lead">Ekrana dokunup bir tepki görene kadar iki ayrı pipeline çalışır: giriş olayını içeri taşıyan <strong>input pipeline</strong> ve kareyi ekrana basan <strong>graphics pipeline</strong>. İkisini VSYNC aynı ritme sokar. Bu bölüm her iki hattın bileşenlerini ve aralarındaki BufferQueue mekanizmasını ayrıntılandırır.</p>
+
+<h3>1. Input pipeline: dokunmanın yolu</h3>
+<p>Bir dokunma önce kernel'de bir input event olur: dokunmatik denetleyici kesme üretir, driver olayı <code>/dev/input/*</code> üzerinden evdev protokolüyle sunar. Native katmanda <strong>EventHub</strong> tüm input device'ları <code>epoll</code> ile dinler, ham olayları <strong>InputReader</strong>'a verir; InputReader bunları işler (koordinat dönüşümü, gesture) ve <strong>InputDispatcher</strong>'a aktarır. InputDispatcher doğru pencereyi (focused window) bulup olayı o uygulamanın main thread'indeki input channel'ına (bir socket çifti) yollar. Uygulama olayı event loop'unda (Looper) alır.</p>
+<div class="deflist">
+<div><dt>evdev</dt><dd>Kernel input subsystem; dokunma donanımını <code>/dev/input/*</code> olaylarına çevirir.</dd></div>
+<div><dt>EventHub</dt><dd>Tüm input device'ları açar ve epoll ile dinler; ham olay akışının native giriş noktası.</dd></div>
+<div><dt>InputReader</dt><dd>Ham olayları işler: koordinat eşleme, pointer/gesture durumu, batching.</dd></div>
+<div><dt>InputDispatcher</dt><dd>Olayı focused window'a bir input channel üzerinden iletir; ANR için dispatch zaman aşımını izler.</dd></div>
+</div>
+<p>Olaylar tek tek değil, VSYNC ile hizalı biçimde <strong>batch</strong> edilir: InputReader olayları biriktirir, Choreographer frame başına bir kez teslim eder. Bu, dokunma örnekleme hızı (ör. 120&nbsp;Hz) ile ekran yenileme hızını uyumlar ve gereksiz uyandırmayı önler.</p>
+
+<h3>2. BufferQueue: tüm grafiğin tutkalı</h3>
+<p>Graphics pipeline'ın merkezinde <strong>BufferQueue</strong> vardır: bir producer'ın ürettiği grafik buffer'larını bir consumer'a aktaran, buffer havuzu + kuyruk yapısı. Uygulama (producer) çizer, SurfaceFlinger (consumer) ekranda birleştirir. Buffer'lar kopyalanmaz; sahiplik (ownership) taraflar arasında devreder — producer <code>dequeue</code> → çiz → <code>queue</code>, consumer <code>acquire</code> → kullan → <code>release</code>.</p>
+<div class="manpage src-aosp"><div class="ref">graphics · bufferqueue</div><p class="orig">BufferQueue is a data structure that combines a buffer pool with a queue. BufferQueues provide the glue between the Android graphics components.</p><p>BufferQueue, buffer havuzu ile bir kuyruğu birleştiren veri yapısıdır ve Android grafik bileşenleri arasındaki tutkaldır. Üretici ile tüketiciyi gevşek bağlar: ikisi farklı hızlarda çalışabilir.</p></div>
+<div class="manpage src-aosp"><div class="ref">graphics · producer / consumer</div><p class="orig">BufferQueue connects something that generates buffers of graphical data (the producer) ... something that accepts the data for display or further processing (the consumer).</p><p>Producer grafik buffer üretir (uygulamanın çizimi), consumer onu tüketir (genellikle SurfaceFlinger). Bir surface bir buffer queue üretir; bu kuyruk çoğunlukla SurfaceFlinger tarafından tüketilir.</p></div>
+
+<h3>3. Surface ve Gralloc</h3>
+<p>Bir <strong>Surface</strong>, ekrana composite edilecek bir bellek bloğunu temsil eder; platformdaki her pencere bir surface ile desteklenir. Surface'in buffer'ları için fiziksel bellek <strong>Gralloc</strong> (graphics memory allocator) tarafından ayrılır — bu bellek çoğu zaman GPU ve display controller'ın birlikte erişebileceği özel bir bölgeden gelir (ör. DMA-BUF), böylece kopyasız (zero-copy) paylaşım mümkün olur.</p>
+<div class="manpage src-aosp"><div class="ref">graphics · surface &amp; gralloc</div><p class="orig">A surface represents a block of memory that gets composited to the screen. The graphics memory allocator (Gralloc) is needed to allocate memory requested by image producers.</p><p>Surface, ekrana composite edilen bir bellek bloğudur; her pencere bir surface ile desteklenir. Gralloc, image producer'ların istediği grafik belleğini ayırır — paylaşımlı ve donanıma uygun biçimde.</p></div>
+
+<h3>4. SurfaceFlinger ve Hardware Composer</h3>
+<p>Ekranın içeriğini değiştirebilen tek servis <strong>SurfaceFlinger</strong>'dır. Birden çok kaynaktan (uygulama pencereleri, status bar, navigation bar) gelen buffer'ları alır, <strong>compositing</strong> ile tek bir kareye birleştirir ve display'e gönderir. Bu birleştirmeyi GPU ile yapabilir; ama daha verimli yol <strong>Hardware Composer (HWC)</strong> HAL'idir: display donanımı bazı katmanları <strong>overlay</strong> olarak doğrudan birleştirebiliyorsa, SurfaceFlinger işi HWC'ye devreder ve GPU boşa harcanmaz (daha az güç, daha az ısı).</p>
+<div class="manpage src-aosp"><div class="ref">graphics · surfaceflinger</div><p class="orig">SurfaceFlinger accepts buffers of data from multiple sources, composites them, and sends them to the display.</p><p>SurfaceFlinger birden çok kaynaktan buffer alır, bunları composite eder ve display'e yollar. Uygulama kendi penceresini çizer; pencereleri tek karede birleştiren SurfaceFlinger'dır.</p></div>
+<div class="manpage src-aosp"><div class="ref">graphics · hardware composer</div><p class="orig">The Hardware Composer HAL (HWC) determines the most efficient way to composite buffers with the available hardware.</p><p>HWC, mevcut donanımla buffer'ları birleştirmenin en verimli yolunu belirler. Katmanları donanım overlay olarak birleştirebiliyorsa GPU devreye hiç girmez.</p></div>
+
+<h3>5. VSYNC, Choreographer ve buffering</h3>
+<p>Display sabit bir hızda yenilenir (60/90/120&nbsp;Hz). <strong>VSYNC</strong> sinyali bu yenileme anını işaretler; <strong>Choreographer</strong> uygulamanın çizimini, input teslimini ve SurfaceFlinger'ın compositing'ini bu sinyale hizalar. Böylece yarım çizilmiş kare ekrana düşmez (tearing önlenir). <strong>Double buffering</strong>: biri gösterilirken diğerine çizilir. <strong>Triple buffering</strong>: GPU bir kareyi geç bitirirse boşa kalan frame'i doldurmak için üçüncü bir buffer devreye girer — jank azalır ama bir frame'lik latency ekler.</p>
+<div class="deflist">
+<div><dt>VSYNC</dt><dd>Display'in yenileme anını işaretleyen sinyal; tüm grafik ritmi buna bağlanır.</dd></div>
+<div><dt>Choreographer</dt><dd>Frame callback'lerini VSYNC'e hizalar (input, animasyon, çizim aynı frame'de).</dd></div>
+<div><dt>double buffering</dt><dd>İki buffer: biri gösterimde, diğeri çizimde; tearing'i önler.</dd></div>
+<div><dt>triple buffering</dt><dd>Üçüncü buffer GPU gecikmesini tolere eder; jank düşer, latency artar.</dd></div>
+</div>
+<p>İki pipeline burada buluşur: dokunma (input) ile ona verilen görsel tepki (graphics) arasındaki toplam gecikmeye <strong>touch latency</strong> denir ve VSYNC hizalaması, batching ve buffer sayısı bu gecikmeyi doğrudan belirler.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">İki hat da çatının (framework) native katmanında koşar; AOSP\'ta cs.android.com üzerinden okunabilir. Giriş hattı olayı içeri, grafik hattı kareyi dışarı taşır; VSYNC ikisini aynı ritme sokar.</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Aşama</th><th>Bileşen</th><th>Görevi</th></tr></thead><tbody>' +
+      '<tr><td>Giriş · çekirdek</td><td><b>evdev</b></td><td>Dokunma donanımını <code>/dev/input/*</code> olayına çevirir</td></tr>' +
+      '<tr><td>Giriş · native</td><td><b>EventHub / InputReader</b></td><td>Ham olayı okur, MotionEvent\'e dönüştürür</td></tr>' +
+      '<tr><td>Giriş · native</td><td><b>InputDispatcher</b></td><td>Olayı doğru pencereye iletir; yanıt yoksa ANR sayacı</td></tr>' +
+      '<tr><td>Grafik · uygulama</td><td><b>Choreographer</b></td><td>VSYNC\'e kilitli çizim zamanlaması</td></tr>' +
+      '<tr><td>Grafik · köprü</td><td><b>Surface / BufferQueue</b></td><td>Üretici-tüketici kare tamponu kuyruğu</td></tr>' +
+      '<tr><td>Grafik · sistem</td><td><b>SurfaceFlinger / HWC</b></td><td>Pencereleri birleştirir, ekrana basar</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px">Olay uygulamaya ulaşınca, uygulama anatomisi modülündeki (Modül 11) <code>MessageQueue</code> + <code>Looper</code> döngüsüne girer: giriş hattının bitişi, o olay döngüsünün başlangıcıdır. Bu yüzden ağır iş ana iş parçacığını tıkarsa hem dokunma işlenemez hem de kareler kaçar (jank).</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Dokunma olaylarını ham izle', p: 'getevent ile çekirdeğin ürettiği evdev olaylarını doğrudan gör: her dokunuş koordinat ve basınç olaylarına dönüşüyor.',
+        shells: [{ label: 'adb (temsilî çıktı)', copy: 'adb shell getevent -lt /dev/input/event3', pre: '<span class="c">$</span> adb shell getevent -lt\n[   1234.56] EV_ABS ABS_MT_POSITION_X 000001a4\n[   1234.56] EV_ABS ABS_MT_POSITION_Y 000003d4\n[   1234.56] EV_SYN SYN_REPORT 00000000' }] },
+      { h3: '2. Kare/VSYNC durumunu gör', p: 'SurfaceFlinger\'ın katmanlarını (her pencere bir katman) ve kare zamanlamasını dök; jank ararken ilk bakılan yer burasıdır.',
+        shells: [{ label: 'adb (temsilî)', copy: 'adb shell dumpsys SurfaceFlinger', pre: '<span class="c">$</span> adb shell dumpsys SurfaceFlinger\n<span class="c"># Layer\'lar, refresh rate (60/120 Hz), HWC kullanımı, kaçan kareler</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Dokunma olayını doğru uygulamaya hangi bileşen iletir?', opts: ['SurfaceFlinger', 'InputDispatcher', 'Zygote'], answer: 'InputDispatcher',
+        ok: 'Doğru. EventHub/InputReader ham olayı MotionEvent yapar, InputDispatcher (giriş göndericisi) onu odaklı pencereye iletir. SurfaceFlinger ise çıkış (grafik) tarafındadır.', no: 'İpucu: "dispatcher" = gönderici. Giriş hattının son durağı.' },
+      { q: 'BufferQueue neden üretici-tüketici kuyruğudur?', opts: ['Uygulama üretir, SurfaceFlinger tüketir', 'Çekirdek üretir, uygulama tüketir', 'Rastgele'], answer: 'Uygulama üretir, SurfaceFlinger tüketir',
+        ok: 'Doğru. Uygulama kareyi çizip queue eder (üretici), SurfaceFlinger acquire edip birleştirir (tüketici). Çift/üçlü tamponlama ikisinin birbirini beklemesini önler.', no: 'İpucu: kareyi kim çizer, kim ekrana basar?' },
+      { q: 'VSYNC\'in bu mimarideki rolü nedir?', opts: ['Sesi senkronlar', 'Çizim ve birleştirmeyi ekran yenileme hızına hizalar', 'Pili şarj eder'], answer: 'Çizim ve birleştirmeyi ekran yenileme hızına hizalar',
+        ok: 'Doğru. VSYNC (dikey eşitleme) çizimi ve kompozisyonu ekranın yenileme ritmine (60/120 Hz) kilitler; kare zamanında yetişmezse jank (takılma) olur.', no: 'İpucu: "dikey eşitleme" neyi neye eşitler?' }
+    ]
+  },
+  next: { eyebrow: 'İzlek tamam · Android 21/21', title: 'Katalog ve sıradaki izlek', desc: 'Android izleğini tamamladın. Ana sayfadan Linux, macOS/iOS veya ofansif izleğe geçebilirsin.' },
+  sources: [
+    { href: 'https://newandroidbook.com/TOC.html', text: 'Levin — Android Internals', note: 'Cilt IV, Bölüm 2-3' },
+    { href: 'https://source.android.com/docs/core/graphics', text: 'AOSP — Graphics mimarisi', note: 'SurfaceFlinger, BufferQueue' },
+    { href: 'https://source.android.com/docs/core/interaction/input', text: 'AOSP — Input mimarisi', note: 'EventHub, InputDispatcher' }
+  ],
+  pageTitle: 'Grafik ve Giriş'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

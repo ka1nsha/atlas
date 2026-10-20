@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>exec() ve ELF</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: adres uzayı haritası */
+.aspace { display: grid; gap: 6px; }
+.seg { border: 1.5px solid var(--line); border-radius: 8px; background: var(--surface); padding: 8px 10px; display: flex; justify-content: space-between; gap: 8px; align-items: baseline; min-width: 0; flex-wrap: wrap; }
+.seg b { font-family: var(--f-display); font-size: 13.5px; } .seg .meta2 { font-family: var(--f-mono); font-size: 11.5px; color: var(--muted); }
+.seg.text { border-color: var(--accent); background: var(--accent-soft); } .seg.text b { color: var(--accent); }
+.seg.data { border-color: var(--warn); background: var(--warn-soft); } .seg.data b { color: var(--warn); }
+.seg.interp { border-style: dashed; }
+.seg.entry { border-color: var(--ok); background: var(--ok-soft); } .seg.entry b { color: var(--ok); }
+.seg.fresh { animation: segin .4s ease; }
+@keyframes segin { from { opacity: 0; transform: translateX(6px); } to { opacity: 1; transform: none; } }
+.aempty { border: 1px dashed var(--line); border-radius: 8px; padding: 18px; text-align: center; color: var(--muted); font-size: 13px; }
+.phlist { display: grid; gap: 4px; margin-top: 10px; }
+.ph { font-family: var(--f-mono); font-size: 11.5px; display: flex; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--line); padding: 3px 0; }
+.ph span:last-child { color: var(--muted); }
+@media (prefers-reduced-motion: reduce) { .seg.fresh { animation: none; } }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'linux',
+  crumbs: 'linux › exec ve elf › modül 2',
+  eyebrow: 'Modül 2 · Linux · Program yükleme',
+  titleHTML: '<code>exec()</code>: bir süreç kendini nasıl başka bir programa dönüştürür?',
+  lede: 'fork() yeni bir süreç yaratır ama onu hâlâ aynı programı çalıştırır. Asıl dönüşüm exec() ile olur: çekirdek, sürecin bütün bellek görüntüsünü (memory image) silip yerine bir ELF dosyasını yerleştirir. PID değişmez, ama çalışan program tümüyle değişir.',
+  meta: ['~18 dk', 'ön koşul: fork() modülü', 'çekirdek: Linux 6.x, x86-64'],
+  intuition: {
+    paras: [
+      'Kabukta <code>ls</code> yazdığında olan şey iki adımdır: kabuk önce <code>fork()</code> ile kendini kopyalar, sonra kopya <code>exec()</code> ile kendini <code>ls</code> programına çevirir. fork yeni süreci, exec ise yeni programı sağlar. İkisi birbirinden ayrıdır; bu ayrım, kabuğun çocuğu exec\'ten hemen önce ayarlamasına (örn. yönlendirme) izin verir.',
+      '<code>exec()</code> ailesi (execve, execv, execlp…) başarılı olursa geri DÖNMEZ: çağıran kod artık bellekte yoktur. Çekirdek eski eşlemeleri (mappings) kaldırır, ELF\'in <strong>program header</strong>\'larını okur ve her <code>LOAD</code> segmentini izinleriyle (R, R+E, RW) belleğe <code>mmap</code> ile yerleştirir.',
+      'Çalıştırılabilir dosya (executable) bir ELF\'tir: başında bir header, ardından çekirdeğe "şu baytları şu adrese, şu izinlerle koy" diyen program header\'lar bulunur. Giriş noktası (entry point), çekirdeğin en sonda atladığı adrestir.'
+    ],
+    ideas: [
+      { b: 'Geri dönmez', span: 'exec başarılıysa eski program yok olur; sadece exec başarısız olursa bir sonraki satır çalışır.' },
+      { b: 'PID korunur', span: 'Süreç aynı kalır (aynı PID, açık dosyalar); değişen yalnızca bellek görüntüsü ve çalışan koddur.' },
+      { b: 'ELF bir reçetedir', span: 'Program header\'lar çekirdeğe hangi baytların nereye, hangi izinle eşleneceğini söyler.' }
+    ]
+  },
+  lab: {
+    intro: 'Program önce kendi mesajını yazar, sonra <code>execv</code> ile kendini <code>/bin/echo</code>\'ya dönüştürür. Sağda sürecin adres uzayının (address space) execve boyunca nasıl tümüyle yeniden kurulduğunu izle.',
+    codeLabel: 'exec.c', cmd: './exec',
+    foot: 'Adresler bu konteynerdeki gerçek bir çalıştırmadan alınmış örneklerdir; makineden makineye (ve ASLR ile her çalıştırmada) değişir.',
+    code: [
+      { t: '<span class="pp">#include</span> <span class="s">&lt;unistd.h&gt;</span>' },
+      { t: '<span class="pp">#include</span> <span class="s">&lt;stdio.h&gt;</span>' },
+      { t: '' },
+      { t: '<span class="t">int</span> <span class="f">main</span>(<span class="t">void</span>) {' },
+      { t: '    <span class="f">printf</span>(<span class="s">"merhaba, pid=%d\\n"</span>, <span class="f">getpid</span>());' },
+      { t: '    <span class="t">char</span> *argv[] = {<span class="s">"/bin/echo"</span>, <span class="s">"selam"</span>, <span class="k">NULL</span>};' },
+      { t: '    <span class="f">execv</span>(argv[<span class="n">0</span>], argv);  <span class="cm">// başarılıysa geri dönmez</span>' },
+      { t: '    <span class="f">perror</span>(<span class="s">"execv"</span>);        <span class="cm">// yalnızca exec başarısızsa</span>' },
+      { t: '    <span class="k">return</span> <span class="n">1</span>;' },
+      { t: '}' }
+    ],
+    steps: [
+      { pc: 5, title: 'Eski program çalışıyor', term: ['merhaba, pid=206'],
+        text: 'Süreç (PID 206) kendi kodunu çalıştırıyor: mesajını yazdırır. Adres uzayında <code>exec.c</code>\'nin segmentleri ve libc var. execv\'i çağırmak üzere.',
+        map: [
+          { name: 'yığın (stack)', addr: '0x7fff… (yüksek)', perm: 'rw-' },
+          { name: 'libc.so.6', addr: '0x7eff1140…', perm: 'r-x' },
+          { name: 'heap', addr: '0x558db4fa…', perm: 'rw-' },
+          { name: 'exec: .data/.bss', addr: '0x558db28ac…', perm: 'rw-', cls: 'data' },
+          { name: 'exec: .text', addr: '0x558db28a4…', perm: 'r-x', cls: 'text' }
+        ] },
+      { pc: 7, title: 'execve çekirdeğe girer', term: ['merhaba, pid=206', 'execve("/bin/echo", ["/bin/echo","selam"], envp) = 0'],
+        text: 'execv, <code>execve</code> syscall\'ını yapar. Çekirdek önce yeni programın okunabilir ve çalıştırılabilir olduğunu doğrular, bir <code>linux_binprm</code> (binary parametreleri) yapısı kurar ve ELF yükleyicisini seçer.',
+        map: [
+          { name: 'yığın (stack)', addr: '0x7fff…', perm: 'rw-' },
+          { name: 'libc.so.6', addr: '0x7eff…', perm: 'r-x' },
+          { name: 'heap', addr: '0x558d…', perm: 'rw-' },
+          { name: 'exec: .data/.bss', addr: '0x558d…', perm: 'rw-', cls: 'data' },
+          { name: 'exec: .text', addr: '0x558d…', perm: 'r-x', cls: 'text' }
+        ], note: 'Henüz eski görüntü yerinde; çekirdek yükleyiciye yeni giriyor.' },
+      { pc: 7, title: 'Eski bellek görüntüsü silinir', term: [],
+        text: 'Çekirdek, çağıran sürecin eski adres uzayını baştan kurar: eski segmentlerin tamamı kaldırılır. Bu noktadan sonra geri dönüş yok; <code>execv</code>\'den sonraki <code>perror</code> satırı artık bellekte bile değil.',
+        empty: 'Adres uzayı temizlendi.\nEski segmentler kaldırıldı; yeni, neredeyse boş bir uzay.' },
+      { pc: 7, title: 'ELF header ve program header\'lar okunur', term: ['ELF: DYN (PIE), entry 0x10e0, 13 program header'],
+        text: '/bin/echo\'nun ELF başlığı okunur: tür (burada PIE), giriş noktası (entry point) ve program header tablosu. <code>LOAD</code> tipindeki her header, belleğe eşlenecek bir segmenti ve izinlerini (R, R+E, RW) tanımlar. <code>INTERP</code> ise dinamik yükleyiciyi işaret eder.',
+        empty: 'Segmentler henüz eşlenmedi; çekirdek reçeteyi (program header\'ları) okuyor.',
+        phdr: [
+          { t: 'LOAD  off 0x0000', d: 'R    (ELF header + .rodata)' },
+          { t: 'LOAD  off 0x1000', d: 'R E  (.text — kod)' },
+          { t: 'LOAD  off 0x2000', d: 'R    (salt okunur veri)' },
+          { t: 'LOAD  off 0x2d98', d: 'RW   (.data + .bss)' },
+          { t: 'INTERP', d: '/lib64/ld-linux-x86-64.so.2' }
+        ] },
+      { pc: 7, title: 'LOAD segmentleri mmap ile yerleştirilir', term: ['mmap(... PROT_READ|PROT_EXEC ...) = 0x…628000  // .text', 'mmap(... PROT_READ|PROT_WRITE ...) = 0x…800000  // .data'],
+        text: 'Çekirdek her LOAD segmentini <code>mmap</code> ile belleğe koyar; dosyadaki izin bayrakları sayfa izinlerine çevrilir. <code>.bss</code> (başlatılmamış veri) dosyada yer kaplamaz, bellekte sıfırla doldurulur. PIE olduğu için taban adres ASLR ile rastgele seçilir.',
+        map: [
+          { name: 'echo: .data/.bss', addr: '0x…803d98', perm: 'rw-', cls: 'data fresh' },
+          { name: 'echo: salt okunur', addr: '0x…802000', perm: 'r--', fresh: true },
+          { name: 'echo: .text (kod)', addr: '0x…801000', perm: 'r-x', cls: 'text fresh' },
+          { name: 'echo: ELF header', addr: '0x…800000', perm: 'r--', fresh: true }
+        ] },
+      { pc: 7, title: 'Interpreter, stack ve auxv', term: ['mmap(... libc / ld-linux ...) ', 'yeni yığın: argv, envp, auxv kuruldu'],
+        text: 'PIE/dinamik bağlı olduğu için çekirdek dinamik yükleyiciyi (<code>ld-linux</code>) da eşler. Yeni bir yığın (stack) kurulur ve içine <code>argv</code>, <code>envp</code> ve <code>auxv</code> (yardımcı vektör — çekirdekten yükleyiciye bilgi) yazılır.',
+        map: [
+          { name: 'yeni yığın (argv/envp/auxv)', addr: '0x7fff… (yüksek)', perm: 'rw-', fresh: true },
+          { name: 'ld-linux (interpreter)', addr: '0x…interp', perm: 'r-x', cls: 'interp fresh' },
+          { name: 'echo: .data/.bss', addr: '0x…803d98', perm: 'rw-', cls: 'data' },
+          { name: 'echo: .text (kod)', addr: '0x…801000', perm: 'r-x', cls: 'text' },
+          { name: 'echo: ELF header', addr: '0x…800000', perm: 'r--' }
+        ] },
+      { pc: 7, title: 'Giriş noktasına atla', term: ['merhaba, pid=206', 'selam'],
+        text: 'Çekirdek kullanıcı alanına, önce <code>ld-linux</code>\'un giriş noktasına döner; o da kütüphaneleri bağlayıp <code>echo</code>\'nun giriş noktasına (entry 0x10e0) geçer. Artık aynı süreç (PID 206 hâlâ aynı!) <code>/bin/echo</code> çalıştırıyor ve "selam" yazıyor.',
+        map: [
+          { name: 'GİRİŞ → entry 0x10e0', addr: 'artık /bin/echo', perm: 'r-x', cls: 'entry' },
+          { name: 'yeni yığın', addr: '0x7fff…', perm: 'rw-' },
+          { name: 'ld-linux', addr: '0x…interp', perm: 'r-x', cls: 'interp' },
+          { name: 'echo: .text (kod)', addr: '0x…801000', perm: 'r-x', cls: 'text' },
+          { name: 'echo: .data/.bss', addr: '0x…803d98', perm: 'rw-', cls: 'data' }
+        ] }
+    ],
+    render: function (s, stateEl, u) {
+      var body;
+      if (s.empty) {
+        body = '<div class="aempty">' + u.esc(s.empty).replace(/\n/g, '<br>') + '</div>';
+      } else {
+        body = '<div class="aspace">' + s.map.map(function (m) {
+          return '<div class="seg ' + (m.cls || '') + (m.fresh ? ' fresh' : '') + '"><b>' + u.esc(m.name) + '</b><span class="meta2">' + u.esc(m.addr) + ' · ' + u.esc(m.perm) + '</span></div>';
+        }).join('') + '</div>';
+      }
+      if (s.phdr) {
+        body += '<div class="phlist">' + s.phdr.map(function (p) {
+          return '<div class="ph"><span>' + u.esc(p.t) + '</span><span>' + u.esc(p.d) + '</span></div>';
+        }).join('') + '</div>';
+      }
+      stateEl.innerHTML = '<p class="lab-label">Adres uzayı (yüksek → düşük adres)</p>' + body +
+        (s.note ? '<p class="note" style="margin-top:10px">' + u.esc(s.note) + '</p>' : '');
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: execve() ne yapar?",
+    html: `<p class="lead">execve() bir "program başlat" çağrısı değil, bir "kendini başka programa dönüştür" çağrısıdır. Aynı süreç devam eder — PID bile değişmez — ama içindeki program tamamen değişir. Bu bölüm execve(2) ve ELF yapısına dayanır; detaylar hem performans hem güvenlik açısından kritiktir.</p>
+
+<h3>1. "Başlatmaz, değiştirir"</h3>
+<p>execve mevcut process image'i siler ve yerine yeni bir program koyar. Çağıran kod artık bellekte olmadığı için, başarılı bir execve'den geri dönüş yoktur: execve'den sonraki satır yalnızca hata durumunda çalışır.</p>
+<div class="manpage"><div class="ref">2 execve · DESCRIPTION</div><p class="orig">This causes the program that is currently being run by the calling process to be replaced with a new program</p><p>Çalışan program, çağıran sürecin içinde yeni bir programla değiştirilir. Süreç aynı kalır (aynı PID, aynı parent), yalnızca içeriği — kod, veri, stack — yenisiyle değişir.</p></div>
+<div class="manpage"><div class="ref">2 execve · RETURN VALUE</div><p class="orig">On success, execve() does not return, on error -1 is returned, and errno is set to indicate the error.</p><p>Başarıda geri dönüş yoktur (eski kod gitti). Hata olursa -1 döner ve errno ayarlanır; bu yüzden kodda <code>execve(...); perror("exec");</code> deseni görülür — ikinci satır sadece exec başarısız olursa çalışır.</p></div>
+
+<h3>2. ELF nasıl belleğe yerleşir?</h3>
+<p>Bir executable, başında bir header, ardından program header tablosu olan bir ELF dosyasıdır. Program header'lar çekirdeğe "şu baytları şu adrese, şu izinlerle eşle" talimatını verir. Önemli program header türleri:</p>
+<div class="deflist">
+<div><dt>PT_LOAD</dt><dd>Belleğe yüklenecek bir segment. Tipik olarak biri kod (text, R+X), biri veri (data, R+W). Çekirdek her birini <code>mmap</code> ile dosyadan eşler.</dd></div>
+<div><dt>PT_INTERP</dt><dd>Dinamik bağlı binary'lerde kullanılacak interpreter'ın (dynamic linker, ör. <code>/lib64/ld-linux-x86-64.so.2</code>) yolu.</dd></div>
+<div><dt>PT_DYNAMIC</dt><dd>Dynamic linker'ın ihtiyaç duyduğu bilgiler: hangi shared object'ler gerekli, sembol tabloları, relocation bilgileri.</dd></div>
+<div><dt>PT_GNU_STACK</dt><dd>Stack'in çalıştırılabilir olup olmayacağını belirler (NX koruması; genelde çalıştırılamaz).</dd></div>
+</div>
+<div class="manpage"><div class="ref">2 execve · INTERPRETER</div><p class="orig">the interpreter named in the PT_INTERP segment is used to load the needed shared objects.</p><p>Dinamik bağlı bir programda çekirdek önce PT_INTERP'te adı geçen dynamic linker'ı yükler ve kontrolü ona verir. Dynamic linker gerekli shared object'leri (ör. <code>libc.so</code>) belleğe getirir, sembolleri çözer, sonra asıl programın entry point'ine atlar. Statik bağlı binary'lerde PT_INTERP yoktur; çekirdek doğrudan programa atlar.</p></div>
+<p>Dosya ELF değil de <code>#!</code> ile başlayan bir script ise, çekirdek ilk satırdaki interpreter'ı (ör. <code>/bin/sh</code>) çalıştırır ve script'i ona argüman olarak verir.</p>
+
+<h3>3. execve boyunca ne korunur, ne sıfırlanır?</h3>
+<p>fork'un aksine execve bellek içeriğini tutmaz; ama sürece ait bazı öznitelikler korunur. Bunu bilmek "exec'ten sonra bu değer neden hâlâ duruyor / neden sıfırlandı?" sorusunu yanıtlar.</p>
+<h4>Korunanlar</h4>
+<div class="deflist">
+<div><dt>PID / PPID</dt><dd>Süreç kimliği değişmez; aynı süreçtir.</dd></div>
+<div><dt>open file descriptors</dt><dd>Varsayılan olarak açık kalır — bu yüzden shell, exec'ten önce kurduğu redirection'ların yeni programda da geçerli olmasını sağlayabilir.</dd></div>
+<div><dt>real UID / GID</dt><dd>Gerçek kullanıcı ve grup kimlikleri ile supplementary group'lar değişmez. (effective UID, set-user-ID binary ise değişebilir — aşağıda.)</dd></div>
+<div><dt>çalışma dizini, umask, rlimit</dt><dd>Devralınır.</dd></div>
+</div>
+<div class="manpage"><div class="ref">2 execve · FILE DESCRIPTORS</div><p class="orig">By default, file descriptors remain open across an execve(). File descriptors that are marked close-on-exec are closed.</p><p>File descriptor'lar varsayılan olarak exec boyunca açık kalır. Bir fd'ye <code>FD_CLOEXEC</code> bayrağı konmuşsa (ör. <code>open(..., O_CLOEXEC)</code>), exec anında otomatik kapatılır. Bu, bir programın hassas dosya tanıtıcılarını exec ettiği alt programa sızdırmamasının standart yoludur — güvenlik açısından önemli bir detay.</p></div>
+<h4>Sıfırlananlar</h4>
+<div class="deflist">
+<div><dt>signal dispositions</dt><dd>Yakalanan (caught) sinyallerin handler'ları default davranışa döner — yeni programın eski programın handler'larını miras almaması için.</dd></div>
+<div><dt>memory mappings</dt><dd>Eski tüm eşlemeler (kod, heap, mmap bölgeleri) kaldırılır; yeni program temiz bir address space ile başlar.</dd></div>
+<div><dt>exit handlers</dt><dd><code>atexit()</code> ile kayıtlı fonksiyonlar korunmaz.</dd></div>
+</div>
+<div class="manpage"><div class="ref">2 execve · SIGNALS</div><p class="orig">The dispositions of any signals that are being caught are reset to the default</p><p>Eski programda bir handler'a bağlanmış sinyaller, exec sonrası default davranışına döner. Yok sayılan (ignored, SIG_IGN) sinyaller ise genelde yok sayılmaya devam eder.</p></div>
+
+<h3>4. Stack ve auxiliary vector (auxv)</h3>
+<p>Çekirdek yeni programa atlamadan önce yeni bir stack kurar ve en üste sırayla <code>argv</code>, <code>envp</code> ve <strong>auxiliary vector</strong>'ü (auxv) yerleştirir. auxv, çekirdeğin dynamic linker'a bıraktığı anahtar-değer notlarıdır: <code>AT_PHDR</code> (program header'ların adresi), <code>AT_ENTRY</code> (asıl entry point), <code>AT_RANDOM</code> (stack canary / ASLR için 16 rastgele bayt), <code>AT_PAGESZ</code> (sayfa boyutu) gibi. Dynamic linker bunları okuyarak işini yapar. (<code>LD_SHOW_AUXV=1 ./prog</code> ile görülebilir.)</p>
+
+<h3>5. Güvenlik: exec bir ayrıcalık sınırıdır</h3>
+<p>execve, ayrıcalıkların değişebildiği noktadır. Dosyada set-user-ID biti varsa (<code>chmod u+s</code>), execve sonrası effective UID dosyanın sahibine yükselir — <code>passwd</code> komutunun normal kullanıcıyken parola dosyasına yazabilmesinin yolu budur. Bu yüzden çekirdek exec anında birçok şeyi sıfırlar ve kontrol eder; exec sınırı, saldırı yüzeyinin yoğunlaştığı yerlerden biridir.</p>
+
+<h3>Başlıca hata kodları (errno)</h3>
+<ul>
+<li><code>ENOENT</code> — dosya, script veya ELF interpreter bulunamadı.</li>
+<li><code>ENOEXEC</code> — dosya tanınan bir formatta değil, yanlış mimari için veya bozuk.</li>
+<li><code>EACCES</code> — dosyada (veya interpreter'ında) execute izni yok, ya da dosya sistemi <code>noexec</code>.</li>
+<li><code>E2BIG</code> — argv ve envp'nin toplam boyutu limiti aşıyor.</li>
+<li><code>ETXTBSY</code> — dosya bir süreç tarafından yazmak için açık; çalıştırılamaz.</li>
+<li><code>ELOOP</code> — yolu çözerken çok fazla symbolic link var.</li>
+</ul>`
+  },
+  underHood: {
+    html: '<p class="prose">Kullanıcı tarafındaki <code>execv</code> bir glibc sarmalayıcısıdır; <code>execve</code> syscall\'ına iner. Çekirdekte asıl iş ELF ikili yükleyicisinde (binary loader), <code>fs/binfmt_elf.c</code>\'de yapılır.</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://man7.org/linux/man-pages/man2/execve.2.html" target="_blank" rel="noopener">execve()</a><span class="where">glibc</span><p>execve syscall\'ını yapar; başarılıysa geri dönmez.</p></div></li>' +
+      '<li class="boundary"><div>sistem çağrısı sınırı · kullanıcı → çekirdek</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/do_execveat_common" target="_blank" rel="noopener">do_execveat_common()</a><span class="where">fs/exec.c</span><p><code>linux_binprm</code> kurar; dosyayı açar, ilk baytlarını okur, uygun yükleyiciyi arar.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/load_elf_binary" target="_blank" rel="noopener">load_elf_binary()</a><span class="where">fs/binfmt_elf.c</span><p>ELF header\'ı doğrular, eski adres uzayını kaldırır (<code>begin_new_exec</code>), LOAD segmentlerini <code>mmap</code> ile yerleştirir, interpreter\'ı yükler.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/setup_arg_pages" target="_blank" rel="noopener">setup_arg_pages()</a><span class="where">fs/exec.c</span><p>Yeni yığını kurar; argv, envp ve auxv (auxiliary vector) buraya yazılır.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/start_thread" target="_blank" rel="noopener">start_thread()</a><span class="where">arch/x86</span><p>Kullanıcı kaydedicilerini (registers) ayarlar; RIP\'i giriş noktasına koyar. Kullanıcı alanına dönüşte yeni program başlar.</p></div></li>' +
+      '</ol>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Program header\'ları oku', p: 'Her <code>LOAD</code> satırı belleğe eşlenecek bir segmenti ve izinlerini (Flags: R, R E, RW) gösterir. Entry point en üstte.',
+        shells: [{ label: 'terminal', copy: 'readelf -l /bin/echo', pre: '<span class="c">$</span> readelf -l ./exec\nElf file type is DYN (Position-Independent Executable file)\n<span class="y">Entry point 0x10e0</span>\nProgram Headers:\n  Type   VirtAddr            Flags\n  INTERP 0x...318            R      [/lib64/ld-linux-x86-64.so.2]\n  <span class="g">LOAD   0x...1000           R E</span>    (.text)\n  <span class="g">LOAD   0x...3d98           RW</span>     (.data/.bss)' }] },
+      { h3: '2. Adres uzayını canlı gör', p: 'Çalışan bir sürecin segmentlerini ve izinlerini /proc üzerinden oku. İzin sütunu (r-xp, rw-p) program header\'lardaki bayraklarla örtüşür.',
+        shells: [{ label: 'terminal', copy: 'cat /proc/self/maps', pre: '<span class="c">$</span> cat /proc/self/maps\n558d...a4000-558d...a9000 <span class="g">r-xp</span> ... /usr/bin/cat   <span class="c"># kod</span>\n558d...ac000-558d...ad000 <span class="g">rw-p</span> ... /usr/bin/cat   <span class="c"># veri</span>\n558d...-...             rw-p ...          <span class="c"># [heap]</span>\n7eff...-...             r-xp ... libc.so.6' }] },
+      { h3: '3. execve\'yi ve mmap\'leri izle', p: 'strace ile execve çağrısını ve çekirdeğin segmentleri yerleştirmek için yaptığı mmap\'leri gör. İkinci execve, programın kendini echo\'ya çevirdiği an.',
+        shells: [{ label: 'terminal', copy: 'strace -f -e trace=execve,mmap ./exec', pre: '<span class="c">$</span> strace -e execve,mmap ./exec\n<span class="hi">execve("./exec", ["./exec"], ...) = 0</span>\nmmap(..., PROT_READ|PROT_EXEC, ...) = 0x...628000\n<span class="hi">execve("/bin/echo", ["/bin/echo","selam"], ...) = 0</span>\nselam' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Başarılı bir <code>execv</code> çağrısından sonraki satır ne zaman çalışır?', opts: ['Her zaman', 'Asla (exec başarılıysa)', 'Çocuk süreçte'], answer: 'Asla (exec başarılıysa)',
+        ok: 'Doğru. exec başarılıysa eski program yok olur; sonraki satır ancak exec BAŞARISIZ olursa (ör. dosya yok) çalışır. Bu yüzden genelde perror koyulur.', no: 'İpucu: exec başarılıysa çağıran kod bellekte kalır mı?' },
+      { q: 'execve\'den sonra sürecin PID\'si ne olur?', opts: ['Değişir', 'Aynı kalır', 'Sıfırlanır'], answer: 'Aynı kalır',
+        ok: 'Doğru. exec süreci değil, sürecin çalıştırdığı programı değiştirir. PID, açık dosyalar ve ebeveyn aynı kalır; yalnızca bellek görüntüsü yenilenir.', no: 'İpucu: exec yeni süreç yaratmaz; var olan sürecin içeriğini değiştirir.' },
+      { q: 'ELF\'teki bir <code>LOAD</code> program header\'ı çekirdeğe ne söyler?', opts: ['Dosyanın adını', 'Hangi baytların nereye, hangi izinle eşleneceğini', 'Kaç thread açılacağını'], answer: 'Hangi baytların nereye, hangi izinle eşleneceğini',
+        ok: 'Doğru. Her LOAD segmenti bir ofset, sanal adres, boyut ve izin (R/W/E) taşır; çekirdek bunları mmap ile belleğe koyar.', no: 'İpucu: readelf -l çıktısındaki Flags sütununu (R E, RW) hatırla.' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Linux Modül 3', title: 'Sistem çağrıları', desc: 'execve dahil her syscall kullanıcı alanından çekirdeğe nasıl geçer? Register\'lar, syscall talimatı ve dağıtım tablosu.', href: 'linux-syscalls.html' },
+  sources: [
+    { href: 'https://man7.org/linux/man-pages/man2/execve.2.html', text: 'man 2 execve', note: 'davranış, argv/envp, auxv' },
+    { href: 'https://elixir.bootlin.com/linux/latest/source/fs/binfmt_elf.c', text: 'fs/binfmt_elf.c', note: 'load_elf_binary — Elixir' },
+    { href: 'https://man7.org/linux/man-pages/man5/elf.5.html', text: 'man 5 elf', note: 'ELF header ve program header yapısı' },
+    { href: 'https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-api.pdf', text: 'OSTEP Bölüm 5: Process API', note: 'ücretsiz' },
+    { href: 'https://0xax.gitbooks.io/linux-insides/content/', text: 'linux-insides', note: 'çekirdek kaynak gezintisi' }
+  ],
+  pageTitle: 'exec() ve ELF'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

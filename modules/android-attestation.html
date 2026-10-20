@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Bütünlük ve Attestation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: dikey güven zinciri + karma (hash) ağacı */
+.cot { display: grid; gap: 0; }
+.cot .stage { display: grid; grid-template-columns: 26px 1fr; gap: 10px; }
+.cot .rail { display: grid; justify-items: center; grid-template-rows: auto 1fr; }
+.cot .rail i { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--line); background: var(--surface); margin-top: 4px; display: grid; place-items: center; font-size: 10px; font-weight: 700; }
+.cot .rail u { width: 2px; background: var(--line); text-decoration: none; min-height: 10px; }
+.cot .stage:last-child .rail u { background: transparent; }
+.cot .stage.ok .rail i { border-color: var(--ok); color: var(--ok); }
+.cot .stage.active .rail i { border-color: var(--track); background: var(--track-soft); color: var(--track); }
+.cot .stage.bad .rail i { border-color: var(--bad); background: var(--bad-soft); color: var(--bad); }
+.cot .body { padding-bottom: 12px; min-width: 0; }
+.cot .body b { font-size: 13.5px; } .cot .body span { display: block; font-size: 12px; color: var(--muted); }
+.cot .stage.active .body b { color: var(--track); }
+.cot .stage.bad .body b { color: var(--bad); }
+
+.merkle { margin-top: 6px; display: grid; gap: 8px; justify-items: center; }
+.mrow { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+.mnode { border: 1.5px solid var(--line); border-radius: 7px; padding: 4px 9px; font-family: var(--f-mono); font-size: 11px; background: var(--surface); color: var(--muted); }
+.mnode.root { border-color: var(--track); color: var(--track); font-weight: 700; }
+.mnode.ok { border-color: var(--ok); color: var(--ok); }
+.mnode.bad { border-color: var(--bad); background: var(--bad-soft); color: var(--bad); font-weight: 700; }
+.mcap { font-size: 11px; color: var(--muted); font-family: var(--f-mono); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'android',
+  crumbs: 'android › bütünlük ve attestation › modül 18',
+  eyebrow: 'Modül 18 · Android · Bütünlük ve attestation',
+  titleHTML: 'Cihaz kendini kanıtlar: <code>Verified Boot</code> ve attestation',
+  lede: 'Bir telefon açılırken her katman bir sonrakinin imzasını doğrular; disk her blok okunurken bir karma ağacına (hash tree) karşı sınanır. Sonunda cihaz, donanım köküne dayanan bir kanıtla "ben gerçek, kilitli ve değiştirilmemiş bir cihazım" diyebilir.',
+  meta: ['~16 dk', 'ön koşul: açılış, TrustZone', 'bağlam: AOSP / AVB'],
+  intuition: {
+    paras: [
+      'Kod imzalama tek tek programları korur; ama bir saldırgan açılış sürecini (boot) ya da sistem bölümünü (partition) baştan değiştirirse? O zaman imzayı kontrol eden kodun kendisine de güvenilemez. Çözüm, güveni değiştirilemez bir donanım köküne (root of trust) zincirlemektir.',
+      '<strong>Doğrulanmış açılış (verified boot, AVB)</strong> bir güven zinciri (chain of trust) kurar: donanıma gömülü kök anahtar bootloader\'ı, o boot imajını, o da sistem bölümünü doğrular. Çalışma anında <strong>dm-verity</strong> sistem bölümünü blok blok bir karma ağacıyla (Merkle tree) sürekli denetler; değiştirilmiş tek bir blok bile anında yakalanır. <strong>Attestation</strong> ise bu bütünlüğü dışarıya, donanım imzalı bir kanıtla ispatlar.'
+    ],
+    ideas: [
+      { b: 'Zincir donanımdan başlar', span: 'Kök anahtar yongaya kalıcı yazılmıştır (fuse); değiştirilemez. Her aşama bir sonrakini doğrulamadan çalıştırmaz.' },
+      { b: 'Blok blok doğrulama', span: 'dm-verity, her disk bloğunu okunurken bir karma ağacına (hash tree) karşı sınar. Tek bir değişiklik kökü değiştirir.' },
+      { b: 'Kanıt dışarıya', span: 'Key attestation ve Play Integrity, cihazın kilitli ve bütün olduğunu donanım-destekli sertifikayla sunucuya ispatlar.' }
+    ]
+  },
+  lab: {
+    intro: 'Soldaki güven zincirini (chain of trust) ve sağdaki dm-verity karma ağacını (hash tree) birlikte izle. Son adımlarda bir saldırgan tek bir sistem bloğunu değiştirince ağacın kökünün nasıl bozulduğunu ve değişikliğin anında yakalandığını gör.',
+    codeLabel: 'verified boot (temsilî akış)', cmd: 'cihaz açılışı',
+    foot: 'Hash değerleri ve aşama adları temsilîdir; gerçek değerler cihaza ve AVB sürümüne göre değişir.',
+    code: [
+      { t: '<span class="cm">// donanım kök anahtarı (fuse) — değiştirilemez</span>' },
+      { t: 'verify(bootloader, <span class="f">root_key</span>);     <span class="cm">// 1. aşama</span>' },
+      { t: 'verify(vbmeta + boot.img, bl_key);  <span class="cm">// 2. aşama</span>' },
+      { t: '' },
+      { t: '<span class="cm">// çalışma anında: dm-verity</span>' },
+      { t: 'tree = <span class="f">build_hash_tree</span>(system);  <span class="cm">// Merkle tree</span>' },
+      { t: '<span class="k">on</span> read(block):' },
+      { t: '    h = <span class="f">sha256</span>(block);' },
+      { t: '    <span class="k">if</span> (h != tree[block]) <span class="f">fail</span>();  <span class="cm">// tamper!</span>' },
+      { t: '' },
+      { t: 'attest(device_state, <span class="f">hw_key</span>);     <span class="cm">// kanıt sun</span>' }
+    ],
+    steps: [
+      { pc: [1, 2], title: 'Donanım kök anahtarı', verdict: { cls: 'safe', txt: 'güven kökü: donanıma gömülü, değiştirilemez' },
+        text: 'Zincir, yongaya kalıcı olarak yazılmış (fuse edilmiş) bir kök anahtarla başlar. Boot ROM bu anahtarla bootloader\'ın imzasını doğrular. Kök anahtar değiştirilemediği için, saldırgan zincirin en altına dokunamaz.',
+        stages: [
+          { n: 'Donanım kök anahtarı (root of trust)', s: 'active', sub: 'yongaya fuse edilmiş' },
+          { n: 'Bootloader', s: 'pending', sub: 'imza bekliyor' },
+          { n: 'vbmeta + boot.img', s: 'pending', sub: '' },
+          { n: 'Sistem bölümü (dm-verity)', s: 'pending', sub: '' }
+        ], tree: null },
+      { pc: [2, 3], title: 'Zincir yukarı doğru doğrulanır', verdict: { cls: 'safe', txt: 'her aşama bir sonrakinin imzasını doğruladı' },
+        text: 'Bootloader doğrulandıktan sonra o da bir sonrakini doğrular: <code>vbmeta</code> (doğrulama meta verisi) ve <code>boot.img</code>. Her halka, bir sonraki halkanın imzası geçerli değilse ya açılışı durdurur ya da cihazı uyarı durumuna sokar. Buna güven zinciri (chain of trust) denir.',
+        stages: [
+          { n: 'Donanım kök anahtarı (root of trust)', s: 'ok', sub: 'doğrulandı' },
+          { n: 'Bootloader', s: 'ok', sub: 'imza geçerli' },
+          { n: 'vbmeta + boot.img', s: 'active', sub: 'imza doğrulanıyor' },
+          { n: 'Sistem bölümü (dm-verity)', s: 'pending', sub: '' }
+        ], tree: null },
+      { pc: [6], title: 'dm-verity karma ağacını kurar', verdict: { cls: 'safe', txt: 'kök karması (root hash) vbmeta ile imzalı' },
+        text: 'Sistem bölümü çok büyük olduğu için açılışta bütünü hash\'lenemez. Bunun yerine her blok ayrı hash\'lenir, bu hash\'ler bir ağaçta (Merkle tree) birleştirilir ve en tepede tek bir <strong>kök karması (root hash)</strong> kalır. Kök karması vbmeta içinde imzalıdır: ağacın tamamı tek bir imzalı değere bağlanmış olur.',
+        stages: [
+          { n: 'Donanım kök anahtarı (root of trust)', s: 'ok', sub: 'doğrulandı' },
+          { n: 'Bootloader', s: 'ok', sub: 'doğrulandı' },
+          { n: 'vbmeta + boot.img', s: 'ok', sub: 'kök karmasını taşır' },
+          { n: 'Sistem bölümü (dm-verity)', s: 'active', sub: 'karma ağacı kuruldu' }
+        ], tree: { root: 'ok', mids: ['ok', 'ok'], leaves: ['ok', 'ok', 'ok', 'ok'], cap: 'kök = sha256(dal₀ + dal₁) · imzalı' } },
+      { pc: [7, 8], title: 'Blok okunurken doğrulanır', verdict: { cls: 'safe', txt: 'blok hash\'i ağaçla eşleşti → okuma geçti' },
+        text: 'dm-verity açılıştan sonra da sürekli çalışır: sistem bölümünden her blok okunduğunda o anda hash\'lenir ve ağaçtaki beklenen değerle karşılaştırılır. Eşleşiyorsa okuma sürer. Bu, bir kerelik değil, her erişimde yapılan bir denetimdir.',
+        stages: [
+          { n: 'Donanım kök anahtarı (root of trust)', s: 'ok', sub: '' },
+          { n: 'Bootloader', s: 'ok', sub: '' },
+          { n: 'vbmeta + boot.img', s: 'ok', sub: '' },
+          { n: 'Sistem bölümü (dm-verity)', s: 'ok', sub: 'bloklar doğrulanıyor' }
+        ], tree: { root: 'ok', mids: ['ok', 'ok'], leaves: ['ok', 'ok', 'read', 'ok'], cap: 'okunan blok (blok₂) hash\'i eşleşti' } },
+      { pc: [8, 9], title: 'Saldırgan bir bloğu değiştirir', verdict: { cls: 'breach', txt: 'blok hash\'i ≠ ağaç → tamper yakalandı' },
+        text: 'Saldırgan sistem bölümündeki bir bloğu (örneğin bir kütüphaneye arka kapı eklemek için) değiştirir. Blok okunduğunda hash\'i artık ağaçtaki değerle uyuşmaz; uyuşmazlık yukarı doğru kökü de değiştirir. dm-verity bunu anında yakalar: okuma bir G/Ç hatasıyla (I/O error) reddedilir, cihaz güvensiz duruma geçer. Değişiklik gizlenemez çünkü kök karması imzalıdır.',
+        stages: [
+          { n: 'Donanım kök anahtarı (root of trust)', s: 'ok', sub: '' },
+          { n: 'Bootloader', s: 'ok', sub: '' },
+          { n: 'vbmeta + boot.img', s: 'ok', sub: 'beklenen kök imzalı' },
+          { n: 'Sistem bölümü (dm-verity)', s: 'bad', sub: 'değiştirilmiş blok yakalandı' }
+        ], tree: { root: 'bad', mids: ['ok', 'bad'], leaves: ['ok', 'ok', 'bad', 'ok'], cap: 'blok₂ değişti → dal₁ → kök bozuldu' } },
+      { pc: [11], title: 'Attestation: kanıtı dışarıya sun', verdict: { cls: 'safe', txt: 'donanım imzalı kanıt: kilitli + bütün' },
+        text: 'Bir banka ya da DRM uygulaması, cihazın gerçekten kilitli ve değiştirilmemiş olduğunu bilmek ister. Cihaz, güvenli dünyada (TrustZone) üretilen ve donanım anahtarıyla imzalanan bir kanıt sunar: önyükleyici kilit durumu (bootloader locked), doğrulanmış açılış durumu (verified boot state), OS sürümü. <strong>Key attestation</strong> bir anahtarın donanımda yaşadığını, <strong>Play Integrity</strong> ise cihaz+uygulama bütünlüğünü ispatlar. Taklit edilemez, çünkü imza donanım köküne bağlıdır.',
+        stages: [
+          { n: 'Donanım kök anahtarı (root of trust)', s: 'ok', sub: 'kanıtı imzalar' },
+          { n: 'Bootloader', s: 'ok', sub: 'LOCKED' },
+          { n: 'vbmeta + boot.img', s: 'ok', sub: 'GREEN state' },
+          { n: 'Sistem bölümü (dm-verity)', s: 'ok', sub: 'bütün' }
+        ], tree: null, attest: true }
+    ],
+    render: function (s, stateEl, u) {
+      var stages = s.stages.map(function (st) {
+        var mark = st.s === 'ok' ? '✓' : (st.s === 'bad' ? '✕' : (st.s === 'active' ? '•' : ''));
+        return '<div class="stage ' + st.s + '"><div class="rail"><i>' + mark + '</i><u></u></div>' +
+          '<div class="body"><b>' + u.esc(st.n) + '</b>' + (st.sub ? '<span>' + u.esc(st.sub) + '</span>' : '') + '</div></div>';
+      }).join('');
+      var right = '';
+      if (s.tree) {
+        var t = s.tree;
+        function leaf(v, i) {
+          var cls = v === 'bad' ? 'bad' : (v === 'read' ? 'root' : 'ok');
+          var lbl = 'blok' + ['₀', '₁', '₂', '₃'][i];
+          return '<div class="mnode ' + cls + '">' + lbl + '</div>';
+        }
+        right =
+          '<p class="lab-label" style="margin-top:14px">dm-verity karma ağacı (hash tree)</p>' +
+          '<div class="merkle">' +
+            '<div class="mrow"><div class="mnode ' + (t.root === 'bad' ? 'bad' : 'root') + '">kök karması (root)</div></div>' +
+            '<div class="mrow">' + t.mids.map(function (m, i) { return '<div class="mnode ' + (m === 'bad' ? 'bad' : 'ok') + '">dal' + ['₀', '₁'][i] + '</div>'; }).join('') + '</div>' +
+            '<div class="mrow">' + t.leaves.map(leaf).join('') + '</div>' +
+            '<div class="mcap">' + u.esc(t.cap) + '</div>' +
+          '</div>';
+      }
+      if (s.attest) {
+        right =
+          '<p class="lab-label" style="margin-top:14px">Attestation kanıtı → sunucu</p>' +
+          '<div class="boxgrid"><div class="box good">' +
+          '<b>Donanım imzalı kanıt</b>' +
+          '<span class="mono">bootloader: LOCKED</span>' +
+          '<span class="mono">verifiedBootState: GREEN</span>' +
+          '<span class="mono">securityLevel: TRUSTED_ENVIRONMENT</span>' +
+          '<span>Sunucu bu sertifika zincirini Google/üretici köküne kadar doğrular; taklit edilemez.</span>' +
+          '</div></div>';
+      }
+      stateEl.innerHTML =
+        '<p class="lab-label">Güven zinciri (chain of trust)</p><div class="cot">' + stages + '</div>' + right +
+        '<div class="read-out"><div class="verdict ' + s.verdict.cls + '"><span class="dot"></span><span>' + u.esc(s.verdict.txt) + '</span></div></div>';
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: güven zinciri nasıl kurulur ve korunur?",
+    html: `<p class="lead">Bir cihazın "bütün ve güvenilir" olduğunu iddia etmesi için, açılışın ilk anından uygulama verisine kadar her katmanın bir öncekine dayanması gerekir. Bu bölüm o zinciri — Verified Boot'tan dm-verity'nin hash tree'sine ve key attestation'a — ayrıntısıyla anlatır.</p>
+
+<h3>1. Verified Boot ve chain of trust</h3>
+<p>Android Verified Boot (AVB), açılışı bir güven zincirine (chain of trust) dönüştürür: donanıma gömülü, değiştirilemez bir root of trust'tan başlar ve her aşama bir sonrakini çalıştırmadan önce imzasını doğrular. Bir aşama bozulmuşsa zincir orada kopar. İmza bilgileri <code>vbmeta</code> bölümünde tutulur; bu bölümün kendisi de üst aşama tarafından doğrulanır.</p>
+<div class="manpage src-aosp"><div class="ref">verified boot · chain of trust</div><p class="orig">It establishes a full chain of trust, starting from a hardware-protected root of trust to the bootloader.</p><p>Zincirin kökü yazılım değil donanımdır — bu yüzden saldırgan en alttan başlayamaz. Root of trust cihaz üretiminde yazılır ve sonradan değiştirilemez.</p></div>
+<div class="manpage src-aosp"><div class="ref">verified boot · her aşama</div><p class="orig">During device boot up, each stage verifies the integrity and authenticity of the next stage before handing over execution.</p><p>Her aşama (bootloader → boot → system) kontrolü devretmeden önce bir sonrakinin hem bütünlüğünü (değişmemiş mi) hem de kimliğini (doğru anahtarla imzalı mı) doğrular.</p></div>
+
+<h3>2. Rollback protection</h3>
+<p>Bir saldırgan, yamalı yeni sürüm yerine açığı hâlâ açık olan eski ama geçerli imzalı bir sürümü yüklemeye çalışabilir (downgrade). AVB bunu rollback index ile engeller: her sürümün bir rollback numarası vardır ve cihaz, gördüğü en yüksek numarayı güvenli depolamada tutar; daha düşük numaralı bir image reddedilir.</p>
+<div class="manpage src-aosp"><div class="ref">verified boot · rollback</div><p class="orig">Rollback protection helps to prevent a possible exploit from becoming persistent.</p><p>Amaç exploit'in kalıcılaşmasını önlemek: saldırgan açığı olan eski sürüme geri dönemezse, yama uygulandıktan sonra o yol kapanır.</p></div>
+
+<h3>3. dm-verity ve hash tree</h3>
+<p>Verified Boot imzayı bir kez açılışta doğrular; ama <code>/system</code> gibi bölümler gigabaytlarca sürer ve çalışma boyunca okunur. dm-verity bunu blok bazlı ve tembel (lazy) doğrular: her 4K blok için bir SHA-256 hash tutulur, bu hash'ler bir ağaçta (hash tree) saklanır ve yaprak hash'lerden tek bir kök hash'e (root hash) çıkılır. Yalnızca root hash'in güvenilir olması, tüm bölümü doğrulamak için yeterlidir.</p>
+<div class="manpage src-aosp"><div class="ref">dm-verity · hash tree</div><p class="orig">Because the hash values are stored in a tree of pages, only the top-level "root" hash must be trusted to verify the rest of the tree.</p><p>Bu yapı, Merkle tree olarak da bilinir: bir blok değişirse onun yaprak hash'i, o da üst düğümler ve sonunda root hash değişir — tek bir baytlık değişiklik bile yakalanır.</p></div>
+<div class="manpage src-aosp"><div class="ref">dm-verity · doğrulama</div><p class="orig">Instead, dm-verity verifies blocks individually and only when each one is accessed.</p><p>Tüm bölüm açılışta taranmaz; her blok yalnızca okunduğu anda hash'lenip ağaçta yukarı doğru doğrulanır. Doğrulama başarısızsa çekirdek o blok için bir I/O hatası üretir — sistem bölümü bozulmuş gibi davranır.</p></div>
+
+<h3>4. Forward error correction ve fs-verity</h3>
+<p>Disk yıpranması gibi kasıtsız bozulmalar da dm-verity'yi tetikleyebilir. Forward error correction (FEC), bu tür küçük hataları onarıp cihazın gereksiz yere açılmaz hale gelmesini önler.</p>
+<p>fs-verity ise aynı hash tree fikrini dosya bazında uygular: tek tek dosyaların (örneğin kurulu APK'ların) salt okunur bütünlüğünü garanti eder — dosya açıldıktan sonra değiştirilemez.</p>
+<div class="manpage src-aosp"><div class="ref">dm-verity · FEC</div><p class="orig">Android 7.0 and higher improves dm-verity robustness with forward error correction (FEC).</p><p>FEC sayesinde cihaz, birkaç bozuk bloğu kurtarabilir; böylece gerçek bir saldırı ile normal disk aşınması ayrışır.</p></div>
+
+<h3>5. Verified boot state: kullanıcıya iletilen bütünlük</h3>
+<p>Cihaz, açılış bütünlüğünü bir renk durumuyla (verified boot state) kullanıcıya ve uygulamalara bildirir. Bu durum, key attestation sertifikasına da gömülür.</p>
+<div class="deflist">
+<div><dt>GREEN</dt><dd>Bootloader kilitli ve tüm zincir üretici anahtarıyla doğrulandı. Tam güven.</dd></div>
+<div><dt>YELLOW</dt><dd>Bootloader kilitli ama kullanıcının kendi anahtarı (custom root of trust) kullanılıyor; anahtar parmak izi gösterilir.</dd></div>
+<div><dt>ORANGE</dt><dd>Bootloader kilidi açık (unlocked); doğrulama yapılmıyor. Kullanıcı bilerek bu duruma geçmiştir.</dd></div>
+<div><dt>RED</dt><dd>Doğrulama başarısız: image bozuk veya kurcalanmış. Cihaz normal açılmaz.</dd></div>
+</div>
+
+<h3>6. Key attestation ve Play Integrity</h3>
+<p>Yukarıdaki her şey cihazın kendi içindedir; peki bir sunucu, karşısındaki cihazın gerçekten kilitli ve bütün olduğuna nasıl güvenir? Key attestation ile: donanımdaki anahtar, cihazın durumunu (kilit durumu, verified boot state, OS sürümü) içeren bir sertifika zinciri imzalar. Bu zincirin kökü Google'ın attestation root'una kadar gider, dolayısıyla taklit edilemez (bir uygulama bu bilgiyi yalan söyleyemez). Play Integrity API, uygulama geliştiricilerine bu donanım-destekli kararı sunan üst düzey arayüzdür.</p>`
+  },
+  underHood: {
+    heading: 'Katmanlar: hangisi neyi doğrular',
+    html: '<p class="prose">Bütünlük tek bir mekanizma değil, üst üste binen katmanlardır; her biri farklı bir kapsamı korur:</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Katman</th><th>Neyi doğrular</th><th>Mekanizma</th></tr></thead><tbody>' +
+      '<tr><td><b>Verified Boot (AVB)</b></td><td>Açılış zincirinin tamamı</td><td>Her aşama bir sonrakinin imzasını kontrol eder; kök donanımda</td></tr>' +
+      '<tr><td><b>dm-verity</b></td><td>Salt okunur bölümler (system, vendor)</td><td>Blok blok karma ağacı (Merkle tree); okuma anında denetim</td></tr>' +
+      '<tr><td><b>fs-verity</b></td><td>Tek tek dosyalar (örn. APK)</td><td>Dosya bazlı karma ağacı; büyük dosyalarda tembel (lazy) doğrulama</td></tr>' +
+      '<tr><td><b>Key attestation</b></td><td>Bir anahtarın donanımda yaşadığı</td><td>TEE/StrongBox imzalı sertifika zinciri</td></tr>' +
+      '<tr><td><b>Play Integrity</b></td><td>Cihaz + uygulama + hesap bütünlüğü</td><td>Donanım sinyalleri + sunucu tarafı değerlendirme</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px">Bu, açılış modülündeki (Modül 3) güven zincirinin güvenlik tarafıdır ve kökünü TrustZone/donanım güvenlik modülünden (Modül 16) alır: attestation kanıtını imzalayan anahtar güvenli dünyada durur. Üçü birlikte, "cihaz açıldığından beri hiç değiştirilmedi" iddiasını donanıma kadar izlenebilir kılar.</p>' +
+      '<p class="prose">Saldırgan açısından bu, kalıcılığı (persistence) çok zorlaştırır: sistem bölümüne arka kapı eklemek dm-verity\'yi, açılışı değiştirmek AVB\'yi bozar; ikisi de attestation\'da görünür. Bu yüzden modern saldırılar kalıcı değişiklik yerine bellekte kalan (in-memory) tekniklere ya da bootloader kilidini açtırmaya yönelir — ki bu da attestation\'da "unlocked" olarak raporlanır.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Doğrulanmış açılış durumunu gör', p: 'verifiedbootstate özelliği cihazın bütünlük durumunu söyler: green (kilitli + bütün), yellow (kendi anahtarınla imzalı), orange (kilidi açık / doğrulama kapalı).',
+        shells: [{ label: 'adb (temsilî)', copy: 'adb shell getprop ro.boot.verifiedbootstate', pre: '<span class="c">$</span> adb shell getprop ro.boot.verifiedbootstate\n<span class="c"># green  → kilitli ve doğrulanmış</span>\n<span class="c"># orange → bootloader kilidi açık (bütünlük garantisi yok)</span>\n<span class="c">$</span> adb shell getprop ro.boot.flash.locked\n1   <span class="c"># 1 = kilitli</span>' }] },
+      { h3: '2. dm-verity eşlemesini incele', p: 'Sistem bölümü dm-verity hedefi olarak eşlenir. Haritası, hangi bölümün bir karma ağacıyla korunduğunu gösterir (içeriği değil, varlığını).',
+        shells: [{ label: 'adb (temsilî)', copy: 'adb shell dmctl list', pre: '<span class="c">$</span> adb shell ls -l /dev/block/mapper\n<span class="c"># system_a, vendor_a ... → verity ile sarılı</span>\n<span class="c">$</span> adb shell cat /proc/cmdline | tr " " "\\n" | grep verity\n<span class="c"># androidboot.veritymode=enforcing</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'dm-verity, sistem bölümünü neden tek bir büyük hash yerine karma ağacıyla (Merkle tree) doğrular?', opts: ['Daha güvenli olduğu için', 'Her bloğu ayrı ve okuma anında doğrulayabilmek için', 'Zorunlu olduğu için'], answer: 'Her bloğu ayrı ve okuma anında doğrulayabilmek için',
+        ok: 'Doğru. Bölüm çok büyük; ağaç sayesinde yalnızca okunan blok hash\'lenip ağaçtaki yoluyla doğrulanır, bütünü baştan hash\'lemeye gerek kalmaz.', no: 'İpucu: bölüm gigabaytlarca. Her okumada bütününü hash\'lemek pratik mi?' },
+      { q: 'Güven zinciri (chain of trust) nereden başlar?', opts: ['Android çekirdeğinden', 'Donanıma gömülü, değiştirilemez kök anahtardan', 'Play Store\'dan'], answer: 'Donanıma gömülü, değiştirilemez kök anahtardan',
+        ok: 'Doğru. Kök anahtar yongaya fuse edilmiştir; saldırgan onu değiştiremediği için zincirin tamamı ona güvenle bağlanır.', no: 'İpucu: zincirin güvenilir olması için başlangıcının değiştirilemez olması gerekir. Bu nerede durur?' },
+      { q: 'Attestation kanıtını taklit etmek neden zordur?', opts: ['Şifreli olduğu için', 'Donanım köküne bağlı bir anahtarla imzalandığı için', 'Gizli tutulduğu için'], answer: 'Donanım köküne bağlı bir anahtarla imzalandığı için',
+        ok: 'Doğru. Kanıt, güvenli dünyadaki donanım anahtarıyla imzalanır ve sertifika zinciri üretici/Google köküne kadar doğrulanır; yazılımla üretilemez.', no: 'İpucu: imzayı atan anahtar nerede duruyordu (TrustZone modülünü hatırla)?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Android Modül 19', title: 'Rooting ve tehdit modeli', desc: 'OEM kilidi açma, boot-to-root yöntemleri ve Magisk; bütünlük garantilerini kırmak ne anlama gelir?' },
+  sources: [
+    { href: 'https://newandroidbook.com/TOC.html', text: 'Levin — Android Internals', note: 'Cilt III, Bölüm 5' },
+    { href: 'https://source.android.com/docs/security/features/verifiedboot', text: 'AOSP — Verified Boot' },
+    { href: 'https://source.android.com/docs/security/features/verifiedboot/dm-verity', text: 'AOSP — dm-verity' },
+    { href: 'https://source.android.com/docs/security/features/keystore/attestation', text: 'AOSP — Key Attestation' },
+    { href: 'https://developer.android.com/google/play/integrity', text: 'Play Integrity API' }
+  ],
+  pageTitle: 'Bütünlük ve Attestation'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

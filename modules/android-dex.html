@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Dalvik ve DEX</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: DEX dosya haritası + yığın/yazmaç karşılaştırması */
+.dx-map { display: grid; gap: 6px; }
+.dx-row { border: 1.5px solid var(--line); border-radius: 8px; background: var(--surface); padding: 8px 10px; display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; align-items: baseline; min-width: 0; opacity: .5; transition: opacity .2s, border-color .2s, background .2s; }
+.dx-row.on { opacity: 1; border-color: var(--track); background: var(--track-soft); }
+.dx-row .lbl { font-family: var(--f-mono); font-size: 12.5px; font-weight: 700; }
+.dx-row .off { font-family: var(--f-mono); font-size: 10.5px; color: var(--muted); }
+.dx-row .sub { font-size: 11.5px; color: var(--muted); grid-column: 1 / -1; }
+.dx-cmp { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+@media (max-width: 480px) { .dx-cmp { grid-template-columns: 1fr; } }
+.dx-col { border: 1px solid var(--line); border-radius: 8px; padding: 10px; min-width: 0; background: var(--surface); }
+.dx-col.jvm { border-color: var(--warn); } .dx-col.dalvik { border-color: var(--track); }
+.dx-col h4 { margin: 0 0 6px; font-family: var(--f-display); font-size: 14px; }
+.dx-col.jvm h4 { color: var(--warn); } .dx-col.dalvik h4 { color: var(--track); }
+.dx-col pre { margin: 0; font-family: var(--f-mono); font-size: 11.5px; white-space: pre-wrap; color: var(--code-fg); }
+.dx-col .cap { font-size: 11px; color: var(--muted); margin-top: 6px; }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MAP = [
+  { key: 'header',  lbl: 'header_item',   off: '0x00', sub: 'magic "dex\\n039" · checksum · file_size · bölüm tablosuna ofsetler', },
+  { key: 'strings', lbl: 'string_ids',    off: '0x70', sub: 'tüm dizgiler (string) havuzu: metot adları, tür adları, sabitler', },
+  { key: 'types',   lbl: 'type_ids',      off: '…',    sub: 'tür (type) tablosu → string_ids\'e indeks (Ljava/lang/String; vb.)', },
+  { key: 'protos',  lbl: 'proto_ids',     off: '…',    sub: 'metot imzaları (prototype): dönüş türü + parametreler', },
+  { key: 'fields',  lbl: 'field_ids',     off: '…',    sub: 'alan (field) tablosu: sınıf + tür + ad', },
+  { key: 'methods', lbl: 'method_ids',    off: '…',    sub: 'metot tablosu: sınıf + proto + ad → çağrılar buraya indeksler', },
+  { key: 'classes', lbl: 'class_defs',    off: '…',    sub: 'sınıf tanımları: üst sınıf, arayüzler, alanlar, metotlar, kod ofseti', },
+  { key: 'data',    lbl: 'data',          off: '…',    sub: 'asıl gövde: bytecode (code_item), dizgi baytları, dizi verileri', }
+];
+
+var MODULE = {
+  track: 'android',
+  crumbs: 'android › dalvik ve dex › modül 12',
+  eyebrow: 'Modül 12 · Android · Çalıştırılabilir format',
+  titleHTML: '<code>DEX</code>: tek dosyada tüm sınıflar',
+  lede: 'Android, Java bytecode\'unu olduğu gibi çalıştırmaz. Derleyici tüm sınıfları tek bir DEX (Dalvik Executable) dosyasında toplar ve onu yazmaç-tabanlı (register-based) bir sanal makine için yeniden yazar. Bu modülde bir .dex dosyasının içini gezecek ve Java\'nın yığın-tabanlı (stack-based) modeliyle karşılaştıracağız.',
+  meta: ['~16 dk', 'ön koşul: Java/bytecode fikri', 'bağlam: AOSP, dalvik'],
+  intuition: {
+    paras: [
+      'Standart Java\'da her <code>.class</code> dosyası bir sınıf taşır ve JVM yığın-tabanlıdır (stack-based): komutlar değerleri bir operand yığınına iter ve çeker. Android ise iki şeyi değiştirir. Birincisi: tüm sınıfları tek bir <strong>DEX</strong> dosyasında birleştirir, böylece ortak dizgiler (string) ve türler (type) bir kez saklanır — mobilde yer tasarrufu.',
+      'İkincisi: DEX bytecode\'u <strong>yazmaç-tabanlıdır</strong> (register-based). Değerler yığın yerine adlandırılmış sanal yazmaçlarda (v0, v1, …) durur. Bu, daha az komut ve yorumlayıcıda daha az bellek trafiği demektir; düşük güçlü cihazlar için tasarlanmış bir seçimdir.',
+      'DEX\'i çalıştıran çalışma zamanı (runtime) başta Dalvik VM\'di; Android 5\'ten itibaren yerini ART (Android Runtime) aldı. Ama format hâlâ DEX; ART da onu girdi olarak alır. Bir sonraki modülün konusu ART\'ın bu DEX\'i nasıl derleyip çalıştırdığıdır.'
+    ],
+    ideas: [
+      { b: 'Tek dosya, paylaşılan havuzlar', span: 'Tüm sınıflar classes.dex\'te. Dizgiler, türler, metotlar tek havuzda; her sınıf onlara indeksle başvurur.' },
+      { b: 'Yazmaç-tabanlı (register-based)', span: 'Değerler v0, v1… yazmaçlarında. Yığın-tabanlı JVM\'e göre daha az komut.' },
+      { b: 'İndeks tabanlı', span: 'Her şey bir sonrakine indeks verir: method_ids → proto + type + string. Çözümleme (resolution) bu zinciri izler.' }
+    ]
+  },
+  lab: {
+    intro: 'Soldaki <code>dexdump</code> çıktısı (temsilî) bir classes.dex\'in bölümlerini gezer; sağda dosya haritası canlanır. Son adımda yığın-tabanlı (JVM) ve yazmaç-tabanlı (Dalvik) bytecode\'u yan yana koyuyoruz.',
+    codeLabel: 'üretim hattı + dexdump (temsilî)', cmd: 'd8 → classes.dex',
+    foot: 'Android araçları (d8, dexdump) bu konteynerde çalışmaz; çıktı temsilîdir. Bytecode örnekleri format olarak gerçeğe uygundur.',
+    code: [
+      { t: '<span class="cm">// 1) kaynak → JVM bytecode</span>' },
+      { t: 'javac Hello.java        <span class="cm">→ Hello.class</span>' },
+      { t: '<span class="cm">// 2) .class → DEX (yazmaç-tabanlı)</span>' },
+      { t: 'd8 Hello.class          <span class="cm">→ classes.dex</span>' },
+      { t: '' },
+      { t: '<span class="cm">// dexdump classes.dex (temsilî)</span>' },
+      { t: 'magic:     <span class="s">"dex\\n039"</span>' },
+      { t: 'string_ids: size <span class="n">142</span>' },
+      { t: 'type_ids:   size <span class="n">31</span>' },
+      { t: 'method_ids: size <span class="n">58</span>' },
+      { t: 'class_defs: size <span class="n">3</span>' },
+      { t: '<span class="cm">// method: int add(int, int)</span>' },
+      { t: '  <span class="t">add-int</span> v0, v1, v2   <span class="cm">// v0 = v1 + v2</span>' },
+      { t: '  <span class="t">return</span> v0' }
+    ],
+    steps: [
+      { pc: [1, 3], title: 'Üretim hattı', view: 'map', hi: [], term: ['javac Hello.java → Hello.class', 'd8 Hello.class → classes.dex'],
+        text: 'Önce <code>javac</code> kaynağı normal Java bytecode\'una (<code>.class</code>) derler. Sonra <code>d8</code> (eski adıyla dx) bu .class dosyalarını tek bir <code>classes.dex</code>\'te birleştirir ve yığın-tabanlı komutları yazmaç-tabanlı DEX komutlarına çevirir. Bir uygulamada birden çok .class → tek .dex.' },
+      { pc: 6, title: 'Başlık (header)', view: 'map', hi: ['header'], term: ['magic "dex\\n039" · checksum doğru'],
+        text: 'Dosya bir <code>header_item</code> ile başlar: sihirli sayı (magic "dex\\n039"), bütünlük için checksum ve imza, dosya boyutu ve her bölümün (string_ids, type_ids, …) nerede başladığını veren ofsetler. Çalışma zamanı önce bunu okur.' },
+      { pc: [7, 8, 9], title: 'Paylaşılan havuzlar', view: 'map', hi: ['strings', 'types', 'protos', 'fields', 'methods'], term: ['string_ids=142  type_ids=31  method_ids=58'],
+        text: 'DEX\'in kalbi indeks havuzlarıdır. <code>string_ids</code> tüm metinleri (ad, imza, sabit) bir kez tutar. <code>type_ids</code>, <code>proto_ids</code>, <code>field_ids</code>, <code>method_ids</code> ise bu dizgilere indeks vererek türleri, imzaları, alanları ve metotları tanımlar. Birleştirme (tek dosya) sayesinde ortak metinler tekrarlanmaz.' },
+      { pc: 10, title: 'Sınıf tanımları', view: 'map', hi: ['classes', 'data'], term: ['class_defs=3 · kod data bölümünde'],
+        text: '<code>class_defs</code> her sınıfı tanımlar: üst sınıfı, arayüzleri, alanları ve metotları — hepsi yukarıdaki havuzlara indeksle. Metodun asıl gövdesi (bytecode) <code>data</code> bölümündeki bir <code>code_item</code>\'dadır: kullandığı yazmaç sayısı, parametreler ve komut dizisi.' },
+      { pc: [12, 13], title: 'Yığın vs yazmaç', view: 'compare', hi: [], term: [],
+        text: 'Aynı <code>add(a, b)</code> metodu iki modelde. JVM (yığın-tabanlı): değerleri yığına iter, <code>iadd</code> ikisini çekip toplamı geri iter — 4 komut. Dalvik (yazmaç-tabanlı): <code>add-int v0, v1, v2</code> tek komutta toplar. Daha az komut, daha az yığın trafiği; mobil için tasarlanmış fark budur.' }
+    ],
+    render: function (s, stateEl, u) {
+      if (s.view === 'compare') {
+        stateEl.innerHTML =
+          '<p class="lab-label">Aynı metot: int add(int a, int b)</p>' +
+          '<div class="dx-cmp">' +
+            '<div class="dx-col jvm"><h4>JVM · yığın-tabanlı</h4>' +
+              '<pre>iload_0   ; a yığına\niload_1   ; b yığına\niadd      ; ikisini topla\nireturn   ; sonucu döndür</pre>' +
+              '<div class="cap">4 komut · operand yığını (operand stack)</div></div>' +
+            '<div class="dx-col dalvik"><h4>Dalvik · yazmaç-tabanlı</h4>' +
+              '<pre>add-int v0, v1, v2\nreturn v0</pre>' +
+              '<div class="cap">2 komut · v0..v2 yazmaçları (registers)</div></div>' +
+          '</div>' +
+          '<p class="note" style="margin-top:12px">Yazmaç-tabanlı model daha az ama daha geniş komut kullanır; yorumlayıcı (interpreter) döngüsünde daha az iş, mobilde daha iyi.</p>';
+        return;
+      }
+      var hi = s.hi || [];
+      var rows = MAP.map(function (m) {
+        var on = hi.indexOf(m.key) >= 0;
+        return '<div class="dx-row' + (on ? ' on' : '') + '">' +
+          '<span class="lbl">' + u.esc(m.lbl) + '</span><span class="off">' + u.esc(m.off) + '</span>' +
+          '<span class="sub">' + u.esc(m.sub) + '</span></div>';
+      }).join('');
+      stateEl.innerHTML = '<p class="lab-label">classes.dex haritası</p><div class="dx-map">' + rows + '</div>';
+    }
+  },
+  underHood: {
+    html: '<p class="prose">DEX formatı AOSP\'ta belgelidir ve ART\'ın DEX dosyasını okuyan parçaları <code>art/libdexfile</code>\'dadır. Çağrılar, metot/alan/tür hep indeksle çözülür (resolution); ART bu çözümlemeleri önbellekler.</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>DEX bölümü</th><th>İçeriği</th></tr></thead><tbody>' +
+      '<tr><td><code>header_item</code></td><td>magic, checksum, boyut, bölüm ofsetleri</td></tr>' +
+      '<tr><td><code>string_ids</code></td><td>Tüm dizgilere (string) ofsetler — tek havuz</td></tr>' +
+      '<tr><td><code>type_ids</code></td><td>Türler → string_ids indeksi</td></tr>' +
+      '<tr><td><code>proto_ids</code></td><td>Metot imzaları (dönüş + parametreler)</td></tr>' +
+      '<tr><td><code>field_ids</code> / <code>method_ids</code></td><td>Alan ve metot tabloları (sınıf + tür/proto + ad)</td></tr>' +
+      '<tr><td><code>class_defs</code></td><td>Sınıf tanımları; kod ofsetleri data\'ya işaret eder</td></tr>' +
+      '<tr><td><code>data</code></td><td>Asıl gövde: bytecode (code_item), dizgi baytları</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px">Bir uygulama 65.536\'dan fazla metoda ulaşınca tek DEX\'in indeks sınırı aşılır; çözüm <strong>multidex</strong> (classes.dex, classes2.dex, …) veya ART\'ın birleştirmesidir. Bu, "64K metot sınırı" olarak bilinen klasik Android sorunudur.</p>'
+  },
+  deepDive: {
+    heading: "Derinlemesine: DEX neden kompakt ve register-based?",
+    html: `<p class="lead">DEX, Java'nın .class dosyalarının yerini alan, mobil için tasarlanmış kompakt bir bytecode formatıdır. Önce Dalvik için doğdu, bugün ART tarafından çalıştırılır. Tasarımın iki büyük fikri var: tüm sınıfların paylaştığı tek bir tablo havuzu (küçük dosya) ve stack-based değil register-based bir virtual machine (hızlı yorumlama).</p>
+
+<h3>1. DEX dosya yapısı ve paylaşılan tablolar</h3>
+<p>Bir .dex dosyası tek bir header ile başlar, ardından türe göre gruplanmış kimlik tabloları (id lists) gelir: <code>string_ids</code>, <code>type_ids</code>, <code>proto_ids</code>, <code>field_ids</code>, <code>method_ids</code>, <code>class_defs</code> ve asıl gövdenin durduğu <code>data</code>. JVM'de her .class dosyası kendi constant pool'unu taşır; DEX ise tüm sınıfların string, type ve method referanslarını TEK bir havuzda toplar. Aynı string yüzlerce sınıfta geçse bile yalnızca bir kez saklanır — bu yüzden DEX, aynı kodun .jar halinden belirgin biçimde küçüktür.</p>
+<div class="deflist">
+<div><dt>header</dt><dd>magic, checksum (adler32), her tablonun boyutu ve offset'i; dosya bütünlüğü ve navigasyon için.</dd></div>
+<div><dt>string_ids</dt><dd>Tüm string'lerin paylaşılan havuzu — sınıf adları, metot adları, sabitler. Tekilleştirilmiş (deduplicated).</dd></div>
+<div><dt>type_ids / method_ids</dt><dd>Tip ve method referansları; dosyada tanımlı olsun olmasın, atıf yapılan her şey burada indekslenir.</dd></div>
+<div><dt>class_defs</dt><dd>Sınıf tanımları; kod gövdeleri (code_item) data bölümündeki offset'lere işaret eder.</dd></div>
+<div><dt>map_list</dt><dd>Dosyanın tüm içeriğinin sıralı haritası; her item offset'e göre sıralı ve çakışmaz.</dd></div>
+</div>
+<div class="manpage src-aosp"><div class="ref">dex-format · container</div><p class="orig">This allows dex files to share data, such as strings, between them.</p><p>DEX'in tasarım amacı yerden tasarruf: ortak veriler (özellikle string'ler) tek bir yerde paylaşılır, her sınıf kendi kopyasını taşımaz. Yeni container format (version 41) birden çok mantıksal DEX'i tek fiziksel dosyada birleştirip bu paylaşımı dosyalar arasına da taşır.</p></div>
+
+<h3>2. Register-based virtual machine vs stack-based JVM</h3>
+<p>JVM stack-based'tir: işlemler bir operand stack üzerinde push/pop ile yürür (<code>iload</code>, <code>iadd</code>, <code>istore</code>). Dalvik/ART ise register-based'tir: her method'a oluşturulurken sabit sayıda sanal register (v0, v1, …) ayrılır ve instruction'lar doğrudan register'lar üzerinde çalışır (<code>add-int v0, v1, v2</code>). Sonuç: aynı iş daha az instruction ile yapılır — ara değerleri stack'e taşıyıp geri alma trafiği yoktur. Bu, instruction başına yorumlayıcı döngüsünü azaltır, mobil CPU'da avantajdır.</p>
+<div class="manpage src-aosp"><div class="ref">dalvik-bytecode · model</div><p class="orig">The machine is register-based, and frames are fixed in size upon creation.</p><p>Makine register-based'tir ve her çağrı çerçevesi (frame) oluşturulurken boyutu sabitlenir — method'un kaç register kullanacağı derleme anında bellidir, çalışırken büyümez. 64-bit değerler bitişik register çiftlerinde (vN, vN+1) tutulur; instance method'lar ilk argüman olarak <code>this</code> alır.</p></div>
+
+<h3>3. .class → .dex: d8 ve desugaring</h3>
+<p>Derleme zinciri şöyledir: <code>javac</code>/<code>kotlinc</code> önce .class (JVM bytecode) üretir, sonra <strong>d8</strong> (eski adıyla dx) bunları tek bir classes.dex'e çevirir. d8 ayrıca <strong>desugaring</strong> yapar: yeni dil özelliklerini (lambda, interface default method, try-with-resources) eski Android sürümlerinde de çalışacak bytecode'a indirger. <strong>R8</strong> ise d8'in üstüne shrink + optimize + obfuscate ekler (ProGuard'ın yerini aldı): kullanılmayan kodu atar, metot adlarını kısaltır.</p>
+
+<h3>4. 64K method reference limiti ve multidex</h3>
+<p>Her method reference, instruction'larda 16-bit bir index ile adreslenir. Bu yüzden tek bir DEX en fazla 65.536 (64K) method reference tutabilir. Kritik ayrıntı: sınır, uygulamanın TANIMLADIĞI method sayısı değil, REFERANS ettiği (kendi kodu + tüm kütüphaneler) method sayısıdır — bu yüzden büyük bağımlılık ağaçları hızla sınıra dayanır. Çözüm multidex (classes.dex, classes2.dex, …) veya ART'ın birden çok DEX'i birleştirmesidir.</p>
+<div class="manpage src-aosp"><div class="ref">dex-format · method_ids</div><p class="orig">These are identifiers for all methods referred to by this file, whether defined in the file or not.</p><p>method_ids tablosu, dosyada tanımlı olsun olmasın atıf yapılan TÜM method'ları indeksler. 64K sınırı tam da bu tablonun büyüklüğüdür; bir kütüphaneyi çağırmak bile o kütüphanenin method'larını bu tabloya ekler.</p></div>
+
+<h3>5. Bytecode formatı</h3>
+<p>Instruction stream 16-bit birimlerden oluşur; literal veriler instruction akışının içine gömülüdür. Argümanlar <strong>dest-then-source</strong> sırasıyla yazılır — yani hedef register önce gelir (<code>move v0, v1</code>: v1'den v0'a). Bu düzen, register-based tasarımın okunmasını ve yorumlanmasını düzenli kılar.</p>
+<div class="manpage src-aosp"><div class="ref">dalvik-bytecode · format</div><p class="orig">The storage unit in the instruction stream is a 16-bit unsigned quantity.</p><p>Instruction stream'in depolama birimi 16-bit'lik bir değerdir; instruction'lar bu birimlerin katları halinde kodlanır. Argüman sırası dest-then-source'tur, bu da register makinesinin tutarlı bir biçimde çözümlenmesini sağlar.</p></div>`
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Bir APK\'nın içindeki DEX\'i gör', p: 'APK aslında bir ZIP\'tir; içinde bir veya birden çok classes.dex bulunur. (Komutlar Android SDK / makinende; çıktı temsilî.)',
+        shells: [{ label: 'terminal (temsilî)', copy: 'unzip -l app.apk | grep dex; dexdump -f classes.dex | head', pre: '<span class="c">$</span> unzip -l app.apk | grep dex\n   classes.dex\n   classes2.dex   <span class="c"># multidex</span>\n<span class="c">$</span> dexdump -f classes.dex | head\nmagic: <span class="g">dex\\n039</span>\nstring_ids_size: 142\nmethod_ids_size: 58' }] },
+      { h3: '2. Bytecode\'u oku', p: 'dexdump -d ile bir metodun yazmaç-tabanlı komutlarını gör; smali (okunabilir DEX assembly) biçimini öğrenmek tersine mühendislikte işe yarar.',
+        shells: [{ label: 'terminal (temsilî)', copy: 'dexdump -d classes.dex | less', pre: '<span class="c">$</span> dexdump -d classes.dex\n<span class="c"># int add(int, int):</span>\n0000: add-int v0, v1, v2\n0002: return v0' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'DEX, standart Java\'dan iki temel farkla ayrılır. Hangisi doğru?', opts: ['Her sınıf ayrı dosya + yığın-tabanlı', 'Tek dosyada birleşik + yazmaç-tabanlı', 'Metinsel format + yorumlanmaz'], answer: 'Tek dosyada birleşik + yazmaç-tabanlı',
+        ok: 'Doğru. Tüm sınıflar tek classes.dex\'te toplanır (paylaşılan havuzlar) ve bytecode yazmaç-tabanlıdır (register-based). İkisi de mobil verimliliği için.', no: 'İpucu: .class başına bir dosya mı, tek dosya mı? Yığın mı, yazmaç mı?' },
+      { q: 'DEX\'te bir metot çağrısı hedefini nasıl belirtir?', opts: ['Metot adını doğrudan metin olarak', 'method_ids tablosuna bir indeksle', 'Bellek adresiyle'], answer: 'method_ids tablosuna bir indeksle',
+        ok: 'Doğru. Her şey indeks tabanlıdır: method_ids → proto + type + string havuzlarına işaret eder. Çözümleme (resolution) bu zinciri izler.', no: 'İpucu: DEX ad yerine ne kullanır? Paylaşılan havuzlara ne verilir?' },
+      { q: '"64K metot sınırı" neyden kaynaklanır?', opts: ['Dosya boyutu limiti', 'Tek DEX\'teki metot indeksinin 16-bit olması', 'RAM yetersizliği'], answer: 'Tek DEX\'teki metot indeksinin 16-bit olması',
+        ok: 'Doğru. method_ids indeksleri 16-bit olduğu için tek DEX en çok 65.536 metoda başvurabilir; çözüm multidex\'tir.', no: 'İpucu: method_ids indeksi kaç bit? 2^16 = ?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Android Modül 13', title: 'ART internals', desc: 'ART bu DEX\'i nasıl derler ve çalıştırır? AOT, JIT, profil güdümlü derleme ve çöp toplama (GC).' },
+  sources: [
+    { href: 'https://newandroidbook.com/TOC.html', text: 'Levin — Android Internals Cilt II', note: 'Bölüm 6: Dalvik' },
+    { href: 'https://source.android.com/docs/core/runtime/dex-format', text: 'AOSP — DEX Format' },
+    { href: 'https://source.android.com/docs/core/runtime/dalvik-bytecode', text: 'AOSP — Dalvik Bytecode' },
+    { href: 'https://cs.android.com/android/platform/superproject/main/+/main:art/libdexfile/', text: 'art/libdexfile', note: 'AOSP kaynağı' }
+  ],
+  pageTitle: 'Dalvik ve DEX'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

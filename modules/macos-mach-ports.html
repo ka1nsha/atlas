@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Mach Port'ları</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: port düzeni */
+.mach { display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: stretch; }
+@media (max-width: 560px) { .mach { grid-template-columns: 1fr; } }
+.port { border: 1.5px solid var(--track); border-radius: var(--r); background: var(--track-soft); padding: 10px; display: grid; gap: 8px; align-content: start; min-width: 0; }
+.port .ph { font-family: var(--f-mono); font-size: 12px; color: var(--track); font-weight: 700; }
+.queue { display: grid; gap: 4px; }
+.msg { border: 1px solid var(--track); border-radius: 6px; padding: 4px 8px; font-family: var(--f-mono); font-size: 11.5px; background: var(--surface); }
+.queue .empty { font-size: 12px; color: var(--muted); }
+.right-chip { font-family: var(--f-mono); font-size: 11px; padding: 2px 8px; border-radius: 999px; justify-self: start; }
+.right-chip.send { background: var(--accent-soft); color: var(--accent); }
+.right-chip.recv { background: var(--ok-soft); color: var(--ok); }
+.right-chip.none { background: var(--sunk); color: var(--muted); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'macos',
+  crumbs: 'macos › mach ipc › modül 2',
+  eyebrow: 'Modül 2 · macOS / iOS · Mach ilkelleri',
+  titleHTML: 'Mach <code>port</code>\'ları: XNU\'nun sinir sistemi',
+  lede: 'XNU\'da süreçler birbirleriyle Mach mesajlaşmasıyla konuşur. Her şeyin temelinde port\'lar vardır: çekirdekteki mesaj kuyrukları ve onlara erişimi belirleyen "haklar". XPC, launchd, sürücüler — hepsi bunun üstüne kuruludur.',
+  meta: ['~18 dk', 'ön koşul: IPC kavramı', 'bağlam: XNU'],
+  intuition: {
+    paras: [
+      'Mach, Unix süreçlerinin altında yatan bir mikroçekirdek mirasıdır. Bir <strong>task</strong> (Unix sürecinin Mach karşılığı) iş yapmaz; iş parçacıkları (thread) yapar. Task\'lar birbirleriyle doğrudan konuşamaz; aralarında <strong>port</strong>\'lar üzerinden mesaj yollarlar.',
+      'Bir port, çekirdekte bir mesaj kuyruğudur. Ona kimin ne yapabileceğini <strong>haklar</strong> (rights) belirler: <em>receive</em> hakkı olan tek task kuyruğun sahibidir ve mesajları çeker; <em>send</em> hakkı olan task\'lar oraya mesaj yollayabilir. Bu ayrım, tüm macOS/iOS güvenlik modelinin temelindeki yetki (capability) fikridir.'
+    ],
+    ideas: [
+      { b: 'Port = kuyruk', span: 'Çekirdekte bir mesaj kuyruğu. Task\'lar ona "port adı" denen yerel bir sayıyla erişir.' },
+      { b: 'Haklar yetkidir', span: 'receive hakkı tektir (sahip); send hakkı çoğaltılabilir. Hak olmadan porta erişilemez.' },
+      { b: 'Her şey port', span: 'Task\'lar, thread\'ler, saat, sürücüler — hepsi port olarak temsil edilir. Mach mesajı bir hakkı başka task\'a bile taşıyabilir.' }
+    ]
+  },
+  lab: {
+    intro: 'Bir servis bir port yaratıp receive hakkını tutar ve adını launchd (bootstrap) üzerinden yayınlar. İstemci aynı porta send hakkı alır ve mesaj yollar. Sağda iki task\'ın haklarını ve portun kuyruğunu izle.',
+    codeLabel: 'mach_ipc.c (temsilî)', cmd: './mach_demo',
+    foot: 'Port adları ve değerler temsilîdir. Gerçek API: mach/message.h, bootstrap.h.',
+    code: [
+      { t: '<span class="cm">// --- servis ---</span>' },
+      { t: '<span class="f">mach_port_allocate</span>(self, <span class="n">RECEIVE</span>, &amp;p);' },
+      { t: '<span class="f">bootstrap_register</span>(bp, <span class="s">"com.ornek.svc"</span>, p);' },
+      { t: '' },
+      { t: '<span class="cm">// --- istemci ---</span>' },
+      { t: '<span class="f">bootstrap_look_up</span>(bp, <span class="s">"com.ornek.svc"</span>, &amp;p);' },
+      { t: '<span class="f">mach_msg</span>(&amp;msg, <span class="n">SEND</span>, ...);' },
+      { t: '' },
+      { t: '<span class="cm">// --- servis ---</span>' },
+      { t: '<span class="f">mach_msg</span>(&amp;msg, <span class="n">RCV</span>, ..., p, ...);' }
+    ],
+    steps: [
+      { pc: 2, title: 'Port yaratılır', term: ['servis: port ayrıldı (name 0x907)'],
+        text: 'Servis task\'ı <code>mach_port_allocate(RECEIVE)</code> çağırır. Çekirdek yeni bir port (mesaj kuyruğu) yaratır ve servise onun RECEIVE hakkını verir. Artık bu kuyruğun tek sahibi servistir.',
+        client: 'none', service: 'recv', queue: [], note: 'Port var ama istemci henüz onu bilmiyor.' },
+      { pc: 3, title: 'Bootstrap\'a kaydet', term: ['servis: "com.ornek.svc" launchd\'a kaydedildi'],
+        text: 'Servis, portun bir SEND hakkını launchd\'ın bootstrap kayıt defterine bir isimle yayınlar. Bu, Mach dünyasının isim çözümlemesidir: istemciler servisi adıyla bulur.',
+        client: 'none', service: 'recv', queue: [], note: 'launchd artık "com.ornek.svc" → port eşlemesini tutuyor.' },
+      { pc: 6, title: 'İstemci send hakkı alır', term: ['istemci: look_up → send hakkı (name 0x312)'],
+        text: 'İstemci <code>bootstrap_look_up</code> ile servisi adıyla sorar. launchd ona portun bir SEND hakkını verir. Dikkat: port adı iki task\'ta farklıdır (0x907 vs 0x312); her task kendi yerel isim uzayına sahiptir, ama ikisi de aynı çekirdek nesnesini gösterir.',
+        client: 'send', service: 'recv', queue: [], note: 'İki farklı yerel ad, tek çekirdek portu.' },
+      { pc: 7, title: 'mach_msg: gönder', term: ['istemci: mach_msg(SEND) → kuyruğa kondu'],
+        text: 'İstemci <code>mach_msg</code>\'i SEND ile çağırır. Çekirdek mesajı portun kuyruğuna koyar. İstemcinin yalnızca send hakkı var; kuyruktan okuyamaz, yalnızca yazabilir.',
+        client: 'send', service: 'recv', queue: ['msg #1 · istek'], flash: true, note: 'Mesaj kuyrukta, servisin almasını bekliyor.' },
+      { pc: 10, title: 'mach_msg: al', term: ['istemci: mach_msg(SEND) → kuyruğa kondu', 'servis: mach_msg(RCV) → istek işleniyor'],
+        text: 'Servis <code>mach_msg</code>\'i RCV ile çağırır. RECEIVE hakkı olduğu için kuyruktan mesajı çeker. Yanıt için mesajın içinde taşınan istemcinin "reply port" hakkını kullanır — böylece iki yönlü iletişim kurulur.',
+        client: 'send', service: 'recv', queue: [], note: 'Mesaj alındı; çift yönlü RPC bu şekilde kurulur (örn. XPC).' }
+    ],
+    render: function (s, stateEl, u) {
+      function task(title, pid, right) {
+        var map = { send: ['right-chip send', 'SEND hakkı'], recv: ['right-chip recv', 'RECEIVE hakkı'], none: ['right-chip none', 'hak yok'] };
+        var r = map[right];
+        return '<div class="box"><b>' + title + '</b><span class="mono">task ' + pid + '</span><span class="' + r[0] + '">' + r[1] + '</span></div>';
+      }
+      var q = s.queue.length
+        ? s.queue.map(function (m) { return '<div class="msg">' + u.esc(m) + '</div>'; }).join('')
+        : '<div class="empty">kuyruk boş</div>';
+      stateEl.innerHTML =
+        '<p class="lab-label">Task\'lar ve port</p>' +
+        '<div class="mach">' +
+          task('İstemci', '0x312', s.client) +
+          '<div class="port" id="portEl"><span class="ph">Mach port · kuyruk</span><div class="queue">' + q + '</div></div>' +
+          task('Servis', '0x907', s.service) +
+        '</div>' +
+        (s.note ? '<p class="note" style="margin-top:12px">' + u.esc(s.note) + '</p>' : '');
+      if (s.flash) ATLAS.flash(document.getElementById('portEl'), false);
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: Mach IPC'nin capability modeli",
+    html: `<p class="lead">Mach port'ları yalnızca bir mesajlaşma aracı değil; macOS/iOS'un tüm yetki (capability) modelinin temelidir. Bir task'ın neye erişebileceğini elindeki port right'lar belirler — tıpkı bir file descriptor gibi, ama çok daha güçlü, çünkü bir right mesajla başka bir task'a aktarılabilir. Bu bölüm klasik Mach man sayfalarına ve Levin'in OS Internals serisine dayanır.</p>
+
+<h3>1. Port = kernel'de bir message queue</h3>
+<p>Bir Mach port, kullanıcı alanında görünmeyen, kernel'de yaşayan bir message queue'dur. Task'lar ona yalnızca <strong>port right</strong>'lar üzerinden erişir; portun kendisine doğrudan dokunamazlar. Bu dolaylılık, güvenlik modelinin kalbidir: kernel her mesaj gönderiminde gönderenin gerçekten yetkili olup olmadığını (bir send right tutup tutmadığını) denetler.</p>
+<div class="manpage src-apple"><div class="ref">mach_msg · DESCRIPTION</div><p class="orig">Ports hold a queue of messages.</p><p>Port bir mesaj kuyruğu tutar. Gönderilen mesajlar, alıcı <code>mach_msg</code>'i receive moduyla çağırana kadar bu kuyrukta bekler. Kuyruk dolarsa gönderen bloklanır veya mesajı geri alır.</p></div>
+
+<h3>2. Port rights: yetki birimi</h3>
+<p>Bir port'a ne yapabileceğini right türü belirler. Bu, Mach'ı bir capability sistemi yapan şeydir: yetki, global bir izin listesinde değil, task'ın elindeki right'larda taşınır.</p>
+<div class="deflist">
+<div><dt>receive right</dt><dd>Kuyruğun tek sahibi. Yalnızca <strong>bir</strong> task tutabilir; mesajları o çeker. Aktarılabilir ama kopyalanamaz — receive right'ı yollarsan sende kalmaz.</dd></div>
+<div><dt>send right</dt><dd>Port'a mesaj yollama yetkisi. Çoğaltılabilir; birçok task aynı porta send right tutabilir (reference count ile sayılır).</dd></div>
+<div><dt>send-once right</dt><dd>Tam olarak bir mesaj yollama hakkı; kullanınca tükenir. Genelde reply port'lar için kullanılır (RPC yanıtı).</dd></div>
+<div><dt>port set</dt><dd>Birden çok receive right'ı tek bir kuyrukmuş gibi dinlemeyi sağlar (select/kqueue benzeri).</dd></div>
+</div>
+
+<h3>3. Port name space: her task kendi isimlerine sahip</h3>
+<p>Bir port name, bir task'a yerel bir tamsayıdır — tıpkı file descriptor gibi. İki farklı task aynı kernel port'una tamamen farklı name'lerle bakabilir; name'in kendisi global bir kimlik değildir, task'ın IPC name space'indeki bir girdiye işaret eder. Bu yüzden bir port name'i başka bir process'e "söylemek" işe yaramaz; onun yerine right'ın kendisi mesajla aktarılır.</p>
+<div class="manpage src-apple"><div class="ref">mach_port_allocate · DESCRIPTION</div><p class="orig">The mach_port_allocate function creates a new right in the specified task.</p><p>Port yaratmak aslında belirtilen task'ın name space'inde yeni bir right oluşturmaktır. <code>MACH_PORT_RIGHT_RECEIVE</code> ile çağrıldığında task yeni portun receive right'ını alır — yani kuyruğun sahibi olur.</p></div>
+
+<h3>4. mach_msg: tek çağrı, hem gönder hem al</h3>
+<p>Mach'ta tüm IPC tek bir trap üzerinden akar: <code>mach_msg</code>. Aynı çağrı, option bitlerine göre mesaj gönderir, alır veya ikisini birden yapar (RPC'de yaygın: gönder + yanıtı bekle). Mesaj "complex" olabilir — yani içinde ham veri dışında <strong>port right</strong>'lar ve <strong>out-of-line memory</strong> (büyük veri için sayfa düzeyinde eşleme) taşıyabilir.</p>
+<div class="manpage src-apple"><div class="ref">mach_msg · DESCRIPTION</div><p class="orig">The mach_msg system call sends and receives Mach messages.</p><p>Tek bir system call hem gönderme hem alma yapar. Yüksek seviyeli API'ler (XPC, MIG ile üretilen stub'lar) hep bunun üstüne kuruludur; <code>mach_msg</code> XNU'da neredeyse her şeyin aktığı dar boğazdır.</p></div>
+
+<h3>5. Right transfer: Mach'ın asıl gücü ve risk kaynağı</h3>
+<p>Bir mesaj yalnızca veri değil, bir yetkiyi de taşıyabilir: gönderen, bir port right'ı mesajın içine koyar ve kernel onu alıcı task'ın name space'ine aktarır. Böylece bir servis, istemcisine yeni bir kaynağa erişim "verebilir" — capability devri budur.</p>
+<div class="manpage src-apple"><div class="ref">mach_msg · DESCRIPTION</div><p class="orig">Port rights can be transferred between tasks via messages.</p><p>Right'lar mesajla task'lar arasında aktarılır. Bu güçlü model, aynı zamanda iOS güvenlik tarihinin tekrar eden bir temasıdır: bir task bir right'ı yanlışlıkla fazladan verirse veya kernel reference count'u yanlış sayarsa (örn. use-after-free benzeri port hataları), bu bir privilege escalation yoluna dönüşebilir. Tarihsel örnekler için ofansif izleğe bakın — burada yalnızca mekanizmayı anlatıyoruz.</p></div>
+
+<h3>6. MIG ve bootstrap</h3>
+<p>Ham <code>mach_msg</code> ile mesaj formatı kurmak zahmetlidir; <strong>MIG (Mach Interface Generator)</strong> bir arayüz tanımından istemci/sunucu stub kodu üretir (tıpkı Android'in AIDL'i gibi). İsim çözümleme ise <strong>bootstrap</strong> üzerinden yapılır: servisler launchd'nin bootstrap port'una isimle kaydolur, istemciler <code>bootstrap_look_up</code> ile o servisin send right'ını alır. Yani launchd, Mach dünyasının "Service Manager"ıdır.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">Port\'lar çekirdekte <code>ipc_port</code> yapılarıdır; her task\'ın bir IPC isim uzayı (<code>ipc_space</code>) vardır ve port adları bu uzaydaki girdilere işaret eder. Mesaj gönderme/alma işi <code>mach_msg</code> trap\'inde yapılır.</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://developer.apple.com/documentation/kernel/mach_msg" target="_blank" rel="noopener">mach_msg()</a><span class="where">libsyscall</span><p>Kullanıcı tarafı sarmalayıcı; mach_msg_trap ile çekirdeğe girer.</p></div></li>' +
+      '<li class="boundary"><div>Mach trap sınırı · kullanıcı → çekirdek</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">ipc_mqueue_send / _receive</span><span class="where">osfmk/ipc</span><p>Mesajı port kuyruğuna koyar veya kuyruktan alır; hak kontrolü burada yapılır.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">ipc_right_copyin / copyout</span><span class="where">osfmk/ipc</span><p>Mesajla taşınan port haklarını bir task\'tan diğerine aktarır. Mach\'ın yetki-taşıma gücü budur.</p></div></li>' +
+      '</ol>' +
+      '<p class="prose" style="margin-top:14px">Bu mekanizma neden önemli? XPC, launchd servisleri ve sürücü (IOKit) iletişimi bu port+hak modelinin üstüne kuruludur. Güvenlik tarafında da kritiktir: bir task yanlışlıkla bir porta fazladan hak verirse, bu bir ayrıcalık yükseltme yoluna dönüşebilir — Mach port hataları iOS güvenlik tarihinin tekrar eden bir temasıdır.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Bir task\'ın portlarını listele', p: 'macOS\'ta bir sürecin sahip olduğu Mach portlarını ve haklarını görebilirsin (SIP ve izinler elverdiğince).',
+        shells: [{ label: 'terminal (macOS)', copy: 'sudo lsmp -p <pid>', pre: '<span class="c">$</span> sudo lsmp -p 501\n<span class="c"># port adları, hak türleri (send/receive), kuyruk durumu</span>' }] },
+      { h3: '2. launchd servislerini gör', p: 'bootstrap kayıt defterindeki isimlendirilmiş servisleri listele; her biri bir Mach portuna karşılık gelir.',
+        shells: [{ label: 'terminal (macOS)', copy: 'launchctl print gui/$(id -u) | grep -i service', pre: '<span class="c">$</span> launchctl print gui/501\n<span class="c"># endpoints / services: com.apple.* → Mach portları</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Bir Mach portunun RECEIVE hakkını aynı anda kaç task tutabilir?', opts: ['Sınırsız', 'Tam olarak bir', 'En fazla iki'], answer: 'Tam olarak bir',
+        ok: 'Doğru. RECEIVE hakkı tektir ve kuyruğun sahibini belirler; aktarılabilir ama kopyalanamaz. SEND hakkı ise çoğaltılabilir.', no: 'İpucu: kuyruğun bir sahibi olmalı. SEND çoğaltılır, ya RECEIVE?' },
+      { q: 'İstemci ve serviste port adının farklı olması (0x312 vs 0x907) ne anlama gelir?', opts: ['İki farklı port var', 'Her task kendi yerel isim uzayına sahip', 'Bir hata var'], answer: 'Her task kendi yerel isim uzayına sahip',
+        ok: 'Doğru. Port adı yereldir; iki farklı ad aynı çekirdek nesnesini gösterebilir. İsim, dosya tanımlayıcısı gibidir.', no: 'İpucu: port adı dosya tanımlayıcısına benzer — yerel mi, küresel mi?' },
+      { q: 'XPC, launchd ve IOKit iletişimi neyin üstüne kuruludur?', opts: ['TCP soketleri', 'Mach port + hak modeli', 'Paylaşılan dosyalar'], answer: 'Mach port + hak modeli',
+        ok: 'Doğru. macOS/iOS\'ta üst düzey IPC\'nin tamamı Mach port ve hakları üzerine kuruludur; bu yüzden Mach\'ı anlamak her şeyin anahtarıdır.', no: 'Tekrar dene. Bu modülün ana fikri: her şeyin altında ne var?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · macOS Modül 3', title: 'Mach-O formatı', desc: 'XNU bir çalıştırılabilir dosyayı nasıl temsil eder? Load command\'ler ve ELF ile farkları.' },
+  sources: [
+    { href: 'https://newosxbook.com/toc1.html', text: 'Levin — OS Internals Cilt I', note: 'Bölüm 11–12' },
+    { href: 'https://developer.apple.com/documentation/kernel/mach', text: 'Apple — Mach API' },
+    { href: 'https://github.com/apple-oss-distributions/xnu', text: 'XNU kaynağı', note: 'osfmk/ipc' },
+    { href: 'https://www.antid0te.com/training/kernel-internals.html', text: 'Antid0te — Kernel Internals', note: 'Mach IPC güvenlik görünümü' }
+  ],
+  pageTitle: 'Mach Port\'ları'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

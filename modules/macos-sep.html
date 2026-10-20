@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Secure Enclave ve Data Protection</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: SEP istek/şifre-çözme akışı */
+.sep-flow { display: grid; gap: 8px; }
+.scomp { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 9px 12px; display: grid; gap: 3px; min-width: 0; opacity: .5; transition: opacity .2s, border-color .2s, background .2s; }
+.scomp.lit { opacity: 1; border-color: var(--track); background: var(--track-soft); }
+.scomp .sh { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.scomp .sh b { font-family: var(--f-display); font-size: 14.5px; }
+.scomp .sh .mono { font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.scomp p { margin: 0; font-size: 12px; color: var(--muted); }
+.scomp.lit p { color: var(--fg); }
+.sbound { border: 1.5px dashed var(--track); border-radius: var(--r); padding: 4px 10px; font-family: var(--f-mono); font-size: 10.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--track); text-align: center; opacity: .8; }
+.skey { border-radius: var(--r); padding: 10px 12px; font-family: var(--f-mono); font-size: 12.5px; display: flex; gap: 8px; align-items: center; margin-top: 2px; }
+.skey .d { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.skey.safe { background: var(--ok-soft); color: var(--ok); } .skey.safe .d { background: var(--ok); }
+.skey.inside { background: var(--track-soft); color: var(--track); } .skey.inside .d { background: var(--track); }
+.skey.wait { background: var(--sunk); color: var(--muted); } .skey.wait .d { background: var(--muted); }
+.sarrow { text-align: center; color: var(--muted); font-size: 12px; line-height: 1; }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'macos',
+  crumbs: 'macos › secure enclave › modül 24',
+  eyebrow: 'Modül 24 · macOS / iOS · Güvenlik',
+  titleHTML: '<code>Secure Enclave</code>: anahtarların çekirdeğe asla düşmediği yer',
+  lede: 'Bir cihazın en değerli sırrı şifreleme anahtarlarıdır. Eğer bu anahtarlar ana işlemcinin (ve dolayısıyla çekirdeğin) belleğinde dursaydı, çekirdeği ele geçiren herkes onları da ele geçirirdi. Apple\'ın çözümü fiziksel ayrım: anahtarlar ayrı bir işlemcide — Secure Enclave — yaşar; ana çekirdek yalnızca "şunu çöz" diye rica eder, anahtarın kendisini asla görmez.',
+  meta: ['~16 dk', 'ön koşul: kod imzalama · ARM64', 'bağlam: SEP, Data Protection'],
+  ethic: '<b>Not.</b> Bu modül SEP\'in tasarımını ve güvenlik modelini anlatır; saldırı tekniği içermez. Amaç, "çekirdek düşse bile anahtarlar neden düşmez" güvencesinin nasıl kurulduğunu göstermektir.',
+  intuition: {
+    paras: [
+      'Düşün: telefonun kilitliyken bile fotoğrafların, mesajların ve anahtarlıkların (keychain) diskte şifreli durur. Onları çözecek anahtar bir yerde olmalı. Ama o anahtarı ana belleğe (DRAM) koyarsan, çekirdekte tek bir keyfi-okuma (arbitrary read) açığı tüm anahtarları sızdırır. Çözüm anahtarı hiç oraya koymamaktır.',
+      'Secure Enclave (SEP) ana çipin içine gömülü <strong>ayrı bir güvenlik alt sistemidir</strong>: kendi işlemcisi, kendi işletim sistemi (<code>sepOS</code>), kendi şifreli DRAM bölgesi vardır. Ana işlemci SEP\'e bir <em>mailbox</em> üzerinden mesaj yollar ("bu sarılı dosya anahtarını çöz"), SEP işi kendi içinde yapar ve yalnızca <em>sonucu</em> döndürür. Anahtarın kendisi — özellikle donanıma gömülü UID anahtarı — SEP\'in AES Engine\'inden dışarı, yazılımın görebileceği hiçbir yere çıkmaz.'
+    ],
+    ideas: [
+      { b: 'Fiziksel ayrım', span: 'SEP ana işlemciden izole ayrı bir çekirdek; ana kernel ele geçse bile SEP\'teki anahtarlar erişilemez kalır.' },
+      { b: 'Anahtar donanımda kalır', span: 'UID/GID\'den türeyen donanım anahtarları AES Engine içinde kalır ve sepOS yazılımına bile görünmez.' },
+      { b: 'Rica et, görme', span: 'Ana çekirdek "çöz/imzala" diye mailbox üzerinden rica eder; ham anahtarı asla almaz, yalnızca sonucu alır.' },
+      { b: 'Biyometri çıkmaz', span: 'Touch ID / Face ID / Optic ID verisi SEP içinde saklanır ve işlenir; dışarı aktarılmaz.' }
+    ]
+  },
+  lab: {
+    intro: 'Kilitli bir cihazda şifreli bir dosyanın açılışını izleyelim. Her adımda ilgili bileşen aydınlanır; altta <em>dosya anahtarının o an nerede olduğu</em> gösterilir. Kritik gözlem: anahtar hiçbir adımda ana belleğe (çekirdeğe) düşmez.',
+    codeLabel: 'dosya şifre çözme akışı', cmd: 'open("gizli.dat")',
+    foot: 'Akış ve değerler temsilîdir; gerçek anahtar hiyerarşisi cihaz nesline göre değişir (Apple Platform Security).',
+    code: [
+      { t: '<span class="cm">// uygulama şifreli bir dosyayı açmak istiyor</span>' },
+      { t: 'open("/var/mobile/gizli.dat")   <span class="cm">// sınıf: Complete</span>' },
+      { t: '' },
+      { t: '<span class="cm">// çekirdek: sarılı (wrapped) dosya anahtarını SEP\'e yollar</span>' },
+      { t: 'mailbox_send(SEP, UNWRAP, wrapped_file_key)' },
+      { t: '' },
+      { t: '<span class="cm">// SEP: class key açık mı? (cihaz kilidine bağlı)</span>' },
+      { t: 'if (class_key_locked) return -EPERM' },
+      { t: '' },
+      { t: '<span class="cm">// SEP içinde: UID\'den donanım anahtarı türet, çöz</span>' },
+      { t: 'file_key = AESEngine.unwrap(UID_key, wrapped_file_key)' },
+      { t: 'plaintext = AESEngine.decrypt(file_key, ciphertext)' },
+      { t: '' },
+      { t: '<span class="cm">// yalnızca düz metin döner — file_key ana belleğe DÜŞMEZ</span>' },
+      { t: 'mailbox_reply(plaintext)' }
+    ],
+    steps: [
+      { pc: [1, 2], title: 'Uygulama dosyayı açmak istiyor', term: ['open: /var/mobile/gizli.dat (class: Complete)'],
+        text: 'Bir uygulama diskteki şifreli bir dosyayı açmak ister. Data Protection her dosyayı bir <strong>sınıfa (class)</strong> atar; bu dosya <code>Complete</code> sınıfında, yani ancak cihaz kilidi açıkken erişilebilir. Dosyanın kendi 256-bitlik anahtarı diskte <em>sarılı (wrapped)</em>, yani başka bir anahtarla şifrelenmiş durur.',
+        lit: ['app'], key: { cls: 'wait', txt: 'dosya anahtarı: diskte sarılı (şifreli)' } },
+      { pc: [4, 5], title: 'Çekirdek SEP\'e rica eder (mailbox)', term: ['kernel → SEP: UNWRAP(wrapped_file_key)'],
+        text: 'Çekirdek dosya anahtarını <em>kendisi çözemez</em> — çünkü çözecek donanım anahtarı onda yoktur. Sarılı anahtarı bir <strong>mailbox</strong> (ana işlemci ile SEP arasındaki mesaj kutusu) üzerinden SEP\'e yollar ve "bunu çöz" der. Sınır burada aşılır: istek SEP\'e geçer, ama çekirdek sınırın öbür tarafını göremez.',
+        lit: ['app', 'mbox'], key: { cls: 'wait', txt: 'dosya anahtarı: hâlâ sarılı, SEP\'e gidiyor' } },
+      { pc: [7, 8], title: 'SEP: sınıf anahtarı açık mı?', term: ['SEP: class key (Complete) durumu kontrol ediliyor', 'SEP: cihaz kilidi açık → class key mevcut'],
+        text: 'SEP önce şunu sorar: bu dosyanın sınıf anahtarı (class key) şu an açık mı? <code>Complete</code> sınıfı için bu, cihazın kilidinin açık olmasına bağlıdır. Kilitliyse SEP isteği reddeder (<code>-EPERM</code>) ve veri erişilemez kalır — kullanıcı parolası olmadan kimse (çekirdek dahil) bu dosyayı çözemez.',
+        lit: ['app', 'mbox', 'sep'], key: { cls: 'wait', txt: 'dosya anahtarı: çözülmeyi bekliyor (sınıf açık)' } },
+      { pc: [10, 11], title: 'SEP içinde çözme: anahtar dışarı çıkmaz', term: ['SEP: UID anahtarından türetiliyor', 'AES Engine: file_key unwrap (yalnızca donanımda)', 'AES Engine: dosya çözülüyor'],
+        text: 'SEP, çipe özgü <strong>UID</strong> anahtarından bir donanım anahtarı türetir ve <strong>AES Engine</strong> ile sarılı dosya anahtarını çözer. Can alıcı nokta: bu ham anahtar AES Engine\'in <em>içinde</em> kalır; sepOS yazılımı bile onu okuyamaz. Dosya aynı donanım bloğunda çözülür.',
+        lit: ['app', 'mbox', 'sep', 'aes'], key: { cls: 'inside', txt: 'dosya anahtarı: SEP/AES Engine içinde (yazılıma görünmez)' } },
+      { pc: [14, 15], title: 'Yalnızca sonuç döner', term: ['SEP → kernel: plaintext (anahtar değil)', 'uygulama: dosya içeriği hazır'],
+        text: 'SEP yalnızca çözülmüş <em>veriyi</em> mailbox üzerinden geri yollar — anahtarı değil. Uygulama dosya içeriğini alır; çekirdek bir an için bile dosya anahtarını görmemiştir. Böylece çekirdekte keyfi-okuma (arbitrary read) açığı olsa bile sızdıracak bir anahtar ana bellekte yoktur.',
+        lit: ['app', 'mbox', 'sep', 'aes'], key: { cls: 'safe', txt: 'dosya anahtarı: ANA BELLEĞE HİÇ DÜŞMEDİ ✓' } }
+    ],
+    render: function (s, stateEl, u) {
+      var all = [
+        { id: 'app', b: 'Uygulama + çekirdek', mono: 'ana işlemci' },
+        { id: 'mbox', b: 'Mailbox', mono: 'kernel ↔ SEP' },
+        { id: 'sep', b: 'Secure Enclave (sepOS)', mono: 'ayrı işlemci' },
+        { id: 'aes', b: 'AES Engine + UID anahtarı', mono: 'donanım' }
+      ];
+      var html = '<p class="lab-label">SEP istek yolu</p><div class="sep-flow">';
+      all.forEach(function (c, i) {
+        var lit = s.lit && s.lit.indexOf(c.id) >= 0;
+        html += '<div class="scomp' + (lit ? ' lit' : '') + '"><div class="sh"><b>' + c.b + '</b><span class="mono">' + c.mono + '</span></div></div>';
+        if (i === 1) html += '<div class="sbound">güven sınırı · ana işlemci ↛ SEP</div>';
+        else if (i < all.length - 1) html += '<div class="sarrow">▼</div>';
+      });
+      html += '</div>';
+      html += '<div class="skey ' + s.key.cls + '"><span class="d"></span><span>' + u.esc(s.key.txt) + '</span></div>';
+      stateEl.innerHTML = html;
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: çekirdek düşse bile anahtarlar neden düşmez?",
+    html: `<p class="lead">Secure Enclave\'in (SEP) tek bir tasarım fikri vardır: en kritik sırları, onları kullanan yazılımdan <strong>fiziksel olarak</strong> ayırmak. Böylece ana işletim sisteminin çekirdeği tamamen ele geçirilse bile saldırgan anahtarların kendisine ulaşamaz. Bu bölüm Apple Platform Security belgelerine dayanır ve alıntılar oradan birebir alınmıştır.</p>
+
+<h3>1. SEP nedir: çip içinde ayrı bir bilgisayar</h3>
+<p>SEP, ana SoC\'un içine gömülü ama ondan yalıtılmış bir alt sistemdir. Kendi işlemcisi (Secure Enclave Processor), kendi işletim sistemi (sepOS) ve kendi belleği vardır. Ana çekirdekle paylaşılan tek şey, sıkı bir mesajlaşma arayüzüdür.</p>
+<div class="manpage src-apple"><div class="ref">Platform Security · Secure Enclave</div><p class="orig">The Secure Enclave is isolated from the main processor to provide an extra layer of security.</p><p>SEP, ek bir güvenlik katmanı sağlamak için ana işlemciden izole edilmiştir. Bu izolasyon, ana işlemcinin çekirdeği (kernel) ele geçirilse bile korumanın ayakta kalması için tasarlanmıştır.</p></div>
+<div class="manpage src-apple"><div class="ref">Platform Security · Secure Enclave</div><p class="orig">The Secure Enclave Processor provides the main computing power for the Secure Enclave.</p><p>Secure Enclave Processor, SEP için asıl işlem gücünü sağlar; çekirdekleri yalnızca SEP\'e hizmet eder — yani ayrı, adanmış bir işlemcidir.</p></div>
+
+<h3>2. Şifreli bellek: Memory Protection Engine</h3>
+<p>SEP ana DRAM\'in bir bölgesini kullanır, ama bu bölge dışarıdan okunduğunda anlamsızdır: Memory Protection Engine her erişimi satır-içi (inline) şifreler ve bütünlüğünü doğrular. Fiziksel olarak belleğe erişen bir saldırgan bile yalnızca şifreli, doğrulanmış veri görür.</p>
+<div class="manpage src-apple"><div class="ref">Platform Security · Secure Enclave</div><p class="orig">The Memory Protection Engine operates inline and transparently to the Secure Enclave.</p><p>Memory Protection Engine, SEP\'in belleğine giden tüm erişimlerde satır-içi (inline) ve saydam biçimde çalışır; SEP\'in DRAM bölgesini şifreler ve kurcalamaya karşı doğrular.</p></div>
+
+<h3>3. AES Engine: anahtarın asla görünmediği yer</h3>
+<p>SEP\'in en güçlü garantisi burada: donanım anahtarları çipe özgü <strong>UID</strong> (ya da çip ailesine özgü GID) kimliğinden türetilir ve AES Engine\'in içinde kalır. Yazılım "bununla şifrele/çöz" diyebilir, ama ham anahtarı okuyamaz — sepOS\'un kendisi bile.</p>
+<div class="manpage src-apple"><div class="ref">Platform Security · Secure Enclave</div><p class="orig">Hardware keys are derived from the Secure Enclave UID or GID.</p><p>Donanım anahtarları, SEP\'in UID (cihaza özgü) veya GID (çip ailesine özgü) kimliğinden türetilir. UID her cihazda benzersizdir ve üretim sırasında bile kaydedilmez.</p></div>
+<div class="manpage src-apple"><div class="ref">Platform Security · Secure Enclave</div><p class="orig">These keys stay within the AES Engine and aren't made visible even to sepOS software.</p><p>Bu anahtarlar AES Engine içinde kalır ve sepOS yazılımına bile görünür kılınmaz. Yazılım yalnızca işlem talep edebilir; anahtarın kendisini elde edemez.</p></div>
+
+<h3>4. Biyometri: veri SEP\'ten çıkmaz</h3>
+<p>Touch ID, Face ID ve Optic ID için alınan biyometrik şablonlar SEP içinde saklanır ve eşleştirme de orada yapılır. Uygulamalar yalnızca "eşleşti / eşleşmedi" sonucunu alır; parmak izi veya yüz haritası hiçbir zaman ana işletim sistemine veya Apple\'a aktarılmaz.</p>
+<div class="manpage src-apple"><div class="ref">Platform Security · Secure Enclave</div><p class="orig">Other protected device-specific secrets include Optic ID, Face ID, or Touch ID data.</p><p>SEP içinde korunan cihaza özgü sırlar arasında Optic ID, Face ID ve Touch ID verisi de vardır. Bu veri SEP sınırının içinde kalır; dışarı aktarılmaz.</p></div>
+
+<h3>5. Data Protection: her dosyaya ayrı anahtar</h3>
+<p>Dosya şifreleme SEP\'in üstüne kurulu bir anahtar hiyerarşisidir. Her dosya bir <strong>sınıfa (class)</strong> atanır; erişilebilirlik, o sınıfın anahtarının (class key) o an açık olup olmamasına bağlıdır. <code>Complete</code> sınıfı cihaz kilitlenince kilitlenir; <code>Complete Until First User Authentication</code> ilk açılıştan sonra erişilebilir kalır.</p>
+<div class="manpage src-apple"><div class="ref">Platform Security · Data Protection</div><p class="orig">Data Protection is controlled on a per-file basis by assigning each file to a class</p><p>Data Protection dosya bazında denetlenir: her dosya bir sınıfa atanır ve erişilebilirlik, sınıf anahtarlarının (class keys) açılmış olup olmamasına göre belirlenir.</p></div>
+<div class="manpage src-apple"><div class="ref">Platform Security · Data Protection</div><p class="orig">Every time a file on the data volume is created, Data Protection creates a new 256-bit key</p><p>Veri biriminde bir dosya her oluşturulduğunda Data Protection yeni bir 256-bit anahtar üretir ve bunu donanım AES Engine\'ine verir; dosya flash\'a yazılırken bu anahtarla şifrelenir. Dosya anahtarının kendisi de sınıf anahtarıyla sarılır (wrap).</p></div>
+<div class="deflist">
+<div><dt>per-file key</dt><dd>Her dosyaya özel 256-bit anahtar; dosya içeriğini şifreler. Diskte, sınıf anahtarıyla sarılı (wrapped) durur.</dd></div>
+<div><dt>class key</dt><dd>Bir koruma sınıfının anahtarı; cihaz kilidine/parolaya bağlı açılır. Kapalıyken o sınıftaki dosya anahtarları çözülemez.</dd></div>
+<div><dt>UID key</dt><dd>Çipe özgü, donanıma gömülü kök anahtar. Hiyerarşinin tabanı; AES Engine dışına hiç çıkmaz.</dd></div>
+<div><dt>effaceable storage</dt><dd>Anahtarları hızlıca ve geri dönülemez biçimde silmek için ayrılmış depolama; "uzaktan sil" anında etkisizleştirmeyi sağlar.</dd></div>
+</div>
+
+<h3>6. Secure boot: SEP kendini de doğrular</h3>
+<p>SEP\'in güveni, değiştirilemez bir Boot ROM\'a dayanır: açılışta ilk çalışan koddur ve yalnızca geçerli imzalı bir sepOS\'u başlatır. Böylece güven zinciri donanım kök güveninden (hardware root of trust) sepOS\'a kadar kesintisizdir.</p>
+<div class="manpage src-apple"><div class="ref">Platform Security · Secure Enclave</div><p class="orig">The Secure Enclave Boot ROM is immutable code</p><p>Secure Enclave Boot ROM değiştirilemez (immutable) koddur ve SEP için güvenin köküdür. İmzası geçerliyse kontrolü sepOS\'a devreder; değilse SEP, bir sonraki çip sıfırlamasına kadar kullanılamaz.</p></div>
+<p>Sonuç: ARM64 modülündeki donanım korumaları (PAC, PAN) ana çekirdeği sertleştirirken, SEP en kritik sırları o çekirdeğin <em>tamamen dışına</em> taşır. İki yaklaşım birbirini tamamlar — biri çekirdeği zor hedef yapar, diğeri çekirdek düşse bile kaybı sınırlar.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">SEP ile ana işlemci arasındaki tek köprü, sıkı tanımlı bir mailbox arayüzüdür. Ana çekirdek buraya yalnızca belirli komutları (imzala, çöz, biyometrik doğrula) yollayabilir; ham anahtarı isteyemez. Aşağıda kilitli bir dosyanın açılış yolu özetlenir.</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">open()</span><span class="where">uygulama · çekirdek</span><p>Şifreli dosya istenir; çekirdek sarılı dosya anahtarını bulur ama çözemez.</p></div></li>' +
+      '<li class="boundary"><div>mailbox · ana işlemci → SEP</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">sepOS</span><span class="where">Secure Enclave</span><p>Sınıf anahtarı açık mı? Değilse reddeder (-EPERM).</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">AES Engine</span><span class="where">donanım · UID anahtarı</span><p>UID\'den türeyen anahtarla dosya anahtarını çözer; anahtar donanımda kalır.</p></div></li>' +
+      '<li class="boundary"><div>mailbox · SEP → ana işlemci</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">sonuç</span><span class="where">çekirdek</span><p>Yalnızca düz metin döner; dosya anahtarı ana belleğe hiç düşmez.</p></div></li>' +
+      '</ol>' +
+      '<p class="prose" style="margin-top:14px">AMFI ve SIP çalışan <em>kodun</em> ve sistem <em>dosyalarının</em> bütünlüğünü korurken, SEP <em>sırların</em> gizliliğini korur. Üçü birlikte, iOS/macOS güvenlik modelinin "bütünlük + gizlilik + izolasyon" sacayağını oluşturur.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. SEP\'in varlığını gör (macOS)', p: 'Apple Silicon Mac\'lerde SEP bir donanım bileşenidir; sistem raporunda denetleyici olarak görünür.',
+        shells: [{ label: 'terminal (macOS · temsilî)', copy: 'ioreg -l | grep -i "AppleSEP"', pre: '<span class="c">$</span> ioreg -l | grep -i "AppleSEP"\n<span class="hi">| +-o AppleSEPManager  &lt;class AppleSEPManager&gt;</span>\n|   "sep-version" = ...' }] },
+      { h3: '2. Anahtarlık koruma sınıfı (macOS)', p: 'Keychain öğeleri de Data Protection sınıflarıyla korunur; bir öğenin erişilebilirlik sınıfı SEP\'e bağlıdır.',
+        shells: [{ label: 'kavramsal', copy: 'kSecAttrAccessibleWhenUnlocked', pre: '<span class="c">#</span> keychain öğesi erişilebilirliği (örnek sınıflar)\nkSecAttrAccessibleWhenUnlocked          <span class="c"># cihaz kilidi açıkken</span>\nkSecAttrAccessibleAfterFirstUnlock      <span class="c"># ilk açılıştan sonra</span>\nkSecAttrAccessibleWhenPasscodeSetThisDeviceOnly' }] },
+      { h3: '3. Düşün: anahtar nerede?', p: 'Bir saldırgan çekirdekte keyfi-okuma (arbitrary read) elde etse, bu modeldeki dosya anahtarını okuyabilir mi? Neden okuyamaz?',
+        shells: [{ label: 'cevap', pre: '<span class="c">#</span> Hayır: dosya anahtarı yalnızca SEP/AES Engine içinde\n<span class="c">#</span> çözülür ve ana belleğe hiç yazılmaz. Çekirdek yalnızca\n<span class="c">#</span> düz metni görür — anahtarı değil. İzolasyonun amacı budur.' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Secure Enclave\'in temel güvenlik fikri nedir?', opts: ['Anahtarları ana çekirdekten fiziksel olarak ayırmak', 'Anahtarları daha uzun yapmak', 'Anahtarları buluta yüklemek'], answer: 'Anahtarları ana çekirdekten fiziksel olarak ayırmak',
+        ok: 'Doğru. SEP ayrı bir işlemci ve işletim sistemidir; ana çekirdek ele geçse bile anahtarlar SEP içinde erişilemez kalır.', no: 'İpucu: SEP neden ayrı bir işlemci? Ana kernel düştüğünde ne korunmalı?' },
+      { q: 'UID\'den türeyen donanım anahtarı yazılım tarafından okunabilir mi?', opts: ['Evet, sepOS okuyabilir', 'Hayır, AES Engine içinde kalır ve sepOS\'a bile görünmez', 'Evet, çekirdek isteyince'], answer: 'Hayır, AES Engine içinde kalır ve sepOS\'a bile görünmez',
+        ok: 'Doğru. Donanım anahtarları AES Engine içinde kalır; yazılım yalnızca işlem talep eder, ham anahtarı asla elde edemez.', no: 'İpucu: "These keys stay within the AES Engine..." — kim bile göremez?' },
+      { q: '<code>Complete</code> sınıfındaki bir dosya cihaz kilitliyken neden çözülemez?', opts: ['Dosya silinir', 'Sınıf anahtarı (class key) kapalıdır; SEP çözmeyi reddeder', 'Çekirdek kapanır'], answer: 'Sınıf anahtarı (class key) kapalıdır; SEP çözmeyi reddeder',
+        ok: 'Doğru. Complete sınıfının class key\'i cihaz kilidine bağlıdır; kilitliyken SEP isteği reddeder ve veri erişilemez kalır.', no: 'İpucu: erişilebilirlik neye bağlı? Kilitliyken class key açık mı?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · macOS Modül 19', title: 'ARM64 düşük seviye temelleri', desc: 'SEP sırları çekirdeğin dışına taşır; PAC/PAN/MTE ise çekirdeğin kendisini sertleştirir. İki yaklaşım birlikte.', href: 'macos-arm64.html' },
+  sources: [
+    { href: 'https://support.apple.com/guide/security/secure-enclave-sec59b0b31ff/web', text: 'Apple Platform Security — Secure Enclave', note: 'SEP, sepOS, AES Engine, UID' },
+    { href: 'https://support.apple.com/guide/security/data-protection-overview-secf6276da8a/web', text: 'Apple Platform Security — Data Protection', note: 'per-file key, class, wrapping' },
+    { href: 'https://newosxbook.com/toc3.html', text: 'Levin — OS Internals Cilt III', note: 'SEP ve Data Protection' }
+  ],
+  pageTitle: 'Secure Enclave ve Data Protection'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

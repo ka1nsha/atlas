@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>eBPF ile Gözlem</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: eBPF akış hattı + doğrulayıcı kararı + harita */
+.flowcol { display: grid; gap: 8px; }
+.node { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 10px 12px; display: grid; gap: 3px; }
+.node.hi { border-color: var(--track); background: var(--track-soft); }
+.node.good { border-color: var(--ok); background: var(--ok-soft); }
+.node.bad { border-color: var(--bad); background: var(--bad-soft); }
+.node .nl { font-family: var(--f-mono); font-size: 11px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+.node .nv { font-family: var(--f-display); font-weight: 700; font-size: 15px; }
+.node.hi .nv { color: var(--track); } .node.good .nv { color: var(--ok); } .node.bad .nv { color: var(--bad); }
+.node .nd { font-size: 12.5px; color: var(--muted); }
+.arrowdn { text-align: center; color: var(--muted); font-size: 14px; line-height: 1; }
+.verdict2 { display: flex; gap: 8px; align-items: center; font-family: var(--f-mono); font-size: 13px; margin-top: 2px; }
+.verdict2 .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.verdict2.ok { color: var(--ok); } .verdict2.ok .dot { background: var(--ok); }
+.verdict2.bad { color: var(--bad); } .verdict2.bad .dot { background: var(--bad); }
+.verdict2.wait { color: var(--muted); } .verdict2.wait .dot { background: var(--muted); }
+.mapbox { border: 1px dashed var(--track); border-radius: var(--r); background: var(--track-soft); padding: 8px 10px; display: grid; gap: 4px; }
+.mapbox .mh { font-family: var(--f-mono); font-size: 11px; font-weight: 700; color: var(--track); letter-spacing: .04em; }
+.maprow { display: flex; justify-content: space-between; gap: 8px; font-family: var(--f-mono); font-size: 12.5px; }
+.maprow span:last-child { font-weight: 700; }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'linux',
+  crumbs: 'linux › ebpf ile gözlem › modül 15',
+  eyebrow: 'Modül 15 · Linux · Gözlemlenebilirlik',
+  titleHTML: '<code>eBPF</code>: çekirdeği yeniden derlemeden içinden izlemek',
+  lede: 'Çalışan bir çekirdeğin içinde ne olup bittiğini görmek için eskiden ya özel modül yazmak ya da çekirdeği yeniden derlemek gerekirdi. eBPF, çekirdeğe güvenli küçük programlar yükleyip olaylara bağlamana izin verir; önce bir doğrulayıcı (verifier) programın güvenli olduğunu kanıtlar. Bu modülde bir eBPF programının yüklenip olay saymasının yolculuğunu izleyeceksin.',
+  meta: ['~15 dk', 'ön koşul: syscall, kesme modülleri', 'çekirdek: Linux 6.x'],
+  intuition: {
+    paras: [
+      'eBPF (extended Berkeley Packet Filter), çekirdek içinde çalışan küçük bir sanal makinedir (virtual machine). Sen bir program yazarsın, o bytecode\'a derlenir ve <code>bpf()</code> sistem çağrısıyla çekirdeğe gönderilir. Program bir olaya — bir sistem çağrısının girişine, bir ağ paketine, bir fonksiyon çağrısına (kprobe) — bağlanır ve o olay her gerçekleştiğinde çalışır.',
+      'Peki keyfi kod çekirdekte nasıl güvenle çalışır? Anahtar, <strong>doğrulayıcıdır (verifier)</strong>. Program yüklenmeden önce çekirdek onu statik olarak analiz eder: sonsuz döngü yok, her bellek erişimi sınır içinde, yalnızca izin verilen yardımcı fonksiyonlar. Kanıtlayamazsa yüklemeyi reddeder. Bu yüzden eBPF, çekirdeği çökertmeden canlı gözlem (observability) sağlar.'
+    ],
+    ideas: [
+      { b: 'Olaya bağlanır', span: 'kprobe, tracepoint, sistem çağrısı, ağ paketi — bir olay her olduğunda eBPF programı çalışır. Çekirdek kaynağını değiştirmeden.' },
+      { b: 'Doğrulayıcı güvenceler', span: 'Yükleme öncesi verifier döngüsüzlüğü ve sınır güvenliğini kanıtlar; kanıtlayamazsa program hiç çalışmaz.' },
+      { b: 'Harita ile konuşur', span: 'eBPF programı sonuçları bir haritaya (map) yazar; kullanıcı-alanı aracı (bcc/bpftrace) bu haritadan okur.' }
+    ]
+  },
+  lab: {
+    intro: 'Aşağıdaki bpftrace tek-satırlığı her <code>openat</code> sistem çağrısını süreç adına göre sayar. Sağda programın kullanıcı-alanından doğrulayıcıya, oradan çekirdekteki olay noktasına ve haritaya olan yolculuğunu izle.',
+    codeLabel: 'say-openat.bt', cmd: 'bpftrace say-openat.bt',
+    foot: 'bpftrace çıktısı temsilîdir; unprivileged_bpf_disabled değeri gerçektir (aşağıda "Kendin dene"). ← → tuşlarıyla da ilerleyebilirsin.',
+    code: [
+      { t: '<span class="cm">// her openat çağrısını süreç adına göre say</span>' },
+      { t: '<span class="f">tracepoint</span>:syscalls:sys_enter_openat' },
+      { t: '{' },
+      { t: '    <span class="pp">@count</span>[comm] = <span class="f">count</span>();' },
+      { t: '}' }
+    ],
+    steps: [
+      { pc: [1, 2, 3, 4, 5], title: 'Program yazılır', term: [],
+        text: 'Kullanıcı bir bpftrace programı yazar: "sys_enter_openat izleme noktası (tracepoint) tetiklendiğinde, süreç adına (comm) göre bir sayacı artır". Bu, insana okunur kısa bir betik; bpftrace onu eBPF bytecode\'una derleyecek.',
+        flow: [['us', 'Kullanıcı alanı', 'bpftrace betiği yazıldı', 'hi'], ['vf', 'Doğrulayıcı (verifier)', 'bekliyor', ''], ['ev', 'Çekirdek olay noktası', 'bağlı değil', ''], ['mp', 'Harita (map)', 'boş', '']],
+        verdict: { cls: 'wait', txt: 'Henüz çekirdeğe gönderilmedi' }, map: [] },
+      { pc: 2, title: 'Çekirdeğe gönderilir', term: [],
+        text: 'bpftrace betiği eBPF bytecode\'una derlenir ve <code>bpf(BPF_PROG_LOAD, ...)</code> sistem çağrısıyla çekirdeğe gönderilir. Bu, modül 3\'teki syscall mekanizmasının ta kendisidir — yeni bir komut değil, bilinen kapıdan geçen yeni bir istek.',
+        flow: [['us', 'Kullanıcı alanı', 'bpf() syscall → bytecode', 'hi'], ['vf', 'Doğrulayıcı (verifier)', 'inceleyecek', ''], ['ev', 'Çekirdek olay noktası', 'bağlı değil', ''], ['mp', 'Harita (map)', 'boş', '']],
+        verdict: { cls: 'wait', txt: 'bytecode çekirdeğe ulaştı' }, map: [] },
+      { pc: [1, 2, 3, 4, 5], title: 'Doğrulayıcı denetler', term: [],
+        text: 'Çekirdek programı ÇALIŞTIRMADAN ÖNCE doğrulayıcı (verifier) onu baştan sona analiz eder: her olası yürütme yolu sonlanıyor mu (döngü yok), her bellek erişimi sınır içinde mi, yalnızca izinli yardımcılar mı çağrılıyor. Bizim program basit ve güvenli; geçer. Güvenli olduğu kanıtlanamasaydı yükleme <code>-EINVAL</code> ile reddedilirdi ve hiç çalışmazdı.',
+        flow: [['us', 'Kullanıcı alanı', 'yükleme bekliyor', ''], ['vf', 'Doğrulayıcı (verifier)', 'döngü yok · sınırlar güvenli · izinli yardımcılar', 'good'], ['ev', 'Çekirdek olay noktası', 'bağlanacak', ''], ['mp', 'Harita (map)', 'oluşturuldu', '']],
+        verdict: { cls: 'ok', txt: 'Doğrulandı → JIT ile native koda derlenir' }, map: [] },
+      { pc: 2, title: 'Olaya bağlanır', term: [],
+        text: 'Doğrulanan program JIT ile native makine koduna derlenir (yorumlama hızında değil, tam hızda çalışır) ve <code>sys_enter_openat</code> izleme noktasına bağlanır. Artık bu çağrı her yapıldığında eBPF programı tetiklenecek.',
+        flow: [['us', 'Kullanıcı alanı', 'dinliyor', ''], ['vf', 'Doğrulayıcı (verifier)', 'onayladı', 'good'], ['ev', 'sys_enter_openat (tracepoint)', 'program bağlandı', 'hi'], ['mp', 'Harita (map)', 'hazır, boş', '']],
+        verdict: { cls: 'ok', txt: 'Program olaya bağlı, sayım başladı' }, map: [] },
+      { pc: 4, title: 'Olaylar sayılır', term: [],
+        text: 'Sistemde süreçler dosya açtıkça (her <code>openat</code>) eBPF programı çekirdekte çalışır ve <code>@count[comm]</code> haritasında ilgili sürecin sayacını artırır. Bütün bu iş çekirdek içinde, süreç başına mikrosaniyeler düzeyinde olur; gözlemlenen programlar yavaşlamaz.',
+        flow: [['us', 'Kullanıcı alanı', 'arka planda', ''], ['vf', 'Doğrulayıcı (verifier)', 'onayladı', 'good'], ['ev', 'sys_enter_openat (tracepoint)', 'her olayda çalışıyor', 'hi'], ['mp', 'Harita (map)', 'sayaçlar artıyor', 'hi']],
+        verdict: { cls: 'ok', txt: 'Her openat → harita güncelleniyor' },
+        map: [['bash', '42'], ['code', '318'], ['systemd', '27']] },
+      { pc: 4, title: 'Kullanıcı-alanı okur', term: ['@count[systemd]: 27', '@count[bash]: 42', '@count[code]: 318'],
+        text: 'bpftrace (kullanıcı-alanı) haritayı okuyup sonucu ekrana döker. Çekirdek içindeki eBPF programı veriyi topladı, kullanıcı-alanındaki araç yalnızca okudu. Bu ayrım eBPF\'in gücüdür: toplama hızlı ve güvenli biçimde çekirdekte, görüntüleme dışarıda.',
+        flow: [['us', 'Kullanıcı alanı', 'haritadan okudu → yazdırdı', 'hi'], ['vf', 'Doğrulayıcı (verifier)', 'onayladı', 'good'], ['ev', 'sys_enter_openat (tracepoint)', 'çalışmaya devam', ''], ['mp', 'Harita (map)', 'okundu', 'good']],
+        verdict: { cls: 'ok', txt: 'Sonuç kullanıcı-alanında görüntülendi' },
+        map: [['bash', '42'], ['code', '318'], ['systemd', '27']] }
+    ],
+    render: function (s, stateEl, u) {
+      var flow = s.flow.map(function (n, i) {
+        var cls = 'node' + (n[3] ? ' ' + n[3] : '');
+        var html = '<div class="' + cls + '"><span class="nl">' + u.esc(n[1]) + '</span><span class="nd">' + u.esc(n[2]) + '</span></div>';
+        return html + (i < s.flow.length - 1 ? '<div class="arrowdn">↓</div>' : '');
+      }).join('');
+      var mapHTML = '';
+      if (s.map && s.map.length) {
+        mapHTML = '<div class="mapbox" style="margin-top:14px"><span class="mh">@count[comm] (harita / map)</span>' +
+          s.map.map(function (m) { return '<div class="maprow"><span>' + u.esc(m[0]) + '</span><span>' + u.esc(m[1]) + '</span></div>'; }).join('') + '</div>';
+      }
+      stateEl.innerHTML =
+        '<p class="lab-label">eBPF akış hattı</p><div class="flowcol">' + flow + '</div>' +
+        '<div class="verdict2 ' + s.verdict.cls + '" style="margin-top:12px"><span class="dot"></span><span>' + u.esc(s.verdict.txt) + '</span></div>' +
+        mapHTML;
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: güvenli çekirdek programları",
+    html: `<p class="lead">eBPF, çekirdeği yeniden derlemeden veya bir kernel module yüklemeden onun içinde küçük programlar çalıştırmanı sağlar — observability, ağ ve güvenlik için devrim niteliğinde. Sırrı, bir verifier'ın her programı çalıştırmadan önce güvenli olduğunu <strong>kanıtlamasıdır</strong>. Bu bölüm bpf(2) man sayfasına dayanır.</p>
+
+<h3>1. bpf() syscall: program çekirdeğe nasıl girer?</h3>
+<p>Her şey tek bir multiplexer syscall üzerinden döner: bpf(). İlk argüman olan <code>cmd</code> hangi işlemin yapılacağını belirler — <code>BPF_PROG_LOAD</code> bytecode'u yükler, <code>BPF_MAP_CREATE</code> ve <code>BPF_MAP_LOOKUP_ELEM</code> map'leri yönetir.</p>
+<div class="manpage"><div class="ref">2 bpf · DESCRIPTION</div><p class="orig">The bpf() system call performs a range of operations related to extended Berkeley Packet Filters.</p><p>Tek bir syscall; program yükleme, map yönetimi ve attach işlemlerinin tümünü üstlenir. Yüklenen program, <strong>çalışana kadar güvenli</strong> olan bir komut kümesidir: "Each eBPF program is a set of instructions that is safe to run until its completion."</p></div>
+
+<h3>2. Verifier: neden bu kadar kısıtlı?</h3>
+<p>Kullanıcı alanından gelen kod çekirdekte, çekirdek ayrıcalığıyla çalışacaksa, çökmemesi veya güvenliği delmemesi mutlak zorunluluktur. Bunu bir in-kernel verifier sağlar: programı yüklemeden önce tüm olası yürütme yollarını statik olarak simüle eder.</p>
+<div class="manpage"><div class="ref">2 bpf · DESCRIPTION</div><p class="orig">An in-kernel verifier statically determines that the eBPF program terminates and is safe to execute.</p><p>Verifier iki şeyi kanıtlamak zorundadır: program <strong>sonlanır</strong> (sınırsız loop olamaz — bu yüzden klasik eBPF'te geriye atlama yasaktı; modern çekirdeklerde bounded loop izinlidir) ve her bellek erişimi <strong>sınır içindedir</strong>. Kanıtlanamazsa program <code>-EINVAL</code> ile reddedilir.</p></div>
+<p>İlke şudur: "güvenli olduğu kanıtlanamayan reddedilir". Bu yüzden aslında güvenli olan bazı programlar bile, verifier onları analiz edemediği için reddedilebilir — eBPF yazmanın en sinir bozucu ama en koruyucu yanı budur.</p>
+
+<h3>3. JIT: bytecode'dan native koda</h3>
+<p>Doğrulanan program yorumlanmaz; performans için mimariye özel makine koduna çevrilir.</p>
+<div class="manpage"><div class="ref">2 bpf · NOTES</div><p class="orig">The kernel contains a just-in-time (JIT) compiler that translates eBPF bytecode into native machine code</p><p>JIT compilation sayesinde bir eBPF programı, elle yazılmış bir çekirdek fonksiyonuna yakın hızda koşar; bu yüzden yüksek hacimli ağ (XDP) veya izleme yollarında bile maliyeti kabul edilebilir kalır.</p></div>
+
+<h3>4. Program türleri: nereye bağlanır?</h3>
+<p>Bir eBPF programının <strong>type</strong>'ı, hangi olaya attach edilebileceğini ve hangi helper fonksiyonlarına erişebileceğini belirler:</p>
+<div class="deflist">
+<div><dt>kprobe / kretprobe</dt><dd>Herhangi bir çekirdek fonksiyonunun giriş veya çıkışına bağlanır. Dinamik, ama fonksiyon adına/ABI'sine bağımlı.</dd></div>
+<div><dt>tracepoint</dt><dd>Çekirdeğe önceden yerleştirilmiş kararlı izleme noktaları; kprobe'dan daha stabildir.</dd></div>
+<div><dt>uprobe</dt><dd>Kullanıcı alanı programlarının fonksiyonlarına bağlanır.</dd></div>
+<div><dt>XDP</dt><dd>Ağ sürücüsünün en erken noktasında paket işler — DDoS filtreleme, load balancing.</dd></div>
+<div><dt>tc</dt><dd>Traffic control katmanında paket sınıflandırma ve şekillendirme.</dd></div>
+<div><dt>LSM</dt><dd>Linux Security Module kancalarına bağlanır — eBPF ile dinamik güvenlik politikası.</dd></div>
+</div>
+
+<h3>5. Maps: user space ile kernel arasında köprü</h3>
+<p>Bir eBPF programı izole çalışır; sonuçları dışarı taşımanın veya yapılandırma almanın yolu map'lerdir.</p>
+<div class="manpage"><div class="ref">2 bpf · DESCRIPTION</div><p class="orig">They allow sharing of data between eBPF kernel programs, and also between kernel and user-space applications.</p><p>Program bir olayda map'e sayaç/kayıt yazar; user space aynı map'i okur. Çekirdekten veri çıkarmanın asıl mekanizması budur.</p></div>
+<div class="deflist">
+<div><dt>hash / array</dt><dd>Anahtar-değer veya indeksli depolama; sayaçlar ve yapılandırma için.</dd></div>
+<div><dt>per-CPU</dt><dd>Her CPU'ya ayrı kopya — kilit (lock) olmadan yüksek hızlı sayım.</dd></div>
+<div><dt>ring buffer</dt><dd>Çekirdekten user space'e verimli olay akışı (perf buffer'ın modern halefi).</dd></div>
+</div>
+
+<h3>6. Araçlar ve güvenlik</h3>
+<p>Ham bytecode yazmak zordur; pratikte <strong>bcc</strong>, <strong>bpftrace</strong> ve <strong>libbpf</strong> kullanılır. Modern yaklaşım CO-RE'dir (Compile Once – Run Everywhere): program bir kez derlenir, çekirdeğin BTF tip bilgisi sayesinde farklı kernel sürümlerinde yeniden derlenmeden çalışır. Ayrıntı için <a href="https://ebpf.io/" target="_blank" rel="noopener">ebpf.io</a>.</p>
+<p>Güvenlik tarafında: eBPF güçlü olduğu için bir attack surface de oluşturur — geçmişte verifier hataları ayrıcalık yükseltmeye yol açtı. Bu yüzden ayrıcalıksız (unprivileged) eBPF çoğu dağıtımda kapalıdır (<code>/proc/sys/kernel/unprivileged_bpf_disabled</code>); program yüklemek genellikle <code>CAP_BPF</code> veya <code>CAP_SYS_ADMIN</code> gerektirir.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">Bir eBPF programının çekirdeğe girişi yine <code>bpf()</code> sistem çağrısından geçer; asıl güvence doğrulayıcıdadır. Adlar Elixir\'de kaynak tanımına gider:</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://man7.org/linux/man-pages/man2/bpf.2.html" target="_blank" rel="noopener">bpf(BPF_PROG_LOAD)</a><span class="where">libbpf / bpftrace</span><p>Derlenen bytecode\'u ve program türünü çekirdeğe gönderir.</p></div></li>' +
+      '<li class="boundary"><div>sistem çağrısı sınırı · kullanıcı → çekirdek</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/bpf_check" target="_blank" rel="noopener">bpf_check()</a><span class="where">kernel/bpf/verifier.c</span><p>Doğrulayıcı: tüm yürütme yollarını simüle eder, döngüsüzlüğü ve bellek güvenliğini kanıtlar. Geçemezse -EINVAL.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/bpf_int_jit_compile" target="_blank" rel="noopener">JIT derleme</a><span class="where">arch/*/net/bpf_jit*</span><p>Doğrulanan bytecode, mimariye özel native makine koduna çevrilir; tam hızda çalışır.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">tracepoint / kprobe bağlama</span><span class="where">kernel/trace</span><p>Program ilgili olay noktasına takılır; olay her gerçekleştiğinde çalışır ve haritaya yazar.</p></div></li>' +
+      '</ol>' +
+      '<p class="prose" style="margin-top:14px">Not: eBPF çok güçlü olduğu için yetki açısından da hassastır. Yetkisiz kullanıcıların eBPF yüklemesi çoğu dağıtımda kapalıdır (<code>unprivileged_bpf_disabled</code>); doğrulayıcının kendisi de bir güvenlik sınırıdır ve geçmişte doğrulayıcı hataları çekirdek zafiyetine dönüşmüştür.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Yetkisiz eBPF açık mı?', p: 'Bu değer yetkisiz kullanıcıların eBPF programı yükleyip yükleyemeyeceğini söyler: <code>0</code> açık, <code>1</code> yalnızca ağ filtresi, <code>2</code> tamamen kapalı (yalnızca root/CAP_BPF).',
+        shells: [{ label: 'terminal · gerçek çıktı', copy: 'cat /proc/sys/kernel/unprivileged_bpf_disabled', pre: '<span class="c">$</span> cat /proc/sys/kernel/unprivileged_bpf_disabled\n<span class="hi">2</span>   <span class="c"># bu makinede yetkisiz eBPF kapalı</span>' }] },
+      { h3: '2. bpftrace ile dosya açmaları say', p: 'bpftrace kurulu bir sistemde (root ile), her <code>openat</code>\'ı süreç adına göre sayar. Ctrl-C ile durdurunca harita dökülür.',
+        shells: [{ label: 'terminal (temsilî çıktı)', copy: "sudo bpftrace -e 'tracepoint:syscalls:sys_enter_openat { @count[comm] = count(); }'", pre: '<span class="c">$</span> sudo bpftrace -e \'...sys_enter_openat { @count[comm]=count(); }\'\nAttaching 1 probe...\n^C\n\n@count[systemd]: 27\n@count[bash]: 42\n@count[code]: 318' }] },
+      { h3: '3. Yüklü eBPF programlarını listele', p: '<code>bpftool</code> çekirdekte yüklü eBPF programlarını ve haritalarını gösterir; sisteminde arka planda kimlerin eBPF kullandığını görürsün.',
+        shells: [{ label: 'terminal (temsilî çıktı)', copy: 'sudo bpftool prog show', pre: '<span class="c">$</span> sudo bpftool prog show\n12: tracepoint  name count_openat  tag a1b2...\n    loaded_at ...  uid 0\n    xlated 112B  jited 98B  memlock 4096B' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'eBPF programı çekirdekte çalışmadan önce güvenliğini ne garanti eder?', opts: ['JIT derleyici', 'Doğrulayıcı (verifier)', 'Harita (map)'], answer: 'Doğrulayıcı (verifier)',
+        ok: 'Doğru. Doğrulayıcı her yürütme yolunu analiz eder; döngüsüzlüğü ve bellek güvenliğini kanıtlayamazsa program hiç yüklenmez.', no: 'İpucu: program daha çalışmadan, yükleme anında denetlenir. Hangi bileşen?' },
+      { q: 'eBPF programı topladığı veriyi kullanıcı-alanına nasıl ulaştırır?', opts: ['Doğrudan ekrana yazarak', 'Bir harita (map) üzerinden', 'Dosyaya kaydederek'], answer: 'Bir harita (map) üzerinden',
+        ok: 'Doğru. Program sonuçları haritaya yazar; kullanıcı-alanındaki araç (bcc/bpftrace) haritadan okur. Toplama çekirdekte, görüntüleme dışarıda.', no: 'İpucu: çekirdek ile kullanıcı-alanı paylaşılan bir yapı üzerinden konuşur.' },
+      { q: 'eBPF\'in en büyük avantajı nedir?', opts: ['Çekirdeği yeniden derlemeden canlı izleme', 'Daha hızlı önyükleme', 'Daha az RAM kullanımı'], answer: 'Çekirdeği yeniden derlemeden canlı izleme',
+        ok: 'Doğru. Çalışan çekirdeğe güvenli programlar takıp olayları gözlemlersin; modül yazmaya veya yeniden derlemeye gerek kalmaz.', no: 'İpucu: eskiden bunun için modül yazmak/yeniden derlemek gerekirdi.' }
+    ]
+  },
+  next: { eyebrow: 'İzlek tamamlandı · Linux 15/15', title: 'Android izleğine geç', desc: 'Linux temelleri bitti. Android, bu çekirdeğin üstüne kurulu: Zygote fork\'a, Binder IPC\'ye dayanır. Ana sayfadan Android izleğine geçebilirsin.' },
+  sources: [
+    { href: 'https://ebpf.io/', text: 'ebpf.io', note: 'resmi giriş ve belgeler' },
+    { href: 'https://www.brendangregg.com/ebpf.html', text: 'Brendan Gregg — eBPF', note: 'gözlem araçları ve örnekler' },
+    { href: 'https://github.com/bpftrace/bpftrace', text: 'bpftrace', note: 'tek-satırlık izleme dili' },
+    { href: 'https://0xax.gitbooks.io/linux-insides/content/', text: 'linux-insides', note: 'çekirdek kaynak gezintisi' },
+    { href: 'https://elixir.bootlin.com/linux/latest/source/kernel/bpf/verifier.c', text: 'kernel/bpf/verifier.c', note: 'doğrulayıcı, Elixir' }
+  ],
+  pageTitle: 'eBPF ile Gözlem'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

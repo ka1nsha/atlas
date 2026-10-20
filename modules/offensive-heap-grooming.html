@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Heap Grooming</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: heap şeridi görselleştirmesi */
+.heaprow { display: grid; grid-template-columns: repeat(8, 1fr); gap: 5px; margin-top: 4px; }
+@media (max-width: 560px) { .heaprow { grid-template-columns: repeat(4, 1fr); } }
+.cell { border: 1.5px solid var(--line); border-radius: 7px; background: var(--surface); min-height: 46px; display: grid; place-content: center; gap: 1px; text-align: center; padding: 4px 2px; }
+.cell .ct { font-family: var(--f-mono); font-size: 10.5px; font-weight: 600; line-height: 1.15; overflow-wrap: anywhere; }
+.cell .cs { font-family: var(--f-mono); font-size: 9.5px; color: var(--muted); }
+.cell.free { border-style: dashed; color: var(--muted); }
+.cell.victim { border-color: var(--warn); background: var(--warn-soft); }
+.cell.victim .ct { color: var(--warn); }
+.cell.hole { border-color: var(--warn); border-style: dashed; background: var(--warn-soft); }
+.cell.spray { border-color: var(--track); background: var(--track-soft); }
+.cell.spray .ct { color: var(--track); }
+.cell.reclaim { border-color: var(--track); background: var(--track-soft); box-shadow: 0 0 0 2px var(--track-soft); }
+.cell.reclaim .ct { color: var(--track); }
+.ptr { margin-top: 10px; border: 1.5px solid var(--line); border-radius: 8px; padding: 8px 11px; font-family: var(--f-mono); font-size: 12px; display: grid; gap: 2px; }
+.ptr b { font-size: 10.5px; color: var(--muted); font-weight: 700; }
+.ptr.danger { border-color: var(--bad); background: var(--bad-soft); }
+.ptr.danger .pv { color: var(--bad); }
+.ptr.safe { border-color: var(--ok); background: var(--ok-soft); }
+.ptr.safe .pv { color: var(--ok); }
+.achieve { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 10px; font-size: 13.5px; }
+.achieve b { font-family: var(--f-mono); font-size: 11px; color: var(--muted); font-weight: 700; display: block; margin-bottom: 2px; }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'offensive',
+  crumbs: 'ofansif › heap grooming › modül 13',
+  eyebrow: 'Ofansif izlek · Modül 13 · Heap hazırlama',
+  titleHTML: 'Heap grooming ve <code>feng shui</code>: güvenilirlik mühendisliği',
+  lede: 'Bir heap bug\'ı (UAF, overflow) tek başına nadiren güvenilirdir: heap\'in o anki düzeni öngörülemez. Saldırganın asıl işi heap\'i <strong>deterministik</strong> hale getirmektir — doğru nesneyi doğru deliğe düşürmek. Bu modül heap spraying ve feng shui\'nin <em>mantığını</em> kavramsal olarak çözer ve modern allocator\'ların (kalloc_type, randomization, MTE) bu güvenilirliği nasıl kırdığını gösterir.',
+  meta: ['~18 dk', 'ön koşul: UAF + primitifler + kalloc', 'kavramsal'],
+  ethic: '<b>İlke.</b> Bu modül yalnızca mekanizmayı ve neden güvenilirlik gerektirdiğini kavramsal olarak öğretir; çalışır bir spray/grooming kodu, somut boyut, offset ya da PoC içermez. Tüm fikirler <b>kendi makinende, kasıtlı zafiyetli ya da CTF hedeflerinde</b> öğrenilir ve savunmayı güçlendirmek içindir.',
+  intuition: {
+    paras: [
+      'Bir heap bug\'ı bulmak ile onu <em>güvenilir</em> kullanmak çok farklı iki şeydir. Bir use-after-free düşünelim: bir nesne serbest bırakıldı, ama bir pointer hâlâ onu gösteriyor. Saldırgan bu "dangling pointer"ı istismar etmek ister — ama serbest kalan yere ne düşeceğini kontrol edemezse, çökme dışında bir şey elde edemez. İşin kalbi şudur: <strong>serbest kalan o deliği, saldırganın kontrol ettiği bir nesneyle yeniden doldurmak.</strong>',
+      'Heap öngörülemezdir çünkü düzeni, programın o ana kadarki tüm tahsis/serbest bırakma (allocation/free) geçmişine bağlıdır. <strong>Heap grooming</strong> (veya <em>feng shui</em>) bu geçmişi saldırganın lehine önceden şekillendirmektir: önce bilinçli tahsisler yaparak heap\'i düzenli bir hale sok, hedef nesneyi öngörülebilir bir komşuluğa yerleştir, sonra bug\'ı tetikle. <strong>Heap spraying</strong> ise aynı boyutta çok sayıda nesne tahsis ederek belleği kendi verinle doldurup "nereye düşerse düşsün benim verim olsun" demektir.'
+    ],
+    ideas: [
+      { b: 'Bug ≠ güvenilir exploit', span: 'Heap düzeni öngörülemezse bir UAF yalnızca çökme verir; güvenilirlik ayrı bir mühendislik işidir.' },
+      { b: 'Deliği sen doldur', span: 'Serbest kalan yeri, aynı boyut sınıfından (size class) kontrol edilen bir nesneyle yeniden ele geçirmek (reclaim) hedeftir.' },
+      { b: 'Savunma: belirsizlik', span: 'Randomization, guard page, type isolation ve MTE heap\'i öngörülemez ya da yeniden-kullanımı yakalanabilir kılar.' }
+    ]
+  },
+  lab: {
+    intro: 'Aşağıda bir UAF\'ten sonra saldırganın heap\'i nasıl "groom" ettiğini kavramsal olarak izliyoruz. Soldaki kod bir serbest-bırak-sonra-kullan iskeletidir; sağdaki şeritte heap bölmelerinin durumu adım adım değişir. Boyutlar temsilîdir; gerçek adres, offset ya da çalışır kod yoktur.',
+    codeLabel: 'kurban (temsilî)', cmd: 'grooming akışı (kavramsal)',
+    foot: 'Bölme boyutları ve içerikler temsilîdir. Amaç, "neden deterministik heap gerekir" sorusunu göstermektir.',
+    code: [
+      { t: '<span class="t">struct</span> Session *s = <span class="f">alloc_session</span>();  <span class="cm">// 64B size class</span>' },
+      { t: '<span class="f">use</span>(s);' },
+      { t: '<span class="f">free_session</span>(s);        <span class="cm">// s serbest, ama...</span>', danger: true },
+      { t: '<span class="cm">// ...pointer hâlâ duruyor (dangling)</span>', danger: true },
+      { t: '' },
+      { t: '<span class="cm">// saldırgan: aynı 64B sınıfını kendi verisiyle doldurur</span>' },
+      { t: '<span class="cm">// (heap spray / reclaim)</span>' },
+      { t: 's-&gt;<span class="f">handler</span>();          <span class="cm">// artık saldırganın verisi</span>', danger: true }
+    ],
+    steps: [
+      { pc: [1, 2], title: 'Parçalı heap', note: null,
+        text: 'Başlangıçta heap karışıktır: çeşitli boyutlarda nesneler, aralarda serbest boşluklar. Hedef nesne (<code>Session</code>, 64B size class) buraya bir yere düşmüştür. Bu haliyle hiçbir şey öngörülebilir değil — saldırgan deliğe ne düşeceğini bilemez.',
+        cells: ['A','free','B','V','C','free','D','E'], victim: 3, ptr: { k: 'live', v: 's → Session (canlı)' },
+        achieve: 'Başlangıç: heap parçalı, düzen öngörülemez.' },
+      { pc: [3, 4], title: 'Nesne serbest, pointer kalıyor', note: 'UAF: serbest kaldı ama pointer duruyor.',
+        text: '<code>free_session(s)</code> nesneyi serbest bırakır: o 64B\'lik bölme artık allocator\'ın serbest listesinde (free list). Ama <code>s</code> pointer\'ı hâlâ o adresi gösteriyor — bu <strong>dangling pointer</strong>. Henüz bir şey ele geçirilmedi; delik boş.',
+        cells: ['A','free','B','HOLE','C','free','D','E'], hole: 3, ptr: { k: 'dangle', v: 's → (serbest bölme) · dangling' },
+        achieve: 'Delik açıldı: s artık serbest bir bölmeyi gösteriyor (dangling).' },
+      { pc: [6, 7], title: 'Groom: aynı boyutu sprey\'le', note: null,
+        text: 'Saldırgan <strong>aynı size class\'tan</strong> (64B) çok sayıda nesne tahsis eder — kontrol ettiği verilerle dolu. Allocator serbest listedeki o deliği tekrar kullanır (reclaim). Bu <strong>heap spraying</strong>: "nereye düşerse düşsün, benim verim olsun". Grooming ise bu tahsisleri bilinçli sırayla yaparak deliğin saldırgan nesnesiyle dolmasını olasılıktan kesinliğe yaklaştırır.',
+        cells: ['A','X','B','SPRAY','C','X','D','E'], reclaim: 3, spray: [1,5], ptr: { k: 'dangle', v: 's → (artık saldırgan verisi)' },
+        achieve: 'Delik yeniden ele geçirildi (reclaim): dangling pointer saldırganın nesnesini gösteriyor.' },
+      { pc: 8, title: 'Dangling pointer saldırgan verisini okur', note: 'Type confusion: eski tip, yeni (saldırgan) içerik.',
+        text: 'Program hâlâ <code>s</code>\'i geçerli bir <code>Session</code> sanıyor ve <code>s-&gt;handler()</code> çağırıyor. Ama o bellekte artık saldırganın yerleştirdiği değerler var. Eğer <code>handler</code> bir fonksiyon işaretçisiyse, saldırgan kontrol akışına (control flow) doğru ilk adımı atmıştır. Güvenilirlik buradan gelir: delik <em>öngörülebilir biçimde</em> saldırgan verisiyle dolduğu için exploit her seferinde çalışır.',
+        cells: ['A','X','B','SPRAY','C','X','D','E'], reclaim: 3, spray: [1,5], ptr: { k: 'danger', v: 's->handler() → saldırgan değeri' },
+        achieve: 'Güvenilir primitif: öngörülebilir reclaim, UAF\'i çökmeden kontrole çevirdi.' },
+      { pc: 8, title: 'Savunma: belirsizlik ve izolasyon', note: null,
+        text: 'Modern allocator\'lar bu zinciri kırar. <strong>Zone/free-list randomization</strong> deliğin sprey\'le dolmasını öngörülemez yapar. <strong>Type isolation</strong> (ör. XNU <code>kalloc_type</code>) farklı C tiplerini ayrı zone\'lara koyar: serbest kalan bir <code>Session</code>\'ın yerini başka tipte bir nesne alamaz, type confusion zorlaşır. <strong>MTE</strong> her tahsise bir etiket verir; serbest sonrası etiket değişir, dangling pointer\'ın etiketi tutmaz ve erişim anında yakalanır. <strong>Guard page</strong> ve <strong>free-list mangling</strong> ek katmanlardır.',
+        cells: ['A','X','B','TAG✗','C','X','D','E'], guard: 3, spray: [1,5], ptr: { k: 'safe', v: 's → etiket uyuşmazlığı · erişim reddedildi' },
+        achieve: 'Savunma: randomization + kalloc_type + MTE reclaim\'i öngörülemez/yakalanabilir yapar.' }
+    ],
+    render: function (s, stateEl, u) {
+      var names = { A:'obj A', B:'obj B', C:'obj C', D:'obj D', E:'obj E', X:'spray', V:'VICTIM', HOLE:'(boş)', SPRAY:'spray', 'TAG✗':'tag ✗' };
+      var sizes = { A:'128B', B:'32B', C:'256B', D:'48B', E:'96B', X:'64B', V:'64B', HOLE:'64B', SPRAY:'64B', 'TAG✗':'64B', free:'—' };
+      var spray = s.spray || [];
+      var cells = s.cells.map(function (c, i) {
+        var cls = 'cell';
+        if (c === 'free') cls += ' free';
+        else if (i === s.victim) cls += ' victim';
+        else if (i === s.hole) cls += ' hole';
+        else if (i === s.reclaim) cls += ' reclaim';
+        else if (i === s.guard) cls += ' hole';
+        else if (spray.indexOf(i) >= 0) cls += ' spray';
+        var label = c === 'free' ? 'free' : (names[c] || c);
+        return '<div class="' + cls + '"><span class="ct">' + u.esc(label) + '</span><span class="cs">' + u.esc(sizes[c] || '') + '</span></div>';
+      }).join('');
+      var p = s.ptr || {};
+      var pcls = 'ptr' + (p.k === 'danger' ? ' danger' : (p.k === 'safe' ? ' safe' : ''));
+      var note = s.note ? '<div class="ptr danger" style="margin-top:0;margin-bottom:10px"><b>DURUM</b><span class="pv">' + u.esc(s.note) + '</span></div>' : '';
+      stateEl.innerHTML =
+        note +
+        '<p class="lab-label">heap şeridi (64B size class izleniyor)</p>' +
+        '<div class="heaprow">' + cells + '</div>' +
+        '<div class="' + pcls + '"><b>POINTER s</b><span class="pv">' + u.esc(p.v || '') + '</span></div>' +
+        '<div class="achieve"><b>NE ELDE EDİLDİ</b>' + u.esc(s.achieve) + '</div>';
+    }
+  },
+  deepDive: {
+    heading: 'Derinlemesine: belirsizlikten belirliliğe, ve geri',
+    html:
+      '<p class="lead">Heap exploitation\'ın asıl zorluğu bug bulmak değil, bug\'ı <strong>güvenilir</strong> kılmaktır. Bu bölüm heap\'i neden öngörülemez olduğunu, saldırganın onu nasıl deterministik hale getirmeye çalıştığını (spray ve grooming) ve modern allocator\'ların bu determinizmi nasıl geri aldığını savunmacı gözüyle çözer. Her şey kavramsaldır; silahlandırılmış hiçbir ayrıntı yoktur.</p>' +
+
+      '<h3>1. Heap neden öngörülemez</h3>' +
+      '<p>Stack\'in aksine heap\'in düzeni derleme zamanında belli değildir: hangi nesnenin nereye düşeceği, programın o ana dek yaptığı tüm <code>malloc</code>/<code>free</code> çağrılarının sırasına, allocator\'ın serbest listelerinin (free list) durumuna ve boyut sınıflarına (size class) bağlıdır. Aynı program iki kez çalıştığında aynı nesne farklı yerlere düşebilir. Bir saldırgan için bu belirsizlik düşmandır: serbest kalan bir deliğe neyin düşeceğini bilemezse, bir UAF yalnızca rastgele bir çökmedir.</p>' +
+
+      '<h3>2. Heap spraying: belleği kendi verinle doldur</h3>' +
+      '<p><strong>Heap spraying</strong>, tek bir deliği hedeflemek yerine heap\'in büyük bir bölümünü saldırganın verisiyle doldurma tekniğidir. Fikir basittir: aynı boyutta yüzlerce/binlerce nesne tahsis edersen, kontrol akışı öngörülemez bir adrese atlasa bile büyük olasılıkla senin verine düşer.</p>' +
+      '<div class="manpage src-docs"><div class="ref">Wikipedia · Heap spraying</div><p class="orig">In computer security, heap spraying is a technique used in exploits to facilitate arbitrary code execution.</p><p>Heap spraying, keyfi kod çalıştırmayı (arbitrary code execution) <em>kolaylaştıran</em> bir tekniktir — tek başına bir zafiyet değil, var olan bir bug\'ı güvenilir kılan bir yardımcıdır. Bug akışı ele geçirir; spray, o akışın saldırgan verisine düşmesini olasılıkla garantiler.</p></div>' +
+      '<div class="manpage src-docs"><div class="ref">Wikipedia · Heap spraying</div><p class="orig">This means that the sprayed heap will roughly be in the same location each and every time the heap spray is run.</p><p>Sprey sonrası heap kabaca her çalıştırmada aynı yerde olur. "Kabaca aynı yer" ifadesi kritiktir: spray determinizmi <em>olasılıksal</em> olarak sağlar. Saldırganın istediği tam da budur — belirsizliği, exploit\'in güvenilir çalışacağı kadar azaltmak.</p></div>' +
+
+      '<h3>3. Heap feng shui / grooming: düzeni önceden şekillendir</h3>' +
+      '<p>Spray kaba kuvvetse, <strong>feng shui</strong> hassas cerrahidir. Terim Alexander Sotirov\'un 2007\'deki "Heap Feng Shui in JavaScript" çalışmasından gelir: saldırgan, hedef bug\'ı tetiklemeden <em>önce</em> bir dizi dikkatli tahsis ve serbest bırakma yaparak heap\'i istediği şekle sokar. Amaç, serbest kalacak deliğin tam da saldırganın kontrol ettiği bir nesneyle komşu (veya onunla dolacak) olmasını sağlamaktır.</p>' +
+      '<p>Pratikte grooming şu adımlara dayanır: (1) hedefle <strong>aynı size class\'tan</strong> çok sayıda nesne tahsis ederek allocator\'ı düzenli bir duruma getir; (2) aralara bilinçli delikler aç; (3) bug\'ı tetikle; (4) serbest kalan deliği, hemen ardından yapılan bir tahsisle (reclaim) kendi nesnenle doldur. Bu yüzden grooming bir "güvenilirlik mühendisliğidir": rastgele bir çökmeyi, her seferinde aynı sonucu veren bir primitife dönüştürür.</p>' +
+      '<div class="manpage src-docs"><div class="ref">docs · size class &amp; reclaim</div><p class="orig">allocators serve same-sized requests from the same pool of free chunks</p><p>Allocator\'lar aynı boyuttaki istekleri aynı serbest yonga (chunk) havuzundan karşılar. Grooming\'in temel kaldıracı budur: serbest kalan bir nesnenin yerini, <em>aynı size class\'tan</em> yeni bir tahsis alabilir. Bu yüzden saldırgan hedefle aynı boyutta nesneler sprey\'ler. (Kavramın özeti; ayrıntı için allocator belgelerine bakınız.)</p></div>' +
+
+      '<h3>4. UAF ile bağ: deliği yeniden ele geçirmek</h3>' +
+      '<p>Grooming\'in en klasik kullanımı use-after-free\'dir. Bir nesne serbest kalır ama bir dangling pointer onu gösterir. Saldırgan, serbest kalan bölmeyi aynı boyuttan kontrollü bir nesneyle yeniden ele geçirirse (reclaim), dangling pointer artık saldırganın verisini gösterir. Program eski tipi (<code>Session</code>) beklerken belleği saldırgan kontrol eder — bu bir <strong>type confusion</strong>\'a dönüşebilir. Bu zincirin ayrıntısı için bu serideki UAF ve kalloc modüllerine bakınız.</p>' +
+
+      '<h3>5. Savunma: determinizmi geri al</h3>' +
+      '<p>Modern allocator\'lar tam olarak bu güvenilirliği hedef alır. Mantık nettir: saldırgan determinizme muhtaçsa, savunma belirsizliği (ve yakalanabilirliği) geri getirmelidir.</p>' +
+      '<dl class="deflist">' +
+      '<dt>free-list randomization</dt><dd>Serbest bölmelerin hangi sırayla yeniden verileceğini rastgeleleştirir; reclaim\'in öngörülebilirliğini düşürür.</dd>' +
+      '<dt>type isolation (kalloc_type)</dt><dd>XNU\'da farklı C tipleri ayrı zone\'lara düşer; serbest kalan bir nesnenin yerini <em>farklı tipte</em> bir nesne alamaz, type confusion zorlaşır.</dd>' +
+      '<dt>guard page</dt><dd>Zone\'ların arasına erişilince hata veren sayfalar koyar; sınır-dışı (out-of-bounds) grooming girişimlerini çökertir.</dd>' +
+      '<dt>free-list mangling</dt><dd>Serbest liste işaretçilerini şifreler/karıştırır; bir sızıntı olmadan listenin ele geçirilmesini zorlaştırır.</dd>' +
+      '<dt>MTE (Memory Tagging)</dt><dd>Her tahsise bir etiket atar; serbest sonrası etiket değişir. Dangling pointer eski etiketi taşıdığı için reclaim edilen belleğe erişim <em>anında</em> yakalanır — grooming ne kadar iyi olursa olsun.</dd>' +
+      '</dl>' +
+      '<p>Sonuç: heap grooming, saldırının "görünmeyen yarısıdır" — bug kadar önemli ama daha az konuşulur. Savunmacı için dersi açıktır: bir bug\'ı kapatmak kadar, bug\'ın <em>güvenilir</em> hale gelmesini engellemek de değerlidir. kalloc_type ve MTE gibi korumalar tam da bu güvenilirliği kırdığı için modern sistemlerde bir UAF\'in exploit\'e dönme maliyetini katbekat artırır.</p>'
+  },
+  pipeline: { intro: 'Heap grooming, genel sömürü boru hattında (exploitation pipeline) "bug → güvenilir primitif" geçişini sağlayan görünmez adımdır: bug kontrolü verir, grooming o kontrolü <em>her seferinde</em> tekrarlanabilir kılar.' },
+  underHood: {
+    heading: 'Kaputun altında: grooming\'in ekonomisi',
+    html: '<p class="prose">Grooming\'i bir "güvenilirlik vergisi" olarak düşün: saldırgan, bir bug\'ı silaha çevirmek için fazladan iş yapmak zorundadır. Her savunma katmanı bu vergiyi artırır ve bir noktada saldırıyı ekonomik olarak değersiz kılar.</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Saldırgan ihtiyacı</th><th>Grooming tekniği</th><th>Onu kıran savunma</th></tr></thead><tbody>' +
+      '<tr><td>Deliği öngörülebilir doldurmak</td><td>Aynı size class\'tan spray</td><td>free-list randomization</td></tr>' +
+      '<tr><td>Serbest yeri aynı tiple almak</td><td>Reclaim (UAF)</td><td>type isolation / kalloc_type</td></tr>' +
+      '<tr><td>Komşu bölmeye taşmak</td><td>Feng shui yerleşimi</td><td>guard page</td></tr>' +
+      '<tr><td>Serbest listeyi ele geçirmek</td><td>Free-list üzerine yazma</td><td>free-list mangling</td></tr>' +
+      '<tr><td>Dangling erişimi gizlemek</td><td>Hızlı reclaim</td><td>MTE / tagging (anında yakalar)</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px">Dikkat: tablodaki hiçbir satır bir "tarif" değildir — her biri bir <em>kavramı</em> ve onu etkisizleştiren savunmayı eşler. Asıl mesaj, savunmaların neden <strong>güvenilirliği</strong> hedef aldığıdır: bir bug\'ı tamamen kapatamadığın durumda bile, onu güvenilmez kılmak çoğu saldırganı eler.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Kendi allocator\'ının size class\'larını gözlemle', p: 'Bir allocator\'ın aynı boyuttaki istekleri nasıl grupladığını görmek grooming\'in temelini somutlaştırır. Aşağıdaki küçük program, ardışık aynı-boyut tahsislerin adreslerini yazdırır — çoğu zaman düzenli bir desen görürsün. Bu bir saldırı değil, allocator davranışını anlamaktır.',
+        shells: [{ label: 'terminal', copy: 'cat > sc.c << "EOF"\n#include <stdio.h>\n#include <stdlib.h>\nint main(void){\n  for(int i=0;i<8;i++){ void*p=malloc(64); printf("%p\\n",p); }\n  return 0;\n}\nEOF\ncc -o sc sc.c && ./sc', pre: '<span class="c">$</span> ./sc\n<span class="c"># (temsilî) aynı 64B sınıfı; adresler çoğu zaman düzenli aralıklarla</span>\n<span class="c"># bu düzen, grooming\'in neden mümkün olduğunu gösterir</span>' }] },
+      { h3: '2. Glibc tcache / ayırıcı sertleştirmesini oku', p: 'Modern glibc, serbest liste işaretçilerini "safe-linking" ile karıştırır. Belgeleri okumak, savunmanın grooming\'i nasıl zorlaştırdığını gösterir.',
+        shells: [{ label: 'referans', copy: 'https://sourceware.org/glibc/wiki/MallocInternals', pre: '<span class="c"># glibc MallocInternals → tcache, fastbins, safe-linking</span>\n<span class="c"># "free-list mangling" fikrinin gerçek bir örneği</span>' }] },
+      { h3: '3. Güvenli ortamda pratik', p: 'Heap exploitation\'ı meşru biçimde öğrenmenin yolu CTF ve kasıtlı zafiyetli hedeflerdir. pwn.college ve how2heap, grooming/spray kavramlarını kendi izole ortamlarında, yasal biçimde çalıştırır.',
+        shells: [{ label: 'referans', copy: 'https://github.com/shellphish/how2heap\nhttps://pwn.college/', pre: '<span class="c"># shellphish/how2heap → heap teknikleri, çalışır örneklerle (izole)</span>\n<span class="c"># pwn.college → rehberli heap modülleri</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Bir heap bug\'ı neden tek başına genelde güvenilir değildir?', opts: ['Allocator her zaman çöker', 'Heap\'in o anki düzeni öngörülemez olduğu için', 'Çünkü ASLR heap\'i şifreler'], answer: 'Heap\'in o anki düzeni öngörülemez olduğu için',
+        ok: 'Doğru. Heap düzeni tüm tahsis/serbest geçmişine bağlıdır; saldırgan deliğe ne düşeceğini kontrol edemezse yalnızca çökme elde eder. Güvenilirlik ayrı bir iştir.', no: 'İpucu: stack\'in aksine heap\'in düzenini ne belirler?' },
+      { q: 'Heap spraying temelde ne yapar?', opts: ['Belleği temizler', 'Aynı boyutta çok sayıda nesneyle belleği saldırgan verisiyle doldurur', 'free-list\'i şifreler'], answer: 'Aynı boyutta çok sayıda nesneyle belleği saldırgan verisiyle doldurur',
+        ok: 'Doğru. Spray, "nereye düşerse düşsün benim verim olsun" mantığıyla heap\'i öngörülebilir hale getirir; bug\'ın akışı saldırgan verisine düşer.', no: 'İpucu: "spray" = püskürtmek. Belleğe ne püskürtülür?' },
+      { q: 'kalloc_type gibi type isolation grooming\'i nasıl zorlaştırır?', opts: ['Heap\'i büyütür', 'Farklı tipleri ayrı zone\'lara koyarak serbest yerin farklı tiple alınmasını engeller', 'Tüm tahsisleri yavaşlatır'], answer: 'Farklı tipleri ayrı zone\'lara koyarak serbest yerin farklı tiple alınmasını engeller',
+        ok: 'Doğru. Serbest kalan bir nesnenin yerini yalnızca aynı tipten bir nesne alabilir; bu, UAF\'teki type confusion\'ı ve reclaim güvenilirliğini ciddi biçimde kırar.', no: 'İpucu: "type isolation" neyi ayırır? Reclaim için saldırgan neye muhtaçtı?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Ofansif Modül 14', title: 'Modern iOS zincirleri', href: 'offensive-ios-chains.html', desc: 'FORCEDENTRY ve diğer dönüm noktalarının teknik anatomisi.' },
+  sources: [
+    { href: 'https://en.wikipedia.org/wiki/Heap_spraying', text: 'Wikipedia — Heap spraying', note: 'tanım ve mantık' },
+    { href: 'https://www.blackhat.com/presentations/bh-europe-07/Sotirov/Presentation/bh-eu-07-sotirov-apr19.pdf', text: 'Sotirov — "Heap Feng Shui in JavaScript" (Black Hat 2007)', note: 'terimin kaynağı' },
+    { href: 'https://github.com/shellphish/how2heap', text: 'shellphish/how2heap', note: 'heap teknikleri, izole örnekler' },
+    { href: 'https://sourceware.org/glibc/wiki/MallocInternals', text: 'glibc — Malloc Internals', note: 'size class, tcache, safe-linking' },
+    { href: 'https://googleprojectzero.blogspot.com/', text: 'Google Project Zero', note: 'gerçek zincirlerde grooming analizleri' }
+  ],
+  pageTitle: 'Heap Grooming'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

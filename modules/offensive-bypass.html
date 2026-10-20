@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Korumaları Aşma</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: ROP yığını + gadget kataloğu */
+.ropwrap { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 560px) { .ropwrap { grid-template-columns: 1fr; } }
+.stack { display: grid; gap: 4px; align-content: start; }
+.stack .sl { font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.slot { border: 1.5px solid var(--line); border-radius: 8px; background: var(--surface); padding: 7px 9px; display: grid; gap: 1px; min-width: 0; }
+.slot .addr { font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.slot .lbl { font-family: var(--f-mono); font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+.slot.cur { border-color: var(--track); background: var(--track-soft); }
+.slot.cur .lbl { color: var(--track); }
+.slot.done { opacity: .5; }
+.slot.ret .lbl { color: var(--muted); font-weight: 400; }
+.gcat { display: grid; gap: 5px; align-content: start; }
+.gcat .sl { font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.gad { border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; display: grid; gap: 1px; min-width: 0; background: var(--surface); }
+.gad .ga { font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.gad .gi { font-family: var(--f-mono); font-size: 12px; }
+.gad.used { border-color: var(--track); }
+.gad.used .ga { color: var(--track); }
+.wall { border: 1.5px dashed var(--bad); background: var(--bad-soft); border-radius: var(--r); padding: 9px 11px; font-size: 13px; color: var(--bad); display: flex; gap: 8px; align-items: center; }
+.achieve { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 10px; font-size: 13.5px; }
+.achieve b { font-family: var(--f-mono); font-size: 11px; color: var(--muted); font-weight: 700; display: block; margin-bottom: 2px; }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'offensive',
+  crumbs: 'ofansif › korumaları aşma › modül 5',
+  eyebrow: 'Ofansif izlek · Modül 5 · Aşma kavramları',
+  titleHTML: 'Korumaları aşma: <code>ROP</code> ve yığın hazırlama',
+  lede: 'Bir koruma bir yolu kapattığında saldırgan başka bir yol açar. Bu modülde DEP/NX\'in kod enjeksiyonunu (code injection) nasıl öldürdüğünü ve saldırganın yanıtı olan dönüş-odaklı programlamanın (return-oriented programming, ROP) mantığını kavramsal olarak izleyeceksin; ardından ASLR\'yi bir sızıntıyla (leak) aşmanın ve yığını hazırlamanın (heap grooming) neden gerektiğini göreceksin.',
+  meta: ['~20 dk', 'ön koşul: primitifler + korumalar', 'bağlam: x86-64 / ARM'],
+  ethic: '<b>İlke.</b> Bu modül yalnızca mekanizmayı ve neden işe yaradığını kavramsal olarak öğretir; çalışır ya da silahlandırılmış exploit kodu, somut gadget zinciri içermez. Komutlar kendi ikili dosyanı (binary) inceler. Tüm deneyler <b>kendi makinende, kasıtlı zafiyetli ya da CTF hedeflerinde</b> yapılır.',
+  intuition: {
+    paras: [
+      'Bir önceki modülde her korumanın (mitigation) sömürü merdiveninin bir basamağını kestiğini gördük. Peki saldırgan ne yapar? Korumayı değersiz kılmaz — <strong>etrafından dolaşır</strong>. Her aşmanın ortak fikri şu: kapatılan yetenek yerine, aynı amaca ulaştıran başka bir mevcut yeteneği kullanmak.',
+      'En klasik örnek DEP/NX\'tir. Veri çalıştırılamadığı için saldırgan kendi kodunu enjekte edemez. Ama programın (ve libc\'nin) belleğinde zaten çalıştırılabilir kod vardır. Saldırgan bu koddan küçük, <code>ret</code> ile biten parçaları (<strong>gadget</strong>) seçip yığına (stack) adreslerini dizer; her gadget işini yapıp bir sonrakine döner. Hiç yeni kod enjekte edilmeden, var olan koddan yeni bir program yazılmış olur. Bu <strong>ROP</strong>\'tur.'
+    ],
+    ideas: [
+      { b: 'Aşma = yolu değiştir', span: 'Koruma bir yeteneği kapatır; saldırgan aynı sonucu veren başka bir yola geçer (enjeksiyon → ROP).' },
+      { b: 'Var olanı kullan', span: 'ROP yeni kod enjekte etmez; programdaki mevcut kod parçalarını (gadget) zincirler. W^X buna engel değildir.' },
+      { b: 'Önce bilgi, sonra saldırı', span: 'ASLR yüzünden gadget adresleri bilinmez; bir sızıntı (leak) tabanı çözmeden zincir kurulamaz.' }
+    ]
+  },
+  lab: {
+    intro: 'Aşağıda bir yığın taşması (stack overflow) senaryosunu izliyoruz. Soldaki kod zafiyetli fonksiyon; sağda saldırganın yığına kurduğu dönüş adresleri dizisini (ROP zinciri) ve bunların işaret ettiği gadget\'ları adım adım göreceksin. Zincir kavramsaldır — gerçek adres ve bayt yoktur.',
+    codeLabel: 'kurban (temsilî)', cmd: 'exploit akışı (kavramsal)',
+    foot: 'Adresler ve gadget\'lar temsilîdir; çalışır bir zincir değildir. Amaç mekanizmayı göstermektir.',
+    code: [
+      { t: '<span class="t">void</span> <span class="f">handle</span>(<span class="t">int</span> fd) {' },
+      { t: '    <span class="t">char</span> buf[<span class="n">64</span>];' },
+      { t: '    <span class="f">read</span>(fd, buf, <span class="n">512</span>);   <span class="cm">// taşma: 512 > 64</span>', danger: true },
+      { t: '    <span class="cm">// dönüş adresi saldırganın verisiyle ezilir</span>', danger: true },
+      { t: '}' },
+      { t: '' },
+      { t: '<span class="cm">// NX açık: buf içindeki "shellcode" ÇALIŞMAZ</span>' },
+      { t: '<span class="cm">// yanıt: var olan koddan gadget zinciri (ROP)</span>' }
+    ],
+    steps: [
+      { pc: [3, 7], title: 'NX duvarı', wall: 'NX açık: yığına yazılan veri çalıştırılamaz (W^X).',
+        text: 'Saldırgan dönüş adresini ezebiliyor ama klasik yöntem — yığına shellcode koyup oraya atlamak — işe yaramaz: NX yüzünden veri çalıştırılamaz. Enjeksiyon yolu kapalı. Başka bir yetenek lazım.',
+        gadgets: [], stack: [], cur: -1, achieve: 'Henüz hiçbir şey: kod enjeksiyonu engellendi.' },
+      { pc: 8, title: 'Gadget avı', wall: null,
+        text: 'Saldırgan programın ve libc\'nin çalıştırılabilir bölümlerini tarar ve <code>ret</code> ile biten küçük kod parçaları (gadget) bulur. Her gadget minik bir yetenektir: bir register\'a değer koymak, bellek yazmak, bir syscall tetiklemek. Bunlar zaten var olan, imzalı, çalıştırılabilir koddur.',
+        gadgets: [
+          { a: '0x…401a', i: 'pop rdi; ret', used: false },
+          { a: '0x…40b2', i: 'pop rsi; ret', used: false },
+          { a: '0x…40c9', i: 'pop rdx; ret', used: false },
+          { a: '0x…4510', i: 'syscall; ret', used: false }
+        ],
+        stack: [], cur: -1, achieve: 'Yapı taşları hazır: dört gadget bulundu.' },
+      { pc: 8, title: 'Zinciri yığına kur', wall: null,
+        text: 'Taşan veri, dönüş adresinin üstüne bir dizi adres yazar. Fonksiyon dönünce ilk gadget\'a gider; o <code>ret</code> deyince yığındaki sıradaki adrese, yani sonraki gadget\'a geçilir. Yığın artık bir "program": gadget adresleri + aralarına konan veriler (örn. register\'a yüklenecek değerler).',
+        gadgets: [
+          { a: '0x…401a', i: 'pop rdi; ret', used: true },
+          { a: '0x…40b2', i: 'pop rsi; ret', used: true },
+          { a: '0x…40c9', i: 'pop rdx; ret', used: true },
+          { a: '0x…4510', i: 'syscall; ret', used: true }
+        ],
+        stack: [
+          { a: 'ret+0', l: '→ pop rdi; ret', k: 'ret' },
+          { a: 'ret+8', l: 'değer: &"/bin/sh"', k: 'data' },
+          { a: 'ret+16', l: '→ pop rsi; ret', k: 'ret' },
+          { a: 'ret+24', l: 'değer: 0', k: 'data' },
+          { a: 'ret+32', l: '→ syscall; ret', k: 'ret' }
+        ], cur: -1, achieve: 'Zincir kuruldu: register\'ları ayarlayıp bir syscall çağıracak (kavramsal).' },
+      { pc: 8, title: 'Zincir çalışır', wall: null,
+        text: 'Fonksiyon döner ve zincir yürümeye başlar. İlk gadget bir değeri register\'a çeker, <code>ret</code> ile ikinciye geçer, o da bir sonraki değeri çeker... Her adım var olan koddan. CPU açısından bu tamamen meşru görünür: hiçbir yere yeni kod yazılmadı, yalnızca mevcut kod parçaları yeni bir sırayla çalıştırıldı.',
+        gadgets: [
+          { a: '0x…401a', i: 'pop rdi; ret', used: true },
+          { a: '0x…40b2', i: 'pop rsi; ret', used: true },
+          { a: '0x…40c9', i: 'pop rdx; ret', used: true },
+          { a: '0x…4510', i: 'syscall; ret', used: true }
+        ],
+        stack: [
+          { a: 'ret+0', l: '→ pop rdi; ret', k: 'ret' },
+          { a: 'ret+8', l: 'değer: &"/bin/sh"', k: 'data' },
+          { a: 'ret+16', l: '→ pop rsi; ret', k: 'ret' },
+          { a: 'ret+24', l: 'değer: 0', k: 'data' },
+          { a: 'ret+32', l: '→ syscall; ret', k: 'ret' }
+        ], cur: 0, achieve: 'DEP/NX aşıldı: enjeksiyonsuz, var olan kodla kontrol akışı yönlendirildi.' },
+      { pc: 8, title: 'ASLR sorunu: adresler bilinmiyor', wall: 'ASLR açık: gadget adresleri her çalıştırmada farklı.',
+        text: 'Gerçekte bir sorun var: ASLR yüzünden gadget\'ların gerçek adresi her çalıştırmada değişir. Yukarıdaki <code>0x…</code> değerleri önceden bilinemez. Zincir kurulamaz — çünkü içine yazılacak adresler belli değil. Saldırganın önce bir <strong>bilgi sızıntısı (info leak)</strong> bulması gerekir.',
+        gadgets: [], stack: [], cur: -1, leak: true, achieve: 'Zincir askıda: taban adres (base) bilinmeden adresler yazılamaz.' },
+      { pc: 8, title: 'Sızıntı + yığın hazırlama', wall: null,
+        text: 'Saldırgan bir sızıntı primitifiyle (örn. başlatılmamış bellek okuma) bir modülün çalışma-zamanı adresini öğrenir; buradan <strong>taban adresi</strong> hesaplar ve tüm gadget adreslerini ona göre düzeltir. Heap tabanlı saldırılarda ayrıca <strong>yığın/öbek hazırlama (heap grooming, feng shui)</strong> yapılır: hedef nesneyi öngörülebilir bir yere düşürmek için önceden tahsis/serbest bırakma deseni kurulur. Artık zincir güvenilir.',
+        gadgets: [
+          { a: 'base+1a', i: 'pop rdi; ret', used: true },
+          { a: 'base+b2', i: 'pop rsi; ret', used: true },
+          { a: 'base+c9', i: 'pop rdx; ret', used: true },
+          { a: 'base+510', i: 'syscall; ret', used: true }
+        ],
+        stack: [
+          { a: 'ret+0', l: '→ base+1a (çözüldü)', k: 'ret' },
+          { a: 'ret+8', l: 'değer: &"/bin/sh"', k: 'data' },
+          { a: 'ret+16', l: '→ base+b2', k: 'ret' },
+          { a: 'ret+24', l: 'değer: 0', k: 'data' },
+          { a: 'ret+32', l: '→ base+510', k: 'ret' }
+        ], cur: 0, achieve: 'ASLR de aşıldı: sızıntı tabanı verdi, grooming güvenilirliği sağladı. Sıradaki savunma: CFI/PAC/MTE.' }
+    ],
+    render: function (s, stateEl, u) {
+      var wall = s.wall ? '<div class="wall"><span>⛔</span><span>' + u.esc(s.wall) + '</span></div>' : '';
+      var leak = s.leak ? '<div class="wall" style="border-color:var(--warn);background:var(--warn-soft);color:var(--warn)"><span>⚠</span><span>Çözüm: önce bir bilgi sızıntısı (info leak) gerekli.</span></div>' : '';
+      var stack = s.stack.length
+        ? '<div class="stack"><span class="sl">yığın (stack) — düşük adresten yukarı</span>' +
+          s.stack.map(function (e, i) {
+            var cls = 'slot ' + (e.k === 'ret' ? 'ret' : '') + (s.cur >= 0 && e.k === 'ret' ? (i <= s.cur * 2 ? ' done' : (i === 0 ? ' cur' : '')) : '');
+            return '<div class="' + cls + '"><span class="addr">' + u.esc(e.a) + '</span><span class="lbl">' + u.esc(e.l) + '</span></div>';
+          }).join('') + '</div>'
+        : '<div class="stack"><span class="sl">yığın (stack)</span><div class="slot ret"><span class="lbl">— henüz zincir yok —</span></div></div>';
+      var gcat = s.gadgets.length
+        ? '<div class="gcat"><span class="sl">gadget kataloğu (var olan kod)</span>' +
+          s.gadgets.map(function (g) {
+            return '<div class="gad ' + (g.used ? 'used' : '') + '"><span class="ga">' + u.esc(g.a) + '</span><span class="gi">' + u.esc(g.i) + '</span></div>';
+          }).join('') + '</div>'
+        : '<div class="gcat"><span class="sl">gadget kataloğu</span><div class="gad"><span class="gi" style="color:var(--muted)">— henüz taranmadı —</span></div></div>';
+      stateEl.innerHTML =
+        (wall || leak ? '<p class="lab-label">Durum</p>' + wall + leak : '') +
+        '<p class="lab-label"' + (wall || leak ? ' style="margin-top:12px"' : '') + '>ROP zinciri</p>' +
+        '<div class="ropwrap">' + stack + gcat + '</div>' +
+        '<div class="achieve"><b>NE ELDE EDİLDİ</b>' + u.esc(s.achieve) + '</div>';
+    }
+  },
+  deepDive: {
+    heading: 'Derinlemesine: neden tek bir koruma yetmez',
+    html:
+      '<p class="lead">Bir mitigation bir saldırı sınıfını kapatır, saldırganı yok etmez. Kapatılan yeteneğin yerine aynı sonucu veren, hâlâ açık başka bir yetenek aranır. Bu bölüm o devinimi savunmacı gözüyle çözer: her aşım kavramını hangi modern korumanın hedeflediğini gösterir. Amaç saldırmak değil, <strong>defense-in-depth</strong>\'in neden zorunlu olduğunu görmek. Kaynaklar aşağıda; silahlandırılmış hiçbir ayrıntı yoktur.</p>' +
+
+      '<h3>1. DEP/NX kod enjeksiyonunu öldürür</h3>' +
+      '<p>İlk kuşak saldırı basitti: tampona (buffer) makine kodu yaz, akışı oraya çevir. <strong>DEP</strong> (Data Execution Prevention) / <strong>NX</strong> (No-eXecute) biti buna son verir: bir bellek sayfası ya yazılabilir ya çalıştırılabilir olur, ikisi birden değil (W^X). Veri taşıyan sayfalar çalıştırılamaz işaretlenir; CPU oradaki baytları çalıştırmayı reddeder.</p>' +
+      '<div class="manpage src-docs"><div class="ref">Wikipedia · Data Execution Prevention</div><p class="orig">marking certain parts of memory as being intended to hold only data</p><p>Bellek sayfaları yalnızca veri tutacak şekilde işaretlenir ve bu işaret, enjekte edilen kabuk kodunun (shellcode) çalıştırılmasını donanım düzeyinde engeller. Böylece "veriyi koda çevirme" yolu kapanır.</p></div>' +
+
+      '<h3>2. Code reuse: ROP/JOP neden DEP\'i aşar</h3>' +
+      '<p>DEP yeni kod yazmayı engeller ama <em>var olan</em> kodu engellemez. Program ve libc zaten çalıştırılabilir işaretli, imzalı kodla doludur. Saldırgan kendi kodunu enjekte etmek yerine bu koddan küçük parçaları (gadget) yeni bir sırayla zincirler. <strong>ROP</strong> (return-oriented programming) <code>ret</code> ile biten parçaları, <strong>JOP</strong> (jump-oriented programming) dolaylı dallanmaları (indirect branch) kullanır.</p>' +
+      '<div class="manpage src-docs"><div class="ref">Wikipedia · Return-oriented programming</div><p class="orig">Return-oriented programming (ROP) is a computer security exploit technique that allows an attacker to execute code</p><p>ROP, saldırganın korumalar yürürlükteyken bile kod çalıştırmasına izin veren bir sömürü tekniğidir. Kritik nokta: çalıştırılan kod <em>zaten çalıştırılabilir işaretli</em> olduğundan DEP devreye girmez.</p></div>' +
+      '<div class="manpage src-docs"><div class="ref">Wikipedia · Return-oriented programming</div><p class="orig">rather uses instruction sequences already present in executable memory</p><p>Teknik, bellekte hâlihazırda bulunan komut dizilerini kullanır. Hiçbir yeni kod yazılmadığı için W^X ihlali olmaz; DEP\'in kapattığı yol, var olan kodu yeniden kullanarak (code reuse) atlanır.</p></div>' +
+
+      '<h3>3. ASLR ve bilgi sızıntısı (info leak)</h3>' +
+      '<p>ROP\'un işe yaraması için gadget\'ların <em>adresini</em> bilmek gerekir. <strong>ASLR</strong> (Address Space Layout Randomization) kod ve kütüphaneleri her çalıştırmada rastgele adreslere koyarak bunu zorlaştırır. Ama randomizasyon tek başına yetmez: saldırgan bir <strong>info leak</strong> (bir adresi dışarı sızdıran ikinci bir zafiyet) bulursa tüm haritayı yeniden hesaplar.</p>' +
+      '<div class="manpage src-docs"><div class="ref">Wikipedia · Return-oriented programming</div><p class="orig">Although widely deployed by modern operating systems, ASLR is vulnerable to information leakage attacks</p><p>ASLR modern işletim sistemlerinde yaygın olsa da bilgi sızıntısı saldırılarına açıktır. Dersi nettir: bir rastgelelik katmanı, onu açığa çıkaran tek bir sızıntıyla çökebilir — bu yüzden ASLR tek savunma değil, bir katman olarak düşünülür.</p></div>' +
+
+      '<h3>4. Zayıf halka: saldırı sınıfı → onu kapatan koruma</h3>' +
+      '<p>Her aşım kavramı belirli bir korumanın bıraktığı boşluğu hedefler. Savunmacının işi bu boşlukları üst üste bindirmektir; bir katman delinse bile diğeri saldırıyı durdurur. Aşağıdaki eşleme, modern sistemlerin neden <em>birçok</em> koruma taşıdığını özetler.</p>' +
+      '<dl class="deflist">' +
+      '<dt>Code injection</dt><dd>DEP / NX / W^X — veri sayfalarını çalıştırılamaz yapar.</dd>' +
+      '<dt>ROP (return-oriented)</dt><dd>Shadow stack (ör. Intel CET) ve <strong>PAC</strong> (Pointer Authentication) — dönüş adreslerini (return address) doğrular/imzalar.</dd>' +
+      '<dt>JOP / dolaylı çağrı ele geçirme</dt><dd><strong>CFI</strong> (Control Flow Integrity) ve BTI (Branch Target Identification) — dolaylı dalların geçerli hedeflere gitmesini zorlar.</dd>' +
+      '<dt>Sabit adres varsayımı</dt><dd>ASLR / KASLR — düzeni rastgeleleştirir; info leak\'e karşı pointer tagging ile desteklenir.</dd>' +
+      '<dt>UAF / heap yeniden kullanımı</dt><dd>Type isolation (ör. kalloc_type), guard page, <strong>MTE</strong> (Memory Tagging) — bellek yeniden kullanımını tipe/etikete bağlar.</dd>' +
+      '</dl>' +
+
+      '<h3>5. Savunma dersi: korumalar neyi hedefler</h3>' +
+      '<p>ROP\'un gücü, akışı meşru görünen adımlarla ele geçirmesidir. Modern korumalar tam da bu akış bütünlüğünü hedef alır: <strong>shadow stack</strong> dönüş adresini ikinci, korunan bir kopyayla karşılaştırır; <strong>PAC</strong> işaretçiye kriptografik imza ekler; <strong>CFI</strong> dolaylı çağrıların yalnızca derleme zamanında bilinen geçerli hedeflere gitmesine izin verir.</p>' +
+      '<div class="manpage src-docs"><div class="ref">Clang/LLVM · Control Flow Integrity</div><p class="orig">designed to abort the program upon detecting certain forms of undefined behavior</p><p>CFI, belirli türde tanımsız davranışları (undefined behavior) saptadığında programı sonlandıracak şekilde tasarlanmıştır. Yani bir gadget zinciri geçersiz bir hedefe dallanmaya çalıştığı anda program güvenli biçimde çöker.</p></div>' +
+      '<div class="manpage src-docs"><div class="ref">Clang/LLVM · Control Flow Integrity</div><p class="orig">that can potentially allow attackers to subvert the program’s control flow</p><p>Korunan senaryo, saldırganın programın kontrol akışını (control flow) ele geçirebildiği durumlardır — ROP/JOP tam olarak budur. Bu yüzden forward-edge (dolaylı çağrı) ve backward-edge (dönüş) korumaları birlikte konuşlandırılır: biri diğerinin boşluğunu kapatır.</p></div>'
+  },
+  underHood: {
+    heading: 'Kaputun altında: her aşmanın ortak mantığı',
+    html: '<p class="prose">Aşma teknikleri rastgele değil; her biri bir korumanın (mitigation) bıraktığı boşluğu hedefler. Mantık hep aynıdır: kapatılan yeteneğin yerine, aynı sonucu veren ve hâlâ açık olan bir yeteneği koymak.</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Koruma</th><th>Aşım kavramı</th><th>Neden mümkün</th></tr></thead><tbody>' +
+      '<tr><td><b>DEP / NX</b></td><td>ROP / JOP: gadget zincirleme</td><td>Çalıştırılabilir kod zaten bellekte; yeni kod gerekmez</td></tr>' +
+      '<tr><td><b>ASLR / PIE</b></td><td>Bilgi sızıntısı (info leak) → taban hesabı</td><td>Tek bir sızan adres tüm modülün yerini açığa vurur</td></tr>' +
+      '<tr><td><b>Stack canary</b></td><td>Canary sızdırma veya taşmayan yol (heap)</td><td>Değer sabitse/sızarsa taşmaya rağmen korunur</td></tr>' +
+      '<tr><td><b>Full RELRO</b></td><td>GOT yerine başka yazılabilir hedefler</td><td>Tüm fonksiyon işaretçileri salt okunur değildir</td></tr>' +
+      '<tr><td><b>Öngörülemez heap</b></td><td>Heap grooming / feng shui</td><td>Tahsis deseni, nesne yerleşimini öngörülebilir kılar</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px">İki not. Birincisi: her aşma bir <em>ön koşul</em> ekler (bir gadget seti, bir sızıntı, bir grooming deseni). Koruma, bu ön koşulları bulmayı pahalı ve kırılgan kılar; çoğu saldırgan burada elenir. İkincisi: bu yüzden savunma asla tek katmana güvenmez. ROP\'u zorlaştıran şey NX değil, NX + ASLR + CFI/PAC\'ın birlikte çalışmasıdır — gadget\'a atlasan bile PAC işaretçi bütünlüğünü doğrular ve zincir kırılır.</p>'
+  },
+  pipeline: { intro: 'Aşma teknikleri, serinin genel sömürü boru hattında (exploitation pipeline) tam olarak korumaların kestiği halkaları yeniden açar — her biri bir ön koşul karşılığında.' },
+  tryIt: {
+    items: [
+      { h3: '1. Kendi binary\'inde gadget say (keşif)', p: 'ROPgadget veya ropper, bir ikilideki <code>ret</code> ile biten kod parçalarını listeler. Bu bir silah değil, bir keşif aracıdır: bir binary\'nin ne kadar "ROP\'lanabilir" olduğunu ölçer. Küçük, statik bir binary bile şaşırtıcı sayıda gadget barındırır.',
+        shells: [{ label: 'terminal', copy: 'pip install --user ROPgadget\nROPgadget --binary /bin/ls | head -n 20\nROPgadget --binary /bin/ls | tail -n 1', pre: '<span class="c">$</span> ROPgadget --binary /bin/ls | tail -n 1\n<span class="c"># (temsilî) Unique gadgets found: 1273</span>\n<span class="c"># statik bir /bin/ls bile binlerce gadget içerir</span>' }] },
+      { h3: '2. "pop rdi; ret" gibi bir gadget ara', p: 'Belirli bir gadget türünü aramak, ROP\'un neden pratik olduğunu somutlaştırır: ihtiyaç duyulan temel yapı taşları neredeyse her binary\'de vardır.',
+        shells: [{ label: 'terminal', copy: 'ROPgadget --binary /bin/ls | grep ": pop rdi ; ret"', pre: '<span class="c">$</span> ROPgadget --binary /bin/ls | grep &quot;pop rdi ; ret&quot;\n<span class="c"># (temsilî) 0x...2a3f : pop rdi ; ret</span>' }] },
+      { h3: '3. Güvenli ortamda pratik', p: 'ROP ve aşma tekniklerini meşru biçimde öğrenmenin yolu CTF ve kasıtlı zafiyetli hedeflerdir. pwn.college ve benzeri platformlar, kendi izole ortamlarında adım adım alıştırma sunar — gerçek sistemlere dokunmadan.',
+        shells: [{ label: 'referans', copy: 'https://pwn.college/', pre: '<span class="c"># pwn.college → "Return Oriented Programming" modülü</span>\n<span class="c"># kendi izole ortamında, yasal ve rehberli</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'ROP, DEP/NX\'i nasıl aşar?', opts: ['Yeni kod enjekte ederek', 'Var olan kod parçalarını (gadget) zincirleyerek', 'NX\'i kapatarak'], answer: 'Var olan kod parçalarını (gadget) zincirleyerek',
+        ok: 'Doğru. ROP hiç yeni kod yazmaz; bellekte zaten çalıştırılabilir olan kod parçalarını yeni bir sırayla çalıştırır, bu yüzden W^X buna engel değildir.', no: 'İpucu: NX veri çalıştırmayı engeller. Peki zaten çalıştırılabilir olan kod?' },
+      { q: 'Bir ROP zinciri kurmadan önce ASLR\'li bir hedefte neye ihtiyaç vardır?', opts: ['Daha fazla gadget', 'Bir bilgi sızıntısı (info leak)', 'Daha büyük tampon'], answer: 'Bir bilgi sızıntısı (info leak)',
+        ok: 'Doğru. Gadget adresleri her çalıştırmada değişir; bir sızıntı taban adresini verene kadar zincire yazılacak adresler bilinemez.', no: 'İpucu: adresler rastgeleyse, zincire hangi adresleri yazacağını nasıl öğrenirsin?' },
+      { q: 'Heap grooming (feng shui) neyi sağlar?', opts: ['Belleği temizler', 'Hedef nesnenin yerleşimini öngörülebilir kılar', 'Canary\'yi kapatır'], answer: 'Hedef nesnenin yerleşimini öngörülebilir kılar',
+        ok: 'Doğru. Önceden kurulan tahsis/serbest bırakma deseniyle saldırgan, hedef nesneyi kontrol ettiği bir komşuluğa düşürür; böylece heap saldırısı güvenilir hale gelir.', no: 'İpucu: "grooming" bir düzeni önceden hazırlamaktır. Neyin düzenini?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Ofansif Modül 6', title: 'Kod imzalama saldırgan gözüyle', desc: 'İmza doğrulama neyi garanti eder, bir baypasın neyi başarması gerekir?' },
+  sources: [
+    { href: 'https://pwn.college/', text: 'pwn.college', note: 'ROP ve aşma, uygulamalı' },
+    { href: 'https://github.com/RPISEC/MBE', text: 'RPISEC — Modern Binary Exploitation' },
+    { href: 'https://hovav.net/ucsd/dist/geometry.pdf', text: 'Shacham — "The Geometry of Innocent Flesh on the Bone" (ROP)', note: 'özgün makale' },
+    { href: 'https://github.com/xairy/linux-kernel-exploitation', text: 'xairy/linux-kernel-exploitation', note: 'çekirdek aşma teknikleri' }
+  ],
+  pageTitle: 'Korumaları Aşma'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

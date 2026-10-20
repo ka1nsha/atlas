@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>SIP ve TCC</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: iki senaryo akışı */
+.scen { font-family: var(--f-mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--track); font-weight: 700; margin: 0 0 8px; }
+.sflow { display: grid; gap: 8px; }
+.snode { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 9px 12px; display: grid; gap: 3px; min-width: 0; opacity: .5; transition: opacity .2s, border-color .2s, background .2s; }
+.snode.lit { opacity: 1; border-color: var(--track); background: var(--track-soft); }
+.snode.guard.lit { border-color: var(--warn); background: var(--warn-soft); }
+.snode .nh { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.snode .nh b { font-family: var(--f-display); font-size: 14.5px; }
+.snode .nh .mono { font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.snode p { margin: 0; font-size: 12px; color: var(--muted); }
+.snode.lit p { color: var(--fg); }
+.sarrow { text-align: center; color: var(--muted); font-size: 12px; line-height: 1; }
+.sverdict { border-radius: var(--r); padding: 10px 12px; font-family: var(--f-mono); font-size: 13px; display: flex; gap: 8px; align-items: center; margin-top: 2px; }
+.sverdict .d { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.sverdict.ok { background: var(--ok-soft); color: var(--ok); } .sverdict.ok .d { background: var(--ok); }
+.sverdict.bad { background: var(--bad-soft); color: var(--bad); } .sverdict.bad .d { background: var(--bad); }
+.sverdict.wait { background: var(--sunk); color: var(--muted); } .sverdict.wait .d { background: var(--muted); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'macos',
+  crumbs: 'macos › sip ve tcc › modül 18',
+  eyebrow: 'Modül 18 · macOS / iOS · Üst katman savunma',
+  titleHTML: '<code>SIP</code> ve <code>TCC</code>: root\'un bile yapamadıkları',
+  lede: 'Klasik Unix\'te root her şeyi yapabilir. macOS buna iki duvar ekler: SIP (System Integrity Protection) sistem dosyalarını root\'tan bile korur; TCC (Transparency, Consent, Control) uygulamaların kullanıcı verisine erişimini açık onaya bağlar. İkisi, imza/sandbox katmanlarının üstündeki son savunma hattıdır.',
+  meta: ['~15 dk', 'ön koşul: izinler, kod imzalama', 'bağlam: macOS'],
+  intuition: {
+    paras: [
+      'Geleneksel modelde bir saldırgan root olursa oyun biter: tüm dosyalar, tüm süreçler onundur. Apple bu varsayımı kırdı. <strong>SIP (System Integrity Protection)</strong>, "rootless" olarak da bilinir: korunan yollar (örneğin <code>/System</code>, <code>/usr</code> — <code>/usr/local</code> hariç) ve korunan süreçler, root dahil hiç kimse tarafından değiştirilemez. Kontrol çekirdektedir; karar bir yetki bayrağına (csr flags) ve dosyanın "restricted" işaretine bakar.',
+      '<strong>TCC (Transparency, Consent, Control)</strong> farklı bir soruyu çözer: ayrıcalık değil, <em>mahremiyet</em>. Bir uygulama imzalı ve sandbox içinde olabilir ama yine de kameraya, mikrofona, kişilere veya Masaüstü klasörüne erişmek için <em>kullanıcının</em> açık onayını almak zorundadır. Bu onaylar <code>TCC.db</code>\'de saklanır; verilen izin, kullanıcı geri alana kadar hatırlanır.'
+    ],
+    ideas: [
+      { b: 'SIP: root\'a sınır', span: 'Korunan sistem yolları ve süreçleri root bile değiştiremez. Karar çekirdekte, csr bayraklarına göre.' },
+      { b: 'TCC: kullanıcıya söz', span: 'Kamera, mikrofon, kişiler, disk gibi hassas kaynaklara erişim kullanıcının açık onayına bağlıdır (TCC.db).' },
+      { b: 'Katmanlı savunma', span: 'İmza (kim), sandbox (ne kadar), SIP (sisteme dokunma), TCC (kullanıcı verisine dokunma) birbirini tamamlar.' }
+    ]
+  },
+  lab: {
+    intro: 'İki ayrı senaryo izleyeceğiz. Önce SIP: root bir sistem dosyasını değiştirmeyi dener. Sonra TCC: bir uygulama kameraya erişmek ister. Her adımda ilgili aktör/koruma/kaynak aydınlanır ve karar altta görünür.',
+    codeLabel: 'SIP + TCC karar akışı', cmd: 'senaryo',
+    foot: 'Komut çıktıları ve yollar temsilîdir; gerçek davranış sürüme göre değişir.',
+    code: [
+      { t: '<span class="cm">// SENARYO 1 — SIP</span>' },
+      { t: 'sudo rm /System/Library/Extensions/foo.kext' },
+      { t: '  → çekirdek: yol "restricted" mi? csr izin veriyor mu?' },
+      { t: '  → korunan yol → EPERM (root olsa bile)' },
+      { t: '' },
+      { t: '<span class="cm">// SENARYO 2 — TCC</span>' },
+      { t: 'app: AVCaptureDevice (kamera) iste' },
+      { t: '  → TCC.db kayıtlı mı?' },
+      { t: '  → yoksa: kullanıcıya onay istemi' },
+      { t: '  → onay → TCC.db\'ye yaz → erişim' }
+    ],
+    steps: [
+      { pc: [1, 2], scen: 'Senaryo 1 — SIP', title: 'root sistem dosyasını siler', term: ['# sudo rm /System/Library/Extensions/foo.kext'],
+        text: 'Yönetici (root) yetkisiyle bir sistem uzantısını silmeye çalışıyoruz. Klasik Unix\'te root için bu kesin başarılı olurdu. Ama hedef <code>/System</code> altında, yani SIP\'in koruduğu bir yol.',
+        nodes: [
+          { id: 'actor', b: 'root (sudo)', mono: 'uid 0', lit: true },
+          { id: 'guard', b: 'SIP · çekirdek kontrolü', mono: 'csr flags', guard: true, lit: false },
+          { id: 'res', b: '/System/.../foo.kext', mono: 'korunan yol', lit: false }
+        ], verdict: { cls: 'wait', txt: 'istek çekirdeğe gitti…' } },
+      { pc: 3, scen: 'Senaryo 1 — SIP', title: 'Çekirdek SIP\'i kontrol eder', term: ['# sudo rm /System/Library/Extensions/foo.kext'],
+        text: 'Çekirdek, yazma/silme isteğinde dosyanın "restricted" (SIP korumalı) işaretine ve sistemin csr yapılandırma bayraklarına bakar. SIP açıksa ve yol korunuyorsa, çağıranın root olması hiç fark etmez — yetki kontrolü kimliğe değil, korumaya bakar.',
+        nodes: [
+          { id: 'actor', b: 'root (sudo)', mono: 'uid 0', lit: true },
+          { id: 'guard', b: 'SIP · çekirdek kontrolü', mono: 'restricted + csr', guard: true, lit: true },
+          { id: 'res', b: '/System/.../foo.kext', mono: 'korunan yol', lit: false }
+        ], verdict: { cls: 'wait', txt: 'yol korumalı, karar veriliyor…' } },
+      { pc: 4, scen: 'Senaryo 1 — SIP', title: 'Reddedildi (root bile olsa)', term: ['rm: /System/.../foo.kext: Operation not permitted'],
+        text: 'Çekirdek işlemi reddeder: <code>Operation not permitted</code> (EPERM). Bu, macOS\'un "root = sınırsız güç" varsayımını kırdığı andır. SIP\'i kapatmak bile ancak kurtarma modunda (<code>csrutil disable</code>), yani uzaktan bir saldırganın kolayca yapamayacağı fiziksel bir adımla mümkündür.',
+        nodes: [
+          { id: 'actor', b: 'root (sudo)', mono: 'uid 0', lit: true },
+          { id: 'guard', b: 'SIP · çekirdek kontrolü', mono: 'reddetti', guard: true, lit: true },
+          { id: 'res', b: '/System/.../foo.kext', mono: 'dokunulmadı', lit: false }
+        ], verdict: { cls: 'bad', txt: 'EPERM — root bile değiştiremez' } },
+      { pc: [6, 7], scen: 'Senaryo 2 — TCC', title: 'Uygulama kameraya erişmek ister', term: ['app: AVCaptureDevice(.video) erişimi istendi'],
+        text: 'Şimdi farklı bir soru: imzalı, sandbox içindeki bir uygulama kameraya erişmek istiyor. İmza "kim olduğunu", sandbox "neye erişebileceğini" belirler; ama hassas kullanıcı kaynakları için bu yetmez. Devreye TCC girer.',
+        nodes: [
+          { id: 'actor', b: 'Uygulama (imzalı, sandbox)', mono: 'bundle id', lit: true },
+          { id: 'guard', b: 'TCC · mahremiyet kontrolü', mono: 'TCC.db', guard: true, lit: false },
+          { id: 'res', b: 'Kamera', mono: 'hassas kaynak', lit: false }
+        ], verdict: { cls: 'wait', txt: 'TCC devrede, kayıt aranıyor…' } },
+      { pc: [8, 9], scen: 'Senaryo 2 — TCC', title: 'Onay istemi', term: ['TCC: kayıt yok → kullanıcıya soruluyor', '[ "Ornek" kameranıza erişmek istiyor ]  (İzin Ver / Verme)'],
+        text: 'TCC önce <code>TCC.db</code>\'de bu uygulama+kaynak için bir karar var mı diye bakar. Yoksa <em>kullanıcıya</em> sorar: tanıdık "… kameranıza erişmek istiyor" istemi. Kararı veren geliştirici veya sistem değil, kullanıcıdır — şeffaflık ve onay (transparency, consent) buradadır.',
+        nodes: [
+          { id: 'actor', b: 'Uygulama (imzalı, sandbox)', mono: 'bundle id', lit: true },
+          { id: 'guard', b: 'TCC · kullanıcıya onay istemi', mono: 'kayıt yok', guard: true, lit: true },
+          { id: 'res', b: 'Kamera', mono: 'bekliyor', lit: false }
+        ], verdict: { cls: 'wait', txt: 'kullanıcının kararı bekleniyor…' } },
+      { pc: 10, scen: 'Senaryo 2 — TCC', title: 'Onay kaydedilir, erişim verilir', term: ['kullanıcı: İzin Ver', 'TCC: karar TCC.db\'ye yazıldı → erişim açık'],
+        text: 'Kullanıcı "İzin Ver" derse karar <code>TCC.db</code>\'ye yazılır ve uygulama kameraya erişir; bu izin kullanıcı Gizlilik ayarlarından geri alana kadar hatırlanır. "Verme" derse erişim kalıcı olarak reddedilir. Böylece hassas kaynaklar, imzalı bir uygulamanın bile keyfine değil, kullanıcının denetimine (control) bağlı kalır.',
+        nodes: [
+          { id: 'actor', b: 'Uygulama (imzalı, sandbox)', mono: 'bundle id', lit: true },
+          { id: 'guard', b: 'TCC · karar kaydedildi', mono: 'TCC.db ✓', guard: true, lit: true },
+          { id: 'res', b: 'Kamera', mono: 'erişim açık', lit: true }
+        ], verdict: { cls: 'ok', txt: 'kullanıcı onayladı → erişim (geri alınabilir)' } }
+    ],
+    render: function (s, stateEl, u) {
+      var html = '<p class="scen">' + u.esc(s.scen) + '</p><div class="sflow">';
+      s.nodes.forEach(function (n, i) {
+        var cls = 'snode' + (n.guard ? ' guard' : '') + (n.lit ? ' lit' : '');
+        html += '<div class="' + cls + '"><div class="nh"><b>' + u.esc(n.b) + '</b><span class="mono">' + u.esc(n.mono) + '</span></div></div>';
+        if (i < s.nodes.length - 1) html += '<div class="sarrow">▼</div>';
+      });
+      html += '</div><div class="sverdict ' + s.verdict.cls + '"><span class="d"></span><span>' + u.esc(s.verdict.txt) + '</span></div>';
+      stateEl.innerHTML = html;
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: root'un bittiği yer",
+    html: `<p class="lead">macOS'un üst katman savunması iki ayağa dayanır: SIP sistemin kendisini root'tan bile korur, TCC ise kullanıcının verisini uygulamalardan korur. İkisi de "kim olduğuna" değil "neye izin verildiğine" bakar — klasik Unix'in root-her-şeyi-yapar modelinin kırıldığı yer burasıdır.</p>
+
+<h3>1. SIP (System Integrity Protection / rootless)</h3>
+<p>Klasik Unix'te root (UID 0) her şeyi yapabilir. SIP bunu kırar: kernel, root olsan bile belirli kritik yolları ve process'leri korur. Koruma kimliğe değil, dosya/process üzerindeki işarete ve csr flag'lerine bakar.</p>
+<div class="manpage src-apple"><div class="ref">Apple Platform Security · SIP</div><p class="orig">SIP restricts components to read-only in specific critical file system locations.</p><p>SIP, kritik sistem konumlarını (/System, /bin, /sbin, /usr — ama /usr/local hariç) salt okunur yapar. root bile bu yolları değiştiremez; yazma denemesi EPERM ile reddedilir.</p></div>
+<div class="manpage src-apple"><div class="ref">Apple Platform Security · SIP</div><p class="orig">macOS applies this security policy to every process running on the system.</p><p>Politika istisnasız her process'e uygulanır — administrative privilege (root) bir muafiyet sağlamaz. SIP ayrıca korunan process'leri debug etmeyi, unsigned kext yüklemeyi ve boot-args ile kernel'i gevşetmeyi de engeller.</p></div>
+
+<h3>2. SIP nasıl işaretlenir ve yapılandırılır</h3>
+<div class="deflist">
+<div><dt>restricted flag</dt><dd><code>com.apple.rootless</code> extended attribute (xattr) ile işaretlenen dosya/dizinler korunur; işaret dosya sisteminde taşınır, sahiplik veya izin bitlerinden bağımsızdır.</dd></div>
+<div><dt>csr flags</dt><dd>CSR_ALLOW_* bit'leri SIP'in hangi kısımlarının gevşediğini belirler (ör. CSR_ALLOW_UNRESTRICTED_FS, CSR_ALLOW_TASK_FOR_PID). NVRAM'de saklanır.</dd></div>
+<div><dt>csrutil</dt><dd>SIP durumunu gösterir/değiştirir — ama yalnızca Recovery ortamından. Çalışan sistemden kapatılamaz, ki bir saldırgan onu basitçe devre dışı bırakamasın.</dd></div>
+</div>
+
+<h3>3. TCC (Transparency, Consent, Control)</h3>
+<p>SIP sistemi korur; TCC kullanıcının verisini korur. Bir uygulama Camera, Microphone, Contacts, Full Disk Access veya Screen Recording gibi hassas kaynaklara erişmek istediğinde sistem bunu keser ve kullanıcıya açık bir consent istemi gösterir. Karar <code>tccd</code> adlı userspace daemon tarafından yönetilir ve <code>TCC.db</code>'de saklanır; bu veritabanının kendisi SIP korumalıdır, yani bir uygulama kendine izin yazamaz. (Kaynak: Apple Platform Security.)</p>
+<div class="deflist">
+<div><dt>protected data</dt><dd>Camera, Microphone, Location, Contacts, Calendar, Photos, Full Disk Access, Screen Recording, Accessibility — her biri ayrı bir consent gerektirir.</dd></div>
+<div><dt>tccd</dt><dd>Consent kararlarını yöneten userspace daemon; onay istemini gösterir ve sonucu TCC.db'ye yazar.</dd></div>
+<div><dt>TCC.db</dt><dd>Hangi uygulamanın neye izinli olduğunu tutar; SIP korumalı olduğu için elle veya uygulama tarafından düzenlenemez.</dd></div>
+</div>
+
+<h3>4. Birlikte: katmanlı savunma</h3>
+<p>SIP ve TCC farklı katmanlarda ama aynı felsefeyle çalışır: ayrıcalık (root) artık tek başına yetki anlamına gelmez. Bir saldırgan root elde etse bile SIP korumalı sistemi değiştiremez, TCC korumalı veriye kullanıcı onayı olmadan erişemez. Bu yüzden modern macOS saldırıları genellikle bir SIP/TCC bypass'ına odaklanır — böyle bir bypass'ın NE başarması gerektiği (korumalı bir yola yazmak, consent olmadan veriye erişmek) kavramsal olarak Ofansif izlekte ele alınır; bu modül yalnızca savunma mekanizmasını anlatır.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">SIP ve TCC farklı katmanlarda çalışır ama ikisi de "kimliğe değil, politikaya" bakar. SIP kararı çekirdekte, dosya/süreç üzerindeki koruma işaretine ve csr bayraklarına göre verilir; TCC kararı ise kullanıcı-alanındaki <code>tccd</code> tarafından, kullanıcı onayına ve <code>TCC.db</code>\'ye göre yönetilir.</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Koruma</th><th>Neyi korur</th><th>Nasıl yapılandırılır</th></tr></thead><tbody>' +
+      '<tr><td><b>SIP</b> (rootless)</td><td>Sistem dosyaları/süreçleri; root bile değiştiremez</td><td>Kurtarma modunda <code>csrutil enable/disable</code> (NVMRAM csr bayrakları)</td></tr>' +
+      '<tr><td><b>TCC</b></td><td>Kullanıcı verisi: kamera, mikrofon, kişiler, konum, disk</td><td>Kullanıcı onayı; Gizlilik ayarları; <code>tccutil reset</code></td></tr>' +
+      '<tr><td><b>Kod imzalama + AMFI</b></td><td>Çalışan kodun imzalı olması</td><td>İmza + trust cache (önceki modüller)</td></tr>' +
+      '<tr><td><b>Sandbox</b></td><td>Sürecin erişebildiği syscall/dosya/IPC kümesi</td><td>Seatbelt profilleri (sonraki modül)</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px">Bu dört katman birlikte macOS\'un "defense in depth" (katmanlı savunma) yaklaşımını oluşturur: bir katmanı aşmak diğerlerini otomatik aşmaz. Güvenlik araştırmasında SIP ve TCC baypasları ayrı birer çalışma alanıdır; buradaki amaç mekanizmanın <em>neyi</em> ve <em>nasıl</em> koruduğunu anlamaktır.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. SIP durumunu gör (macOS)', p: 'csrutil, SIP\'in açık olup olmadığını ve hangi alt korumaların etkin olduğunu gösterir.',
+        shells: [{ label: 'terminal (macOS · temsilî)', copy: 'csrutil status', pre: '<span class="c">$</span> csrutil status\nSystem Integrity Protection status: <span class="g">enabled</span>.' }] },
+      { h3: '2. Korunan bir yola dokunmayı dene (macOS)', p: 'root olsan bile SIP korumalı yolda yazma reddedilir.',
+        shells: [{ label: 'terminal (macOS · temsilî)', copy: 'sudo touch /System/deneme', pre: '<span class="c">$</span> sudo touch /System/deneme\ntouch: /System/deneme: <span class="hi">Operation not permitted</span>' }] },
+      { h3: '3. Bir TCC iznini sıfırla (macOS)', p: 'tccutil bir uygulamanın verilmiş iznini siler; bir sonraki erişimde kullanıcıya yeniden sorulur.',
+        shells: [{ label: 'terminal (macOS · temsilî)', copy: 'tccutil reset Camera com.ornek.app', pre: '<span class="c">$</span> tccutil reset Camera com.ornek.app\n<span class="c"># sonraki erişimde onay istemi tekrar çıkar</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'SIP açıkken root, <code>/System</code> altındaki bir dosyayı neden değiştiremez?', opts: ['Dosya salt okunur olduğu için', 'Çekirdek korumayı kimliğe değil, yola/işarete göre uyguladığı için', 'Disk şifreli olduğu için'], answer: 'Çekirdek korumayı kimliğe değil, yola/işarete göre uyguladığı için',
+        ok: 'Doğru. SIP kararı "restricted" işareti ve csr bayraklarına bakar; çağıranın uid 0 olması fark etmez. Kapatmak kurtarma modu gerektirir.', no: 'İpucu: SIP kararı kimliğe mi yoksa dosyanın korunma işaretine mi bakar?' },
+      { q: 'TCC neyi düzenler?', opts: ['Çalışan kodun imzasını', 'Uygulamaların hassas kullanıcı verisine erişimini', 'CPU önceliğini'], answer: 'Uygulamaların hassas kullanıcı verisine erişimini',
+        ok: 'Doğru. Kamera, mikrofon, kişiler, disk gibi kaynaklara erişim kullanıcı onayına bağlanır ve TCC.db\'de tutulur. İmzadan/sandbox\'tan ayrı bir katmandır.', no: 'İpucu: TCC\'nin açılımındaki "mahremiyet" temasını düşün (Transparency, Consent, Control).' },
+      { q: 'İmzalı ve sandbox içindeki bir uygulama kameraya doğrudan erişebilir mi?', opts: ['Evet, imzalıysa yeter', 'Hayır, ayrıca TCC üzerinden kullanıcı onayı gerekir', 'Sadece root ise'], answer: 'Hayır, ayrıca TCC üzerinden kullanıcı onayı gerekir',
+        ok: 'Doğru. İmza kim olduğunu, sandbox sınırları belirler; ama hassas kaynak için TCC\'nin kullanıcı onayı şarttır. Katmanlar birbirini tamamlar.', no: 'İpucu: imza ve sandbox yeterli mi, yoksa kullanıcı verisi için ayrı bir onay katmanı var mı?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · macOS Modül 19', title: 'ARM64 düşük seviye temelleri', desc: 'Exception seviyeleri, sayfa tabloları ve PAN/PAC/MTE: Apple Silicon\'da çekirdek güvenliğinin donanım temeli.' },
+  sources: [
+    { href: 'https://newosxbook.com/toc3.html', text: 'Levin — OS Internals Cilt III', note: 'Bölüm 9-10, SIP ve gizlilik' },
+    { href: 'https://support.apple.com/guide/security/welcome/web', text: 'Apple Platform Security', note: 'SIP ve TCC' },
+    { href: 'https://developer.apple.com/documentation/security', text: 'Apple Security docs' }
+  ],
+  pageTitle: 'SIP ve TCC'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Dosya Tanımlayıcıları ve VFS</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: üç katmanlı tablo düzeni */
+.vfs { display: grid; grid-template-columns: 1fr; gap: 12px; }
+@media (min-width: 620px) { .vfs { grid-template-columns: repeat(3, 1fr); align-items: start; } }
+.vcol { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); overflow: hidden; min-width: 0; }
+.vcol-h { font-family: var(--f-mono); font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); padding: 7px 10px; border-bottom: 1px solid var(--line); background: var(--sunk); }
+.vrow { padding: 7px 10px; border-top: 1px solid var(--line); font-size: 12.5px; display: grid; gap: 2px; min-width: 0; }
+.vrow:first-of-type { border-top: none; }
+.vrow .mono { font-family: var(--f-mono); font-size: 12px; }
+.vrow .sub { color: var(--muted); font-size: 11.5px; font-family: var(--f-mono); overflow-wrap: anywhere; }
+.vrow.hi { background: var(--track-soft); }
+.vrow.hi .lead { color: var(--track); font-weight: 700; }
+.vrow.gone { opacity: .4; text-decoration: line-through; }
+.vrow .lead { font-weight: 600; }
+.vrow .ref { display: inline-block; font-family: var(--f-mono); font-size: 10.5px; padding: 1px 6px; border-radius: 999px; background: var(--sunk); color: var(--muted); margin-top: 2px; justify-self: start; }
+.vrow.hi .ref { background: var(--track); color: #fff; }
+.vlink { font-family: var(--f-mono); font-size: 11px; color: var(--accent); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'linux',
+  crumbs: 'linux › dosya tanımlayıcıları ve vfs › modül 8',
+  eyebrow: 'Modül 8 · Linux · Dosya sistemi',
+  titleHTML: 'Bir sayı dosyaya nasıl dönüşür? <code>fd</code> ve VFS',
+  lede: 'Programın elinde yalnızca küçük bir tam sayı (fd) vardır; gerçek dosya üç katman öteded­ir. Bu modülde dosya tanımlayıcısının (file descriptor) açık dosya tablosu ve inode üzerinden gerçek veriye nasıl bağlandığını, ve dup2 ile <code>&gt;</code> yönlendirmesinin (redirection) aynı mekanizmayla nasıl çalıştığını izleyeceksin.',
+  meta: ['~18 dk', 'ön koşul: open/read/write', 'bağlam: Linux VFS'],
+  intuition: {
+    paras: [
+      'Bir dosya açtığında çekirdek sana bir <strong>dosya tanımlayıcısı (file descriptor, fd)</strong> verir: küçük bir tam sayı. Bu sayı doğrudan dosya değildir; sürecin fd tablosunda bir girdiye işaret eden bir indekstir. Her sürecin 0 (stdin), 1 (stdout), 2 (stderr) ile başlayan kendi fd tablosu vardır.',
+      'fd\'nin altında iki katman daha var. fd, sistem genelindeki <strong>açık dosya tablosunda (open file table)</strong> bir girdiyi gösterir; bu girdi okuma/yazma konumunu (ofset) ve kipi tutar. O girdi de dosyanın gerçek üst verisini taşıyan <strong>inode</strong>\'una bağlanır. Bu üç katman, Linux\'un her dosya sistemini tek bir ortak arayüzle sunan soyutlamasının — <strong>VFS (Virtual File System)</strong> — bel kemiğidir.'
+    ],
+    ideas: [
+      { b: 'fd yalnızca indeks', span: 'Dosya tanımlayıcısı (file descriptor) sürecin tablosunda bir satırdır; gerçek durum alt katmanlardadır.' },
+      { b: 'Ofset açık dosyada', span: 'Okuma/yazma konumu açık dosya girdisinde tutulur. Aynı dosyayı iki kez açarsan iki ayrı ofset olur.' },
+      { b: 'Paylaşım mümkün', span: 'dup2 veya fork, iki fd\'yi aynı açık dosya girdisine bağlar; o zaman ofseti paylaşırlar.' }
+    ]
+  },
+  lab: {
+    intro: 'Bir dosya açıp aynı dosyayı tekrar açıyoruz, sonra <code>dup2</code> ile stdout\'u (fd 1) dosyaya yönlendiriyoruz. Sağda üç katmanı — süreç fd tablosu, sistem açık dosya tablosu, inode\'lar — ve aralarındaki bağları izle.',
+    codeLabel: 'vfs.c', cmd: './vfs',
+    foot: 'inode numaraları ve adresler örnektir. ← → tuşlarıyla da ilerleyebilirsin.',
+    code: [
+      { t: '<span class="t">int</span> fd  = <span class="f">open</span>(<span class="s">"cikti.txt"</span>, O_WRONLY|O_CREAT, <span class="n">0644</span>);' },
+      { t: '<span class="t">int</span> fd2 = <span class="f">open</span>(<span class="s">"cikti.txt"</span>, O_WRONLY);   <span class="cm">// ayni dosya, ayri girdi</span>' },
+      { t: '<span class="f">dup2</span>(fd, <span class="n">1</span>);        <span class="cm">// stdout(1) artik dosyaya</span>' },
+      { t: '<span class="f">write</span>(<span class="n">1</span>, <span class="s">"merhaba dosya\\n"</span>, <span class="n">14</span>);' },
+      { t: '<span class="f">close</span>(fd);          <span class="cm">// fd kapandi, girdi degil</span>' },
+      { t: '<span class="cm">// program biter: kalan fd\'ler kapanir</span>' }
+    ],
+    steps: [
+      { pc: 1, title: 'open() → fd 3', hi: { fd: 3, of: 'A', inode: 'I' },
+        text: 'open() tabloda boş en küçük indeksi (3) seçip döndürür; 0,1,2 zaten stdin/stdout/stderr. fd 3 yeni bir açık dosya girdisine (A), o da cikti.txt\'nin inode\'una (I) bağlanır.',
+        term: ['open() -> fd=3'],
+        fds: [sd(0,'stdin','T0'), sd(1,'stdout','T0'), sd(2,'stderr','T0'), sd(3,'fd','A')],
+        of: [ofe('A','yazma (w)', 0, 1, 'I'), ofe('T0','terminal', 0, 3, '—')],
+        inodes: [ino('I','cikti.txt', 1), ino('T0','/dev/pts/0', 1)] },
+      { pc: 2, title: 'İkinci open → ayrı girdi', hi: { fd: 4, of: 'B', inode: 'I' },
+        text: 'Aynı dosyayı tekrar açmak fd 4 ve YENİ bir açık dosya girdisi (B) yaratır. B kendi ofsetini tutar ama A ile AYNI inode\'a (I) bağlıdır. Yani iki açık girdi, tek dosya: ofsetler bağımsız ilerler.',
+        fds: [sd(0,'stdin','T0'), sd(1,'stdout','T0'), sd(2,'stderr','T0'), sd(3,'fd','A'), sd(4,'fd2','B')],
+        of: [ofe('A','yazma (w)', 0, 1, 'I'), ofe('B','yazma (w)', 0, 1, 'I'), ofe('T0','terminal', 0, 3, '—')],
+        inodes: [ino('I','cikti.txt', 1), ino('T0','/dev/pts/0', 1)] },
+      { pc: 3, title: 'dup2(3,1): yönlendirme', hi: { fd: 1, of: 'A', inode: 'I' },
+        text: 'dup2(fd, 1) fd 1\'i kapatıp A girdisine yeniden bağlar. Artık stdout (1) ve fd (3) AYNI açık dosya girdisini (A) paylaşır — aynı ofseti de. Kabuğun <code>program &gt; cikti.txt</code> yaptığı tam budur.',
+        fds: [sd(0,'stdin','T0'), sd(1,'stdout→A','A',true), sd(2,'stderr','T0'), sd(3,'fd','A'), sd(4,'fd2','B')],
+        of: [ofe('A','yazma (w)', 0, 2, 'I'), ofe('B','yazma (w)', 0, 1, 'I'), ofe('T0','terminal', 0, 2, '—')],
+        inodes: [ino('I','cikti.txt', 1), ino('T0','/dev/pts/0', 1)] },
+      { pc: 4, title: 'write(1): veri dosyaya', hi: { of: 'A', inode: 'I' },
+        text: 'write(1, ...) artık ekrana değil dosyaya yazar. A girdisinin ofseti 0\'dan 14\'e ilerler. fd 1 ve fd 3 aynı girdiyi paylaştığı için ikisi de yeni ofseti görür — biriyle yazıp öbürüyle yazmaya devam edersen üst üste binmezler.',
+        term: ['(ekrana bir şey gelmez)', 'cikti.txt içeriği: "merhaba dosya"'],
+        fds: [sd(0,'stdin','T0'), sd(1,'stdout→A','A',true), sd(2,'stderr','T0'), sd(3,'fd','A'), sd(4,'fd2','B')],
+        of: [ofe('A','yazma (w)', 14, 2, 'I', true), ofe('B','yazma (w)', 0, 1, 'I'), ofe('T0','terminal', 0, 2, '—')],
+        inodes: [ino('I','cikti.txt', 1), ino('T0','/dev/pts/0', 1)] },
+      { pc: 5, title: 'close(3): sayaç düşer', hi: { of: 'A' },
+        text: 'close(fd) yalnızca fd 3\'ü tablodan siler. A girdisini SİLMEZ: girdiyi hâlâ fd 1 tutuyor (başvuru sayısı 2→1). Bir açık dosya girdisi, ona bağlı son fd kapanınca serbest kalır.',
+        fds: [sd(0,'stdin','T0'), sd(1,'stdout→A','A',true), sd(2,'stderr','T0'), sd(3,'fd','A',false,true), sd(4,'fd2','B')],
+        of: [ofe('A','yazma (w)', 14, 1, 'I', true), ofe('B','yazma (w)', 0, 1, 'I'), ofe('T0','terminal', 0, 2, '—')],
+        inodes: [ino('I','cikti.txt', 1), ino('T0','/dev/pts/0', 1)] },
+      { pc: 6, title: 'Program biter', hi: {},
+        text: 'main\'den dönünce çekirdek kalan tüm fd\'leri kapatır. Her açık dosya girdisinin başvuru sayısı 0\'a iner, girdiler serbest kalır; inode\'un açık-sayısı da düşer. VFS\'nin başvuru sayımı (reference counting) belleğin ve kaynakların temiz bırakılmasını böyle garanti eder.',
+        fds: [sd(0,'stdin','T0',false,true), sd(1,'stdout→A','A',false,true), sd(2,'stderr','T0',false,true), sd(3,'fd','A',false,true), sd(4,'fd2','B',false,true)],
+        of: [ofe('A','serbest', 14, 0, 'I'), ofe('B','serbest', 0, 0, 'I'), ofe('T0','terminal', 0, 0, '—')],
+        inodes: [ino('I','cikti.txt', 0), ino('T0','/dev/pts/0', 0)] }
+    ],
+    render: function (s, stateEl, u) {
+      function col(title, rows) { return '<div class="vcol"><div class="vcol-h">' + title + '</div>' + rows + '</div>'; }
+      var fdRows = s.fds.map(function (f) {
+        var cls = 'vrow' + (s.hi.fd === f.n ? ' hi' : '') + (f.gone ? ' gone' : '');
+        return '<div class="' + cls + '"><span class="lead mono">fd ' + f.n + '</span><span class="sub">' + u.esc(f.label) + ' → girdi ' + f.ptr + '</span></div>';
+      }).join('');
+      var ofRows = s.of.map(function (o) {
+        var cls = 'vrow' + (s.hi.of === o.id ? ' hi' : '') + (o.refs === 0 ? ' gone' : '');
+        return '<div class="' + cls + '"><span class="lead mono">girdi ' + o.id + '</span><span class="sub">' + u.esc(o.mode) + ' · ofset=' + o.off + ' → inode ' + o.inode + '</span><span class="ref">ref ' + o.refs + '</span></div>';
+      }).join('');
+      var inRows = s.inodes.map(function (n) {
+        var cls = 'vrow' + (s.hi.inode === n.id ? ' hi' : '') + (n.open === 0 ? ' gone' : '');
+        return '<div class="' + cls + '"><span class="lead mono">inode ' + n.id + '</span><span class="sub">' + u.esc(n.name) + '</span><span class="ref">açık ' + n.open + '</span></div>';
+      }).join('');
+      stateEl.innerHTML =
+        '<p class="lab-label">Üç katman: fd → açık dosya → inode</p>' +
+        '<div class="vfs">' + col('Süreç fd tablosu', fdRows) + col('Açık dosya tablosu', ofRows) + col('inode tablosu', inRows) + '</div>';
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: fd, open file description ve VFS",
+    html: `<p class="lead">Bir dosyayı açmak basit görünür — <code>open()</code> bir sayı döndürür — ama bu sayının arkasında üç katmanlı bir yapı ve VFS (Virtual File System) soyutlaması vardır. Aynı inode'a iki farklı isimden erişmek, iki file descriptor'ın offset'i paylaşması, bir pathname'in adım adım çözülmesi: hepsi bu katmanlardan doğar. Bu bölüm man sayfalarına dayanır.</p>
+
+<h3>1. Üç katman: fd → open file description → inode</h3>
+<p>Bir <code>open()</code> çağrısı üç ayrı seviyede iz bırakır. En üstte, her sürecin kendi <strong>file descriptor table</strong>'ı vardır; döndürülen file descriptor bu tabloya bir index'tir.</p>
+<div class="manpage"><div class="ref">2 open · RETURN VALUE</div><p class="orig">On success, open(), openat(), and creat() return the new file descriptor (a nonnegative integer).</p><p>Dönen file descriptor, o süreçte <strong>açık olmayan en küçük numaralı</strong> fd'dir. Bu yüzden stdout (1) kapatılırsa, sonraki open() 1'i geri alabilir — shell'deki output redirection'ın temeli tam olarak budur.</p></div>
+<p>Ortada, sistem genelinde bir <strong>open file description</strong> tablosu vardır: file offset ve file status flag'leri (O_APPEND, O_NONBLOCK...) burada tutulur. En altta ise <strong>inode</strong>: dosyanın diskteki kimliği ve üst verisi — sahibi, izinleri, boyutu, veri bloklarının yeri. Birden çok file descriptor aynı open file description'ı, birden çok open file description aynı inode'u gösterebilir.</p>
+
+<h3>2. VFS nesneleri: her dosya sistemi aynı arayüz</h3>
+<p>VFS, ext4, tmpfs, NFS, procfs gibi çok farklı dosya sistemlerini tek bir nesne kümesiyle sunar. Çekirdek hep bu nesnelerle konuşur; her dosya sistemi bu arayüzü kendi yöntemleriyle (function pointer'larla) doldurur.</p>
+<div class="deflist">
+<div><dt>file</dt><dd>Açık bir dosyayı temsil eder — open file description'ın çekirdekteki karşılığı. <code>f_pos</code> (offset) ve <code>f_flags</code> burada tutulur.</dd></div>
+<div><dt>dentry</dt><dd>Bir pathname bileşenini (ör. "etc") inode'una bağlar. Dizin ağacını gezmenin hızlandırıcısıdır; isim burada yaşar.</dd></div>
+<div><dt>inode</dt><dd>Dosyanın kendisi: tür, izinler, sahip, boyut, zaman damgaları, veri bloklarının haritası. İsim <strong>içermez</strong> — isim dentry'dedir.</dd></div>
+<div><dt>superblock</dt><dd>Bağlı (mounted) bir dosya sisteminin tamamını temsil eder: tür, blok boyutu, kök inode.</dd></div>
+</div>
+<p>İsim ile inode'un ayrı tutulması <strong>hard link</strong>'i mümkün kılar: iki farklı dentry (iki isim) aynı inode'u gösterir. Bir dosyayı silmek aslında inode'un link count'unu azaltır; sayaç sıfıra inince veri serbest kalır. Bu yüzden açık tutulan bir dosya "silinse" bile, son file descriptor kapanana kadar yaşamaya devam eder.</p>
+
+<h3>3. Path resolution: isimden inode'a</h3>
+<p>Çekirdek bir pathname'i (ör. <code>/home/deniz/not.txt</code>) bileşen bileşen çözer. Nereden başlayacağı yolun türüne bağlıdır.</p>
+<div class="manpage"><div class="ref">7 path_resolution · WALK</div><p class="orig">... the starting lookup directory is the root directory of the calling process ... this component is looked up in the current lookup directory.</p><p>Mutlak (absolute) yollar sürecin root directory'sinden, göreli (relative) yollar current working directory'den başlar. Her bileşen o anki "lookup directory" içinde aranır; bir dizinse içine inilir. Bu yüzden yoldaki <strong>her ara dizinde</strong> arama (execute) izni gerekir — yalnızca hedef dosyada değil.</p></div>
+<p>Bu yürüyüşü hızlandıran şey <strong>dentry cache</strong>'tir: sık erişilen isim→inode eşlemeleri bellekte tutulur, böylece her <code>open()</code> diske gitmez. Mount point'ler de burada devreye girer: bir dizin başka bir dosya sisteminin kök inode'una bağlanmışsa, yürüyüş sorunsuzca o dosya sistemine geçer.</p>
+
+<h3>4. fd paylaşımı: offset'i kim paylaşır?</h3>
+<p>Aynı dosyayı iki kez <code>open()</code> edersen iki ayrı open file description oluşur ve offset'leri bağımsızdır. Ama <code>dup()</code> ve <code>fork()</code> farklıdır:</p>
+<div class="manpage"><div class="ref">2 open · NOTES</div><p class="orig">... the duplicate refers to the same open file description as the original file descriptor ... the two file descriptors consequently share the file offset and file status flags.</p><p><code>dup2(3, 1)</code> ile stdout'u bir dosyaya yönlendirirsen 1 ve 3 aynı open file description'ı paylaşır: birine yazmak diğerinin offset'ini de ilerletir.</p></div>
+<div class="manpage"><div class="ref">2 open · NOTES</div><p class="orig">... a child process created via fork(2) inherits duplicates of its parent's file descriptors, and those duplicates refer to the same open file descriptions.</p><p>Bu yüzden parent ve child aynı log dosyasına yazarken satırlar üst üste binmez — ortak offset sayesinde sırayla ilerler.</p></div>
+<p>Bu paylaşımı istemediğin durumlar da var: exec() sonrası bir fd'nin otomatik kapanmasını istersen <strong>O_CLOEXEC</strong> (close-on-exec) kullanırsın.</p>
+<div class="manpage"><div class="ref">2 open · O_CLOEXEC</div><p class="orig">Enable the close-on-exec flag for the new file descriptor.</p><p>Varsayılan olarak file descriptor'lar exec() boyunca açık kalır; O_CLOEXEC bunu değiştirir ve descriptor'ı yeni programa sızdırmaz. Güvenlik açısından önemlidir — ayrıcalıklı bir fd'nin çalıştırılan child programa geçmesini engeller.</p></div>
+
+<h3>5. "Her şey bir dosyadır"</h3>
+<p>VFS'in asıl gücü, aynı fd arayüzünün (read / write / close) yalnızca gerçek dosyalar için değil; pipe, socket, terminal, <code>/proc</code> ve <code>/sys</code> girdileri, hatta <code>eventfd</code> / <code>signalfd</code> gibi çekirdek nesneleri için de çalışmasıdır. Bu yüzden <code>strace</code> çıktısında her şey birkaç ortak syscall'a (read, write, close) iner — Unix'in birleştirici fikri tam olarak budur.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">VFS, her dosya sistemini (ext4, tmpfs, proc...) aynı nesnelerle sunar: <code>file</code> (açık dosya girdisi), <code>dentry</code> (dizin girdisi önbelleği), <code>inode</code> (dosyanın üst verisi) ve <code>superblock</code> (bağlı dosya sistemi). open() çağrısının çekirdekteki yolu:</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://man7.org/linux/man-pages/man2/open.2.html" target="_blank" rel="noopener">open()</a><span class="where">glibc</span><p>openat sistem çağrısını (syscall) yapar.</p></div></li>' +
+      '<li class="boundary"><div>sistem çağrısı sınırı · kullanıcı → çekirdek</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/do_sys_open" target="_blank" rel="noopener">do_sys_open()</a><span class="where">fs/open.c</span><p>Boş bir fd ayırır ve do_filp_open\'ı çağırır.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/path_openat" target="_blank" rel="noopener">path_openat()</a><span class="where">fs/namei.c</span><p>Yolu dentry önbelleğinde çözer, hedef inode\'u bulur.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/vfs_open" target="_blank" rel="noopener">vfs_open()</a><span class="where">fs/open.c</span><p>Açık dosya girdisini (struct file) kurar; <code>inode-&gt;i_fop-&gt;open</code> ile dosya sistemine özel açılışı çağırır.</p></div></li>' +
+      '</ol>' +
+      '<p class="prose" style="margin-top:14px">Aynı soyutlama sayesinde <code>read()</code>/<code>write()</code> bir ext4 dosyasında, bir borunun (pipe) ucunda ve bir sokette aynı biçimde çalışır: her biri kendi <code>i_fop</code> işlev tablosunu sağlar. "Her şey dosyadır" fikrinin somut hali budur.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Sürecin açık fd\'lerine bak', p: '/proc/self/fd, sürecin fd tablosunu gösterir: her sembolik bağ bir fd\'nin neye bağlı olduğunu söyler (dosya, soket, pipe).',
+        shells: [{ label: 'terminal · gerçek çıktı', copy: 'ls -l /proc/self/fd', pre: '<span class="c">$</span> ls -l /proc/self/fd\n0 -> <span class="g">/dev/pts/0</span>\n1 -> /dev/pts/0\n2 -> /dev/pts/0\n3 -> <span class="y">/proc/926/fd</span>   <span class="c"># ls\'in acik tuttugu dizin</span>' }] },
+      { h3: '2. dup2 ile yönlendirmeyi gör', p: 'Program hiç "printf" dosyaya yazmaz; dup2 stdout\'u dosyaya bağlar, sonra write(1,...) dosyaya düşer. Kabuktaki > operatörünün özü budur.',
+        shells: [{ label: 'terminal · gerçek çıktı', copy: 'gcc -o vfs vfs.c && ./vfs && cat cikti.txt', pre: '<span class="c">$</span> gcc -o vfs vfs.c &amp;&amp; ./vfs\nopen() -> fd=3\n<span class="c">$</span> cat cikti.txt\nmerhaba dosya' }] },
+      { h3: '3. Aynı inode, iki isim', p: 'Bir sabit bağ (hard link) aynı inode\'a ikinci bir isim verir. ls -li ile inode numarasını gör: iki isim, tek inode, bağ sayısı 2.',
+        shells: [{ label: 'terminal', copy: 'echo veri > a.txt; ln a.txt b.txt; ls -li a.txt b.txt', pre: '<span class="c">$</span> ln a.txt b.txt; ls -li a.txt b.txt\n<span class="y">1835102</span> -rw-r--r-- <span class="y">2</span> ... a.txt\n<span class="y">1835102</span> -rw-r--r-- <span class="y">2</span> ... b.txt   <span class="c"># ayni inode, bag=2</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Aynı dosyayı iki kez <code>open()</code> edersen okuma/yazma ofsetleri nasıl olur?', opts: ['Ortak tek ofset', 'Her fd\'nin ayrı ofseti', 'Ofset yoktur'], answer: 'Her fd\'nin ayrı ofseti',
+        ok: 'Doğru. İki ayrı açık dosya girdisi oluşur; her biri kendi ofsetini tutar, inode ortaktır.', no: 'İpucu: iki open çağrısı kaç açık dosya girdisi yaratır? Ofset nerede tutuluyor?' },
+      { q: '<code>dup2(fd, 1)</code> ne sağlar?', opts: ['Dosyayı kopyalar', 'fd 1\'i, fd\'nin açık dosya girdisine bağlar', 'Yeni inode yaratır'], answer: 'fd 1\'i, fd\'nin açık dosya girdisine bağlar',
+        ok: 'Doğru. Artık stdout ve fd aynı girdiyi (ve ofseti) paylaşır; kabuğun > yönlendirmesi de budur.', no: 'İpucu: dup2 veriyi değil, tablo girdisini paylaştırır.' },
+      { q: '<code>close(fd)</code> açık dosya girdisini her zaman serbest bırakır mı?', opts: ['Evet, hemen', 'Hayır, başvuru sayısı 0 olunca', 'Sadece inode silinince'], answer: 'Hayır, başvuru sayısı 0 olunca',
+        ok: 'Doğru. Girdiyi başka fd\'ler (dup/fork ile) hâlâ tutuyor olabilir; girdi, son başvuru kapanınca serbest kalır.', no: 'İpucu: dup2 sonrası iki fd aynı girdiyi tutuyordu. Biri kapanınca girdi gider mi?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Linux Modül 9', title: 'ext4 iç yapısı', desc: 'inode gerçekte neye benzer? Veri blokları extent ağacıyla nasıl bulunur, journaling ne yapar?' },
+  sources: [
+    { href: 'https://man7.org/linux/man-pages/man2/open.2.html', text: 'man 2 open', note: 'bayraklar ve fd' },
+    { href: 'https://man7.org/linux/man-pages/man2/dup.2.html', text: 'man 2 dup / dup2', note: 'yönlendirme' },
+    { href: 'https://www.kernel.org/doc/html/latest/filesystems/vfs.html', text: 'Linux VFS belgeleri', note: 'file/dentry/inode/superblock' },
+    { href: 'https://0xax.gitbooks.io/linux-insides/content/', text: 'linux-insides', note: 'kaynak gezintisi' },
+    { href: 'https://elixir.bootlin.com/linux/latest/source/fs/open.c', text: 'fs/open.c', note: 'Elixir' }
+  ],
+  pageTitle: 'Dosya Tanımlayıcıları ve VFS'
+};
+function sd(n, label, ptr, hi, gone) { return { n: n, label: label, ptr: ptr, gone: gone }; }
+function ofe(id, mode, off, refs, inode, hot) { return { id: id, mode: mode, off: off, refs: refs, inode: inode }; }
+function ino(id, name, open) { return { id: id, name: name, open: open }; }
+ATLAS.build(MODULE);
+</script>
+</body></html>

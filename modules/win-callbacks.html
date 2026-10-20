@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Kernel Callbacks ve ETW</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: olay akışı ve EDR karar durumu */
+.evbox { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 10px 12px; display: grid; gap: 3px; }
+.evbox.on { border-color: var(--track); background: var(--track-soft); }
+.evbox .cl { font-family: var(--f-mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.evbox .cv { font-family: var(--f-display); font-weight: 800; font-size: 15px; }
+.evbox.on .cv { color: var(--track); }
+.flow { display: grid; gap: 8px; margin-top: 10px; }
+.node { border-radius: var(--r); padding: 9px 12px; border: 1.5px solid var(--line); background: var(--surface); display: grid; gap: 2px; }
+.node b { font-family: var(--f-display); font-size: 13.5px; } .node span { font-size: 12.5px; color: var(--muted); }
+.node.active { border-color: var(--track); background: var(--track-soft); } .node.active b { color: var(--track); }
+.node.done { opacity: .55; }
+.verdict { font-family: var(--f-mono); font-size: 12.5px; border: 1px dashed var(--track); border-radius: var(--r); background: var(--track-soft); color: var(--track); padding: 8px 10px; overflow-wrap: anywhere; }
+.verdict.block { border-color: var(--bad); background: var(--bad-soft); color: var(--bad); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'windows',
+  crumbs: 'windows › callbacks & ETW › modül 4',
+  eyebrow: 'Modül 4 · Windows kernel · Callbacks ve ETW',
+  titleHTML: 'Kernel callbacks ve <code>ETW</code>: savunmanın gözü nereden bakar?',
+  lede: 'Bir EDR (Endpoint Detection and Response) "şu süreç şu süreci başlattı", "şu DLL yüklendi", "şu registry anahtarı değişti" bilgisini nereden alır? Çekirdeğin kendisinden. Windows, güvenlik ürünlerinin olayları dinlemesi için resmi kapılar sunar: kernel callback\'ler ve ETW. Bu modülde bir süreç oluşturma olayının çekirdekten EDR\'ye nasıl aktığını izleyeceğiz — ve bu kapıların neden hem savunmanın gözü hem de saldırganın hedefi olduğunu göreceğiz.',
+  meta: ['~15 dk', 'ön koşul: sürücü anatomisi, process/thread', 'platform: Windows 10/11, NT kernel'],
+  intuition: {
+    paras: [
+      'Bir güvenlik ürünü her şeyi tek tek yoklayarak (polling) öğrenemez; bu hem yavaş hem de olayları kaçırır. Bunun yerine çekirdek, belirli olaylar olduğunda kayıtlı dinleyicilere haber verir. Windows\'ta bunun iki ana yolu vardır: <strong>kernel callback</strong>\'ler (çekirdeğin, bir sürücünün verdiği fonksiyonu olay anında çağırması) ve <strong>ETW</strong> (Event Tracing for Windows — olayların bir akışa yazıldığı, isteyenin tükettiği telemetri altyapısı).',
+      'Bu iki mekanizma EDR\'lerin temelidir: süreç/thread oluşturma, image (DLL/exe) yükleme, registry değişikliği, handle açma gibi olaylar buradan akar. Aynı mekanizmalar saldırgan için de kritiktir — çünkü savunmanın "gözü" buralardan bakar, bu gözü köreltmek (callback kaldırma, ETW kurcalama) saldırganın bir hedefi olur. Bu modül mekanizmayı ve savunma değerini anlatır; kurcalama yalnızca kavramsal olarak, tehdit modeli açısından geçer.'
+    ],
+    ideas: [
+      { b: 'Push, poll değil', span: 'Çekirdek olay anında dinleyiciyi çağırır; EDR olayları kaçırmadan, gerçek zamanlı görür.' },
+      { b: 'NOTIFY vs AUTH', span: 'Bazı callback\'ler yalnızca haber verir; bazıları (ör. object/process-creation) olayı değiştirebilir veya engelleyebilir.' },
+      { b: 'Göz aynı zamanda hedef', span: 'Savunma bu kapılardan baktığı için, saldırgan da bu kapıları (callback, ETW) susturmayı hedefler — bu yüzden bütünlükleri korunmalıdır.' }
+    ]
+  },
+  lab: {
+    intro: 'Kullanıcı yeni bir süreç başlattı. Soldaki "kod" bir EDR sürücüsünün kayıt ettiği callback\'in sözde-akışıdır; sağda olayın çekirdekten EDR\'ye akışını ve EDR\'nin verdiği kararı izle.',
+    codeLabel: 'EDR sürücüsü (sözde-kod)', cmd: '(kullanıcı bir .exe çalıştırır)',
+    foot: 'Akış kavramsaldır; gerçek bir EDR çok daha fazla sinyali birleştirir. ← → tuşlarıyla da ilerleyebilirsin.',
+    code: [
+      { t: '<span class="cm">// sürücü yüklenirken: callback\'i kaydet</span>' },
+      { t: '<span class="f">PsSetCreateProcessNotifyRoutineEx</span>(OnProcess, FALSE);' },
+      { t: '' },
+      { t: '<span class="cm">// çekirdek, süreç oluşunca bunu ÇAĞIRIR</span>' },
+      { t: '<span class="f">OnProcess</span>(parent, pid, info):' },
+      { t: '    <span class="k">if</span> (info):  <span class="cm">// yeni süreç başlıyor</span>' },
+      { t: '        img = info-&gt;ImageFileName;' },
+      { t: '        skor = <span class="f">degerlendir</span>(parent, img);' },
+      { t: '        <span class="f">etw_ve_kaydet</span>(parent, img, skor);' },
+      { t: '        <span class="k">if</span> (skor &gt; ESIK):' },
+      { t: '            info-&gt;CreationStatus = STATUS_ACCESS_DENIED;' }
+    ],
+    steps: [
+      { pc: [0, 1], title: 'Sürücü callback\'i kaydeder', node: 'register',
+        text: 'EDR sürücüsü yüklenirken <code>PsSetCreateProcessNotifyRoutineEx</code> ile bir fonksiyonunu çekirdeğe kaydeder. Artık <strong>her</strong> süreç oluşumunda çekirdek bu fonksiyonu çağıracaktır. Kayıt, sürücünün en kritik anıdır: bu satır savunmanın gözünü açar.',
+        ev: 'callback kayıtlı', flow: ['register'], verdict: '' },
+      { pc: [4, 5], title: 'Kullanıcı süreç başlatır', node: 'event',
+        text: 'Kullanıcı bir programı çalıştırır. Çekirdek süreç nesnesini kurar ama henüz çalıştırmaya başlamadan önce, kayıtlı tüm create-process callback\'lerini çağırır. Bizim <code>OnProcess</code> fonksiyonumuz tam bu noktada, <strong>senkron</strong> olarak devreye girer.',
+        ev: 'süreç oluşuyor', flow: ['event'], verdict: '' },
+      { pc: [6, 7], title: 'EDR olayı değerlendirir', node: 'eval',
+        text: 'Callback içinde EDR; ebeveyn süreci (kim başlattı?), image yolunu, imzayı ve davranış geçmişini inceler. Örneğin "bir Office uygulaması bir PowerShell\'i başlatıyor" gibi bir ebeveyn-çocuk ilişkisi şüphe skorunu yükseltir.',
+        ev: 'değerlendiriliyor', flow: ['eval'], verdict: '' },
+      { pc: 8, title: 'ETW + telemetri', node: 'telemetry',
+        text: 'EDR olayı kendi kaydına yazar ve genellikle ETW akışıyla da zenginleştirir (ör. Microsoft-Windows-Threat-Intelligence sağlayıcısı). Bu telemetri hem anlık karar hem de sonradan avlanma (threat hunting) için saklanır.',
+        ev: 'telemetri yazıldı', flow: ['telemetry'], verdict: 'olay kaydedildi: parent=WINWORD.EXE → child=powershell.exe' },
+      { pc: [9, 10], title: 'Karar: izin / engelle', node: 'verdict',
+        text: 'Create-process callback\'i olayı yalnızca görmez; <code>CreationStatus</code> alanını ayarlayarak süreci <strong>engelleyebilir</strong> de. Skor eşiği aşarsa EDR <code>STATUS_ACCESS_DENIED</code> yazar ve süreç hiç başlamaz. Böylece callback hem gözlem hem de önleme noktasıdır.',
+        ev: 'karar verildi', flow: ['verdict'], verdict: 'skor > eşik → süreç ENGELLENDİ (STATUS_ACCESS_DENIED)', block: true }
+    ],
+    render: function (s, stateEl, u) {
+      var order = ['register', 'event', 'eval', 'telemetry', 'verdict'];
+      var labels = {
+        register: ['Kayıt', 'callback çekirdeğe verildi'],
+        event: ['Süreç oluşumu', 'çekirdek callback\'i çağırır'],
+        eval: ['Değerlendirme', 'ebeveyn/image/imza incelenir'],
+        telemetry: ['ETW + kayıt', 'telemetri saklanır'],
+        verdict: ['Karar', 'izin ver / engelle']
+      };
+      var active = (s.flow && s.flow[0]) || '';
+      var curIdx = order.indexOf(active);
+      var nodes = order.map(function (k, i) {
+        var cls = k === active ? 'active' : (i < curIdx ? 'done' : '');
+        return '<div class="node ' + cls + '"><b>' + labels[k][0] + '</b><span>' + u.esc(labels[k][1]) + '</span></div>';
+      }).join('');
+      var vclass = 'verdict' + (s.block ? ' block' : '');
+      stateEl.innerHTML =
+        '<p class="lab-label">Olay durumu</p>' +
+        '<div class="evbox on"><span class="cl">şu an</span><span class="cv">' + u.esc(s.ev) + '</span></div>' +
+        '<p class="lab-label" style="margin-top:14px">Çekirdek → EDR akışı</p><div class="flow">' + nodes + '</div>' +
+        (s.verdict ? '<p class="lab-label" style="margin-top:14px">EDR çıktısı</p><div class="' + vclass + '">' + u.esc(s.verdict) + '</div>' : '');
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: çekirdeğin güvenlik kapıları",
+    html: `<p class="lead">Windows çekirdeği, güvenlik ürünlerinin olayları görmesi için belgelenmiş, resmi mekanizmalar sunar. Bunlar iki aileye ayrılır: olay anında bir fonksiyonu çağıran <strong>kernel callback</strong>’ler ve olayları bir akışa yazan <strong>ETW</strong>. Bir EDR’nin "gözü" neredeyse tümüyle bu ikisinden oluşur; bu yüzden hem savunmanın temelidirler hem de saldırganın susturmak istediği hedeftirler.</p>
+
+<h3>1. Notify routine’lar: süreç, thread ve image olayları</h3>
+<p>Bir sürücü, çekirdeğe "şu olay olunca beni çağır" demek için <strong>notify routine</strong> kaydeder. En önemlileri süreç, thread ve image (modül) yaşam döngüsünü kapsar. Süreç oluşumu için modern API <code>PsSetCreateProcessNotifyRoutineEx</code>’tir:</p>
+<div class="manpage src-docs"><div class="ref">docs · PsSetCreateProcessNotifyRoutineEx</div><p class="orig">The PsSetCreateProcessNotifyRoutineEx routine registers or removes a callback routine that notifies the caller when a process is created or exits.</p><p>Bu rutin, bir callback’i süreç oluşturma/çıkış olaylarına bağlar. "Ex" biçiminin kritik farkı: callback, süreç <strong>çalışmaya başlamadan önce</strong> senkron çağrılır ve <code>CreationStatus</code> alanını ayarlayarak süreci <strong>engelleyebilir</strong>. Yani yalnızca gözlem değil, önleme noktasıdır.</p></div>
+<p>Benzer rutinler diğer olayları kapsar ve bir EDR tipik olarak hepsini birden kaydeder:</p>
+<div class="deflist">
+<div><dt>PsSetCreateThreadNotifyRoutine</dt><dd>Bir thread oluşturulduğunda veya sonlandığında çağrılır. Uzak thread oluşturma (remote thread) klasik bir enjeksiyon sinyali olduğundan bu olay EDR için değerlidir.</dd></div>
+<div><dt>PsSetLoadImageNotifyRoutine</dt><dd>Bir image (EXE, DLL, sürücü) bir adres alanına yüklendiğinde çağrılır. İmzasız veya beklenmedik bir modülün yüklenmesini burada yakalanır.</dd></div>
+<div><dt>CmRegisterCallback(Ex)</dt><dd>Registry işlemlerinden (anahtar/değer oku-yaz-sil) önce/sonra çağrılır. Kalıcılık (persistence) ve yapılandırma kurcalamaları çoğunlukla registry’de iz bırakır.</dd></div>
+</div>
+
+<h3>2. Object callback’ler: handle’a müdahale</h3>
+<p>Bir süreç veya thread’e dokunmak için önce ona bir <strong>handle</strong> açmak gerekir. <code>ObRegisterCallbacks</code>, handle açma/çoğaltma işlemlerine araya girmeyi sağlar:</p>
+<div class="manpage src-docs"><div class="ref">docs · ObRegisterCallbacks</div><p class="orig">The ObRegisterCallbacks routine registers a list of callback routines for thread, process, and desktop handle operations.</p><p>Bu, bir callback’in handle açma anında devreye girip istenen erişim haklarını <strong>kısmasını</strong> sağlar. Örneğin korunan bir sürecin belleğine yazma hakkıyla handle açılmasını engellemek (process protection) bu mekanizmayla yapılır. Antivirüs/EDR kendi süreçlerini de böyle korur.</p></div>
+
+<h3>3. ETW: telemetrinin omurgası</h3>
+<p>Callback’ler "an"a müdahale için; <strong>ETW</strong> ise olayların geniş, yapılandırılmış bir akışını toplamak içindir. ETW çekirdek düzeyinde verimli bir izleme altyapısıdır:</p>
+<div class="manpage src-docs"><div class="ref">docs · Event Tracing for Windows</div><p class="orig">Event Tracing for Windows (ETW) is an efficient kernel-level tracing facility that lets you log kernel or application-defined events to a log file.</p><p>ETW, hem çekirdek hem uygulama olaylarını düşük maliyetle bir oturuma yazmayı sağlar. Mimarisi üç parçadır:</p></div>
+<div class="deflist">
+<div><dt>provider</dt><dd>Olayları üreten bileşen ("Providers are applications that contain event tracing instrumentation"). İşletim sistemi yüzlerce yerleşik provider içerir; güvenlik için en kritiği Microsoft-Windows-Threat-Intelligence (ETW-Ti) provider’ıdır.</dd></div>
+<div><dt>controller</dt><dd>Oturumu başlatıp durduran, provider’ları etkinleştiren ("start and stop an event tracing session and enable providers") yönetici bileşen.</dd></div>
+<div><dt>consumer</dt><dd>Oturumu bir olay kaynağı olarak seçip olayları işleyen ("select one or more event tracing sessions as a source of events") bileşen — EDR’nin olayları okuduğu yer.</dd></div>
+</div>
+<p>ETW-Ti özellikle önemlidir çünkü klasik kullanıcı-alanı API hook’larının kaçırdığı düşük seviyeli davranışları (bellek tahsisi desenleri, uzak thread, bazı syscall’lar) çekirdekten görünür kılar.</p>
+
+<h3>4. Neden göz aynı zamanda hedef?</h3>
+<p>Bir EDR’nin tüm görüşü bu callback ve ETW akışlarından geldiği için, saldırgan tarafının bir hedefi bu kaynakları <strong>köreltmektir</strong>: kayıtlı callback’i listeden çıkarmak, ETW oturumunu/provider’ı susturmak veya provider’a giden yolu bozmak. Bunların çoğu çekirdek düzeyinde yazma yetkisi gerektirir (bir sürücü veya BYOVD ile) — yani zaten yüksek ayrıcalık varsayar. Bu, savunma açısından iki ders verir: (1) bu mekanizmaların bütünlüğü korunmalıdır (imzalı sürücü zorunluluğu, callback listelerinin denetimi, ETW susturmanın kendisinin bir anomali sinyali olarak izlenmesi); (2) tek bir telemetri kaynağına güvenmek kırılgandır — savunma, birden fazla bağımsız kaynağı (callback + ETW + kullanıcı-alanı) çaprazlamalıdır. Bu bölüm kurcalamayı yalnızca tehdit modeli düzeyinde anar; somut teknik veya kod vermez.</p>`
+  },
+  quiz: {
+    questions: [
+      { q: '<code>PsSetCreateProcessNotifyRoutineEx</code> ile kaydedilen bir callback, süreç oluşumunda ne yapabilir?', opts: ['Yalnızca olayı günlüğe yazabilir', 'Olayı görebilir ve CreationStatus ile süreci engelleyebilir', 'Yalnızca süreç bittikten sonra çalışır'], answer: 'Olayı görebilir ve CreationStatus ile süreci engelleyebilir',
+        ok: 'Doğru. "Ex" biçimi callback’i süreç çalışmadan önce senkron çağırır; CreationStatus ayarlanarak süreç engellenebilir. Yani hem gözlem hem önleme noktasıdır.', no: 'İpucu: "Ex" biçiminin farkı, süreç başlamadan önce senkron çağrılması ve bir durum alanı sunmasıdır.' },
+      { q: 'ETW mimarisinde olayları üreten bileşen hangisidir?', opts: ['Controller', 'Provider', 'Consumer'], answer: 'Provider',
+        ok: 'Doğru. Provider olayları üretir (event tracing instrumentation içerir); controller oturumu yönetir, consumer olayları tüketir. EDR genelde consumer’dır.', no: 'İpucu: controller başlatır/durdurur, consumer okur. Olayı kim üretir?' },
+      { q: 'Bir EDR’nin kendi korumalı sürecine, başka bir sürecin yazma hakkıyla handle açmasını hangi mekanizma engelleyebilir?', opts: ['PsSetLoadImageNotifyRoutine', 'ObRegisterCallbacks', 'ETW consumer'], answer: 'ObRegisterCallbacks',
+        ok: 'Doğru. ObRegisterCallbacks handle açma anında istenen erişim haklarını kısabilir; process protection böyle yapılır. Image-load notify yalnızca modül yüklemeyi görür, ETW ise telemetri içindir.', no: 'İpucu: hangisi handle operasyonlarına araya girip erişim haklarını kısabilir?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Windows', title: 'Rootkit teknikleri (kavramsal)', desc: 'Savunmanın gözünü köreltmek ne demektir? Callback kaldırma, IRP hooking, BYOVD ve ETW kurcalama — tehdit modeli düzeyinde, kodsuz.', href: 'win-offense.html' },
+  sources: [
+    { href: 'https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddk/nf-ntddk-pssetcreateprocessnotifyroutineex', text: 'Microsoft Learn — PsSetCreateProcessNotifyRoutineEx', note: 'süreç oluşturma callback\'i' },
+    { href: 'https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-obregistercallbacks', text: 'Microsoft Learn — ObRegisterCallbacks', note: 'handle operasyon callback\'leri' },
+    { href: 'https://learn.microsoft.com/en-us/windows/win32/etw/about-event-tracing', text: 'Microsoft Learn — About Event Tracing (ETW)', note: 'provider/controller/consumer modeli' },
+    { href: 'https://www.xintra.org/courses/11-windows-kernel-offensive-defensive-reverse-engineering', text: 'Xintra — Windows Kernel Offensive/Defensive/RE', note: 'müfredat: callbacks, ETW' }
+  ],
+  pageTitle: 'Kernel Callbacks ve ETW'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

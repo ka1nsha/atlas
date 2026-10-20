@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Tehdit Modeli</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: ayrıcalık katmanları ve güven sınırları */
+.levels { display: grid; gap: 0; }
+.lvl { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 9px 11px; display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.lvl b { font-family: var(--f-display); font-size: 14px; }
+.lvl .pl { font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.lvl.asset { border-color: var(--ok); background: var(--ok-soft); }
+.lvl.asset b { color: var(--ok); }
+.bnd { display: flex; align-items: center; gap: 8px; padding: 3px 0 3px 6px; font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.bnd::before { content: "╱╱╱"; letter-spacing: -1px; opacity: .5; }
+.bnd.hot { color: var(--bad); font-weight: 700; }
+.bnd.hot::before { content: "▶"; color: var(--bad); opacity: 1; }
+.detail { margin-top: 14px; border: 1px solid var(--line); border-radius: var(--r); background: var(--sunk); padding: 11px 12px; display: grid; gap: 7px; }
+.detail .dh { font-family: var(--f-mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.ent { display: flex; flex-wrap: wrap; gap: 6px; }
+.ent span { font-family: var(--f-mono); font-size: 11.5px; border: 1px solid var(--line); border-radius: 999px; padding: 2px 9px; background: var(--surface); }
+.ent span.pick { border-color: var(--bad); color: var(--bad); font-weight: 700; }
+.ent span.def { border-color: var(--ok); color: var(--ok); }
+.detail p { margin: 0; font-size: 13.5px; }
+.detail p .en { color: var(--muted); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+// ayrıcalık katmanları (en ayrıcalıklı → en az). Güven sınırı = iki katman arası geçiş.
+var LEVELS = [
+  { b: 'Güvenli dünya (Secure World)', pl: 'TrustZone / SEP · anahtarlar', asset: true },
+  { b: 'Çekirdek (kernel)', pl: 'ring 0 · tam donanım', asset: true },
+  { b: 'Sistem servisleri', pl: 'root/system · system_server, launchd' },
+  { b: 'Uygulama (app)', pl: 'sandbox · düşük yetki' },
+  { b: 'Uzak / ağ (remote)', pl: 'kod yok · yalnızca veri' }
+];
+// sınırlar: iki katman arası. idx = üstteki (daha az ayrıcalıklı) katmanın indeksi; geçiş yukarıdan aşağıya ayrıcalık kazanır.
+var BOUNDS = {
+  net:    { after: 3, label: 'ağ girişi (remote → app)' },
+  ipc:    { after: 2, label: 'IPC: Binder / XPC / soket (app → servis)' },
+  sys:    { after: 1, label: 'syscall / ioctl / /dev (app·servis → çekirdek)' },
+  secure: { after: 0, label: 'SMC / mailbox (çekirdek → güvenli dünya)' }
+};
+
+var MODULE = {
+  track: 'offensive',
+  crumbs: 'ofansif › tehdit modeli › modül 1',
+  eyebrow: 'Ofansif izlek · Modül 1 · Tehdit modeli',
+  titleHTML: 'Saldırgan nasıl düşünür: <code>tehdit modeli</code>',
+  lede: 'Bir sistemi savunmadan önce nereden saldırılabileceğini bilmek gerekir. Bu modül bir sistemin saldırı yüzeyini (attack surface), güven sınırlarını (trust boundaries) ve giriş noktalarını haritalamayı; bir saldırganın nereden başladığını ve bir savunmacının nereyi sertleştirdiğini öğretir. Teknik sömürü yok; bu, serinin çerçeve modülü.',
+  meta: ['~15 dk', 'ön koşul: yok', 'çerçeve modülü'],
+  ethic: '<b>İlke.</b> Bu modül savunma için saldırgan bakışını öğretir; kavram ve yöntem düzeyindedir, hedef alınmış saldırı içermez. Saldırı yüzeyi analizini yalnızca <b>kendi sistemlerinde veya açık izinli (yetkili) hedeflerde</b> uygula.',
+  intuition: {
+    paras: [
+      'Tehdit modeli (threat model), basit dört soruya yanıt arar: Neyi koruyoruz? Kime karşı? Nereden girilebilir? Ne yaparsak gireni durdururuz? Saldırgan da savunmacı da aynı haritaya bakar; fark, biri açık bir kapı ararken diğerinin tüm kapıları kapatmaya çalışmasıdır.',
+      'Anahtar kavram <strong>güven sınırı (trust boundary)</strong>: ayrıcalığın (privilege) değiştiği her çizgi. Bir uygulamadan çekirdeğe, bir uygulamadan bir sistem servisine, çekirdekten güvenli dünyaya (secure world) geçiş... Saldırının amacı neredeyse her zaman bir güven sınırını izinsiz aşmaktır: buna ayrıcalık yükseltme (privilege escalation) denir.'
+    ],
+    ideas: [
+      { b: 'Saldırı yüzeyi (attack surface)', span: 'Dışarıdan erişilebilen tüm giriş noktalarının toplamı: syscall, IPC, dosya ayrıştırma, ağ, sürücü ioctl. Ne kadar genişse, o kadar risk.' },
+      { b: 'Güven sınırı (trust boundary)', span: 'Ayrıcalığın değiştiği çizgi. Bir sınırı aşan her veri, güvenilmeyen taraftan geldiği için doğrulanmalıdır.' },
+      { b: 'En zayıf halka', span: 'Saldırgan en güçlü değil, en zayıf doğrulanan girişi seçer. En geniş yüzey + en kötü doğrulama = ilk hedef.' }
+    ]
+  },
+  lab: {
+    intro: 'Bir mobil/masaüstü sistemi ayrıcalık katmanlarına ayıralım ve bir tehdit modelini altı adımda kuralım. Sağda katmanları, aralarındaki güven sınırlarını ve her adımda odaklanılan sınırın giriş noktaları ile tehditlerini izle.',
+    codeLabel: 'tehdit-modeli (sözde-kod)', cmd: 'tehdit-modeli',
+    foot: 'Bu bir düşünme çerçevesidir, çalıştırılabilir kod değil. Kendi sisteminin yüzeyini aşağıdaki komutlarla gerçekten listeleyebilirsin.',
+    code: [
+      { t: '<span class="cm">// tehdit modeli — 6 adım</span>' },
+      { t: 'varliklar  = [<span class="s">"kök yetki"</span>, <span class="s">"kullanıcı verisi"</span>, <span class="s">"anahtarlar"</span>];' },
+      { t: 'sinirlar   = <span class="f">guven_sinirlarini_ciz</span>();' },
+      { t: 'girisler   = <span class="f">her_sinirdaki_giris_noktalari</span>();' },
+      { t: 'tehditler  = girisler.<span class="f">map</span>(STRIDE);' },
+      { t: 'hedef      = enGenisYuzey &amp; enZayifDogrulama;' },
+      { t: 'savunma    = <span class="f">sertlestir</span>(hedef.sinir);' }
+    ],
+    steps: [
+      { pc: 1, title: 'Varlıkları belirle', focus: null, assets: true,
+        text: 'Her şey "neyi koruyoruz?" ile başlar. En ayrıcalıklı katmanlardaki varlıklar (assets) en değerlidir: güvenli dünyadaki anahtarlar ve çekirdekteki kök yetki (root). Saldırganın nihai hedefi bunlardır; savunmacının en çok koruması gereken de.',
+        detail: { dh: 'Varlıklar (assets)', ent: ['kök yetki (root)', 'kullanıcı verisi', 'şifreleme anahtarları', 'kod bütünlüğü'], p: 'Değer yukarıda (secure world, kernel); saldırgan oraya tırmanmak ister.' } },
+      { pc: 2, title: 'Güven sınırlarını çiz', focus: null, boundsAll: true,
+        text: 'Ayrıcalığın değiştiği her çizgi bir güven sınırıdır (trust boundary). Dört ana sınır var: ağ→uygulama, uygulama→servis, uygulama/servis→çekirdek, çekirdek→güvenli dünya. Bir sınırı aşan her veri güvenilmeyen taraftan gelir ve doğrulanmalıdır.',
+        detail: { dh: 'Güven sınırları', ent: ['remote → app', 'app → servis', 'app·servis → kernel', 'kernel → secure'], p: 'Her ╱╱╱ çizgisi bir güven sınırı: aşan veri doğrulanmazsa saldırı yüzeyidir.' } },
+      { pc: 3, title: 'Giriş noktalarını listele', focus: 'sys',
+        text: 'Her sınırda, güvenilmeyen tarafın güvenilen tarafa veri soktuğu somut giriş noktaları (entry points) vardır. En kritik sınır genelde uygulama→çekirdek: buradaki her syscall, her <code>ioctl(/dev/*)</code>, her <code>/proc</code> ve <code>/sys</code> yazımı ve her setuid ikili bir giriş noktasıdır.',
+        detail: { dh: 'Giriş noktaları · app → kernel', ent: ['syscall', 'ioctl(/dev/*)', '/proc, /sys', 'setuid ikililer', 'sürücü (driver)'], p: 'Saldırı yüzeyi bu noktaların toplamıdır (attack surface).' } },
+      { pc: 4, title: 'Her girişe tehdit sınıfı', focus: 'sys',
+        text: 'Her giriş noktası için "ne kötüye gidebilir?" diye sorulur. STRIDE yaygın bir sınıflandırmadır: Spoofing, Tampering, Repudiation, Information disclosure, DoS, Elevation of privilege. Bir sürücü <code>ioctl</code>\'si için en kritik sınıf ayrıcalık yükseltmedir (EoP): çekirdekte bellek bozulması doğrudan ring 0 kod çalıştırmaya götürür.',
+        detail: { dh: 'STRIDE · ioctl(/dev/driver)', ent: ['Tampering: bozuk girdi → bellek', 'Info disclosure: çekirdek sızıntısı', 'EoP: ring 0 kod ⚑'], p: 'En ağır sonuç EoP (elevation of privilege): çekirdek sınırını aşmak.' } },
+      { pc: 5, title: 'Saldırgan nereden başlar', focus: 'sys', attacker: true,
+        text: 'Saldırgan en güçlü değil, <strong>en zayıf doğrulanan</strong> ve <strong>en geniş</strong> yüzeyi seçer. Bir uygulama sandbox\'ından çekirdeğe açılan onlarca sürücü <code>ioctl</code>\'si, az denetlenmiş kod içerir ve doğrudan ring 0\'a dokunur; bu yüzden mobil ayrıcalık yükseltmelerinin klasik başlangıç noktasıdır.',
+        detail: { dh: 'Seçilen yol', ent: ['app (sandbox)', '→ ioctl(/dev/driver) ⚑', '→ çekirdekte bozulma', '→ root'], pick: 1, p: 'Geniş yüzey + zayıf doğrulama: ilk hedef burası.' } },
+      { pc: 6, title: 'Savunmacı nereyi sertleştirir', focus: 'sys', defender: true,
+        text: 'Aynı harita savunma planıdır. Her sınırda bir kontrol katmanı kurulur: uygulama→çekirdekte <strong>seccomp-BPF</strong> syscall yüzeyini daraltır; uygulama→serviste <strong>SELinux/sandbox</strong> erişimi kısar; çekirdek içinde <strong>KASLR, PAC, MTE</strong> bozulmayı sömürüye çevirmeyi zorlaştırır. Hedef: her sınırı hem daralt hem derinlemesine savun (defense in depth).',
+        detail: { dh: 'Sertleştirme · katman katman', ent: ['seccomp-BPF (syscall daralt)', 'SELinux / sandbox', 'KASLR · PAC · MTE', 'en az ayrıcalık (least privilege)'], def: true, p: 'Yüzeyi daralt + aşmayı pahalılaştır.' } }
+    ],
+    render: function (s, stateEl, u) {
+      var html = '<p class="lab-label">Ayrıcalık katmanları ve güven sınırları</p><div class="levels">';
+      for (var i = 0; i < LEVELS.length; i++) {
+        var L = LEVELS[i];
+        var cls = 'lvl' + (s.assets && L.asset ? ' asset' : '');
+        html += '<div class="' + cls + '"><b>' + u.esc(L.b) + '</b><span class="pl">' + u.esc(L.pl) + '</span></div>';
+        // bu katmandan sonraki sınır
+        var key = null;
+        for (var k in BOUNDS) if (BOUNDS[k].after === i) key = k;
+        if (key && i < LEVELS.length - 1) {
+          var show = s.boundsAll || s.focus === key;
+          var hot = s.focus === key;
+          if (show) html += '<div class="bnd' + (hot ? ' hot' : '') + '">' + u.esc(BOUNDS[key].label) + '</div>';
+          else html += '<div class="bnd" style="opacity:.35">' + u.esc(BOUNDS[key].label) + '</div>';
+        }
+      }
+      html += '</div>';
+      var d = s.detail;
+      if (d) {
+        var chips = d.ent.map(function (e, idx) {
+          var c = (d.pick === idx ? ' pick' : '') + (d.def ? ' def' : '');
+          return '<span class="' + c.trim() + '">' + u.esc(e) + '</span>';
+        }).join('');
+        html += '<div class="detail"><span class="dh">' + u.esc(d.dh) + '</span><div class="ent">' + chips + '</div><p>' + d.p.replace(/\((.*?)\)/g, '(<span class="en">$1</span>)') + '</p></div>';
+      }
+      stateEl.innerHTML = html;
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: tehdit modelleme bir yöntemdir",
+    html: `<p class="lead">Tehdit modeli (threat model) sezgisel bir "bu sistem güvenli mi?" tahmini değil, tekrarlanabilir bir yöntemdir. Dört soruya sırayla yanıt arar ve çıktısı paylaşılabilir, denetlenebilir bir tablodur. Bu bölüm OWASP ve Microsoft'un kamuya açık güvenlik belgelerine dayanır; hedef alınmış saldırı değil, saldırganın ve savunmacının ortak haritasını kurma disiplinidir.</p>
+
+<h3>1. Tehdit modeli nedir, ne işe yarar?</h3>
+<p>Bir tehdit modeli, bir sistemin güvenliğini etkileyen bilgilerin yapılandırılmış bir temsilidir. Amaç kusursuz bir sistem tasarlamak değil; hangi tehditlerin var olduğunu açıkça görmek ve her biri için bilinçli bir karar (azaltma, kabul, devretme) vermektir.</p>
+<div class="manpage src-docs"><div class="ref">OWASP · Threat Modeling</div><p class="orig">A threat model is a structured representation of all the information that affects the security of an application. … Threat modeling is a family of activities for improving security by identifying threats, and then defining countermeasures to prevent, or mitigate the effects of, threats to the system.</p><p>Tehdit modeli, bir uygulamanın güvenliğini etkileyen tüm bilginin yapılandırılmış bir temsilidir. Tehdit modelleme ise tehditleri belirleyip her biri için countermeasure (karşı önlem) tanımlayarak güvenliği iyileştiren bir etkinlik ailesidir. Anahtar fikir şudur: kararlar sezgiyle değil, "tüm bilgi masadayken" rasyonel biçimde verilir.</p></div>
+<p>Bu yüzden tehdit modeli tek seferlik bir denetim değildir; sistem değiştikçe güncellenir.</p>
+<div class="manpage src-docs"><div class="ref">OWASP · ne zaman</div><p class="orig">Threat modeling is best applied continuously throughout a software development project.</p><p>Tehdit modelleme en iyi, bir yazılım projesi boyunca sürekli uygulandığında işe yarar. Mimari değiştiğinde yeni bir giriş noktası (entry point) ya da yeni bir güven sınırı (trust boundary) doğar; model onunla birlikte güncellenmezse eskir.</p></div>
+
+<h3>2. Dört soru: yöntemin iskeleti</h3>
+<p>OWASP tehdit modellemeyi dört soruya indirger. Saldırgan da savunmacı da aynı dört soruya bakar; yalnızca niyetleri terstir.</p>
+<div class="deflist">
+<div><dt>What are we working on?</dt><dd>Kapsamı ve varlıkları (assets) belirle: neyi koruyoruz, sistem hangi bileşenlerden oluşuyor, veri nereden nereye akıyor. Güven sınırları bu adımda çizilir.</dd></div>
+<div><dt>What can go wrong?</dt><dd>Her giriş noktası için tehditleri çıkar. Beyin fırtınası ya da STRIDE, kill chain, attack tree gibi yapılandırılmış yöntemler kullanılır.</dd></div>
+<div><dt>What are we going to do about it?</dt><dd>Her tehdit için karar ver: azalt (mitigate), kabul et, devret ya da ortadan kaldır. Bu adımın çıktısı countermeasure listesidir.</dd></div>
+<div><dt>Did we do a good enough job?</dt><dd>Modeli gözden geçir: eldeki sisteme yetecek kadar iyi mi? Eksik kalan sınır veya doğrulanmamış giriş var mı?</dd></div>
+</div>
+<div class="manpage src-docs"><div class="ref">OWASP · dört soru</div><p class="orig">Did you do a good enough job for the system at hand?</p><p>Son soru kasıtlı olarak görelidir: "eldeki sisteme yetecek kadar iyi iş çıkardın mı?" Bir not uygulaması ile bir ödeme sistemi aynı eşiği gerektirmez. Tehdit modeli mükemmeliyet değil, <strong>yeterlilik</strong> arar.</p></div>
+
+<h3>3. STRIDE: "ne kötüye gidebilir?" sorusunu sınıflandırmak</h3>
+<p>İkinci sorunun ("what can go wrong?") en yaygın yanıt çerçevesi STRIDE'dır. Altı tehdit sınıfının her biri bir güvenlik özelliğini (security property) ihlal eder. Bir giriş noktasına bu altı mercekle tek tek bakmak, gözden kaçan tehdidi azaltır.</p>
+<div class="deflist">
+<div><dt>Spoofing</dt><dd>Başkasının kimlik bilgilerini (username/password gibi authentication bilgisi) ele geçirip onun yerine geçmek. İhlal edilen özellik: <strong>authentication</strong> (kimlik doğrulama).</dd></div>
+<div><dt>Tampering</dt><dd>Verinin kötü niyetle değiştirilmesi — diskteki kalıcı veri ya da ağda akan veri üzerinde. İhlal edilen özellik: <strong>integrity</strong> (bütünlük).</dd></div>
+<div><dt>Repudiation</dt><dd>Bir kullanıcının yaptığı işlemi inkâr etmesi ve sistemin bunu kanıtlayamaması. İhlal edilen özellik: <strong>non-repudiation</strong> (inkâr edilemezlik).</dd></div>
+<div><dt>Information disclosure</dt><dd>Bilginin erişim yetkisi olmayan kişilere açılması — yetkisiz dosya okuma ya da transit veriyi dinleme. İhlal edilen özellik: <strong>confidentiality</strong> (gizlilik).</dd></div>
+<div><dt>Denial of service</dt><dd>Geçerli kullanıcılara hizmetin reddi — bir sunucuyu erişilmez kılmak. İhlal edilen özellik: <strong>availability</strong> (erişilebilirlik).</dd></div>
+<div><dt>Elevation of privilege</dt><dd>Yetkisiz bir kullanıcının ayrıcalıklı erişim kazanması. İhlal edilen özellik: <strong>authorization</strong> (yetkilendirme). İç içe sistemlerde en ağır sınıf budur.</dd></div>
+</div>
+<div class="manpage src-docs"><div class="ref">Microsoft · STRIDE · EoP</div><p class="orig">An unprivileged user gains privileged access and thereby has sufficient access to compromise or destroy the entire system … an attacker has effectively penetrated all system defenses and become part of the trusted system itself, a dangerous situation indeed.</p><p>Ayrıcalık yükseltmede (elevation of privilege) yetkisiz bir kullanıcı ayrıcalıklı erişim kazanır ve tüm sistemi tehlikeye atacak yetkiye ulaşır. Microsoft'un tanımıyla saldırgan "tüm savunmaları aşıp güvenilen sistemin bir parçası hâline gelmiştir". Bu yüzden lab'da app→kernel sınırını aşmak en kritik senaryo olarak işaretlendi: o sınırı aşmak ring 0 demektir.</p></div>
+
+<h3>4. Attack surface: neden daraltılır?</h3>
+<p>Saldırı yüzeyi (attack surface), güvenilmeyen tarafın güvenilen tarafa veri soktuğu tüm giriş noktalarının toplamıdır: her syscall, her <code>ioctl(/dev/*)</code>, her ağ portu, her dosya ayrıştırıcı (parser). İki değişmez kural vardır:</p>
+<ul>
+<li><strong>Yüzey ne kadar genişse risk o kadar yüksektir</strong> — çünkü her giriş noktası ayrı ayrı doğru doğrulanmak zorundadır ve tek bir zayıf nokta yeter.</li>
+<li><strong>Saldırgan en zayıf halkayı seçer</strong> — en güçlü korunan yolu değil, en kötü doğrulanan ve en geniş yüzeyi. Bu yüzden savunmanın ilk adımı kullanılmayan girişleri kapatıp yüzeyi küçültmektir (attack surface reduction).</li>
+</ul>
+<p>Yüzey daraltma, <strong>least privilege</strong> (en az ayrıcalık) ilkesinin somut hâlidir: bir bileşene yalnızca işini yapacak kadar erişim verilir, fazlası kapatılır. seccomp-BPF ile syscall kümesini kısmak, bir servisin açık portlarını azaltmak, kullanılmayan sürücüleri derlemeden çıkarmak — hepsi aynı fikrin uygulamalarıdır.</p>
+
+<h3>5. Trust boundary: doğrulamanın zorunlu olduğu çizgi</h3>
+<p>Güven sınırı (trust boundary), ayrıcalığın değiştiği her çizgidir: remote→app, app→servis, app/servis→kernel, kernel→secure world. Tanımın pratik sonucu nettir: <strong>bir sınırı aşan her veri, güvenilmeyen taraftan geldiği için doğrulanmalıdır.</strong> Sınırın güvenilen tarafında "nasılsa bizim bileşenimiz gönderdi" varsayımı, güven sınırı kavramının çöküşüdür.</p>
+<p>Modern savunma iki ilkeyi birleştirir. <strong>Defense in depth</strong> (derinlemesine savunma): tek bir kontrol değil, her sınırda üst üste kontroller — biri aşılsa diğeri tutar (seccomp + SELinux + KASLR + PAC birlikte). <strong>Assume breach</strong> (ihlali varsay): bir katmanın er geç aşılacağını kabul edip "aşılırsa saldırgan ne kadar ilerleyebilir?" diye tasarlamak. İkisi birlikte, tek bir açığın tüm sistemi düşürmesini engellemeyi hedefler.</p>
+<p>Bu harita serinin geri kalanının iskeletidir: sonraki modüller her sınırın giriş noktalarını — bellek hataları, sömürü primitifleri, korumalar, sandbox kaçışı, kernel saldırı yüzeyi — tek tek, yine yalnızca kavram ve kamuya açık vaka düzeyinde açar.</p>`
+  },
+  underHood: {
+    heading: 'Sınır · giriş · tehdit haritası',
+    html: '<p class="prose">Bir tehdit modelini tabloya dökmek, onu paylaşılabilir ve denetlenebilir kılar. Aşağıda dört güven sınırının her biri için tipik giriş noktaları ve en kritik tehdit sınıfı var. Gerçek bir değerlendirmede her satır birden çok giriş ve tehditle genişler.</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Güven sınırı</th><th>Giriş noktaları</th><th>En kritik tehdit</th></tr></thead><tbody>' +
+      '<tr><td><b>remote → app</b></td><td>ağ servisleri, tarayıcı, mesaj/medya ayrıştırma (parsing)</td><td>uzaktan kod çalıştırma (RCE)</td></tr>' +
+      '<tr><td><b>app → servis</b></td><td>Binder / XPC / D-Bus, soket, paylaşılan dosya</td><td>ayrıcalık yükseltme (EoP)</td></tr>' +
+      '<tr><td><b>app·servis → çekirdek</b></td><td><code>syscall</code>, <code>ioctl(/dev/*)</code>, <code>/proc</code>, setuid ikili</td><td>ayrıcalık yükseltme → ring 0</td></tr>' +
+      '<tr><td><b>çekirdek → güvenli dünya</b></td><td>SMC çağrısı, paylaşılan bellek, mailbox</td><td>güven kökü (root of trust) ihlali</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px">Bu harita serinin geri kalanının iskeletidir: sonraki modüller her bir sınırın giriş noktalarını (bellek hataları, sömürü primitifleri, korumalar, sandbox kaçışı, çekirdek geçişi) tek tek açar.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Kendi saldırı yüzeyini listele: setuid ikililer', p: 'setuid ikililer (setuid binaries) kök yetkiyle çalışır; her biri app→kök arasında bir giriş noktasıdır. Sisteminde kaç tane olduğuna bak.',
+        shells: [{ label: 'terminal (gerçek çıktı)', copy: 'find /usr/bin /bin -perm -4000 -type f 2>/dev/null', pre: '<span class="c">$</span> find /usr/bin /bin -perm -4000 -type f\n/usr/bin/sudo\n/usr/bin/mount\n/usr/bin/passwd\n/usr/bin/chfn\n/usr/bin/chsh\n/usr/bin/gpasswd\n/usr/bin/newgrp\n/usr/bin/fusermount3' }] },
+      { h3: '2. Çekirdeğe açılan aygıtlar', p: 'Her <code>/dev</code> aygıtı, <code>ioctl</code> ile çekirdeğe açılan bir kapıdır. Karakter aygıtları (character devices) özellikle sürücü saldırı yüzeyidir.',
+        shells: [{ label: 'terminal (gerçek çıktı)', copy: 'ls -l /dev | grep ^c | head', pre: '<span class="c">$</span> ls -l /dev | grep ^c\ncrw-rw-rw- 1 root root 1, 3 null\ncrw-rw-rw- 1 root root 1, 8 random\ncrw-rw-rw- 1 root root 5, 0 tty' }] },
+      { h3: '3. Dinleyen ağ servisleri', p: 'Dinleyen her port, remote→sistem sınırında bir giriş noktasıdır. (Bu konteynerde açık port yok; kendi makinende dene.)',
+        shells: [{ label: 'terminal', copy: 'ss -tlnp', pre: '<span class="c">$</span> ss -tlnp\n<span class="c"># State  Recv-Q  Local Address:Port  Process</span>\n<span class="c"># LISTEN 0       127.0.0.1:631       cupsd  ...</span>' }] },
+      { h3: '4. Bir tehdit modeli şablonu', p: 'Kendi projen için doldur: her sınır için giriş + en kötü senaryo + kontrol.',
+        shells: [{ label: 'sablon.md', copy: 'Varlik: \nGuven siniri: \n  Giris noktalari: \n  Tehdit (STRIDE): \n  Mevcut kontrol: \n  Eksik kontrol: ', pre: 'Varlik:            kullanıcı verisi\nGuven siniri:      app → kernel\n  Giris noktalari: ioctl(/dev/x), syscall\n  Tehdit (STRIDE): EoP (çekirdek bozulması)\n  Mevcut kontrol:  seccomp, SELinux\n  Eksik kontrol:   ?  ← buraya odaklan' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Güven sınırı (trust boundary) nedir?', opts: ['İki ağ arasındaki güvenlik duvarı', 'Ayrıcalığın (privilege) değiştiği her çizgi', 'Kullanıcının giriş yaptığı ekran'], answer: 'Ayrıcalığın (privilege) değiştiği her çizgi',
+        ok: 'Doğru. Ayrıcalığın değiştiği her yerde bir güven sınırı vardır; onu aşan veri güvenilmeyen taraftan geldiği için doğrulanmalıdır.', no: 'Tekrar dene. Kavram ağ değil, ayrıcalık (privilege) ile ilgili.' },
+      { q: 'Bir saldırgan tipik olarak hangi giriş noktasını seçer?', opts: ['En güçlü korunan', 'En geniş yüzey + en zayıf doğrulama', 'Rastgele'], answer: 'En geniş yüzey + en zayıf doğrulama',
+        ok: 'Doğru. Saldırgan en zayıf halkayı arar: çok sayıda giriş sunan ve kötü doğrulanan yüzey ilk hedeftir.', no: 'İpucu: saldırgan en kolay yolu arar, en zoru değil.' },
+      { q: 'Bir uygulamadan çekirdeğe geçişte en kritik tehdit sınıfı hangisidir?', opts: ['Spoofing', 'Denial of service', 'Ayrıcalık yükseltme (EoP)'], answer: 'Ayrıcalık yükseltme (EoP)',
+        ok: 'Doğru. Çekirdek sınırını aşmak ring 0 yetkisi demektir; ayrıcalık yükseltme (elevation of privilege) en ağır sonuçtur.', no: 'İpucu: çekirdeğe ulaşmak saldırgana ne kazandırır?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Ofansif Modül 2', title: 'Bellek güvenliği ihlalleri', desc: 'İlk somut giriş: bir use-after-free bir yetki kontrolünü nasıl deler?', href: 'offensive-uaf.html' },
+  sources: [
+    { href: 'https://owasp.org/www-community/Threat_Modeling', text: 'OWASP — Threat Modeling' },
+    { href: 'https://learn.microsoft.com/en-us/azure/security/develop/threat-modeling-tool-threats', text: 'Microsoft — STRIDE' },
+    { href: 'https://source.android.com/docs/security/overview', text: 'Android Güvenlik Modeli' },
+    { href: 'https://support.apple.com/guide/security/welcome/web', text: 'Apple Platform Security' },
+    { href: 'https://github.com/xairy/linux-kernel-exploitation', text: 'xairy/linux-kernel-exploitation', note: 'çekirdek saldırı yüzeyi' }
+  ],
+  pageTitle: 'Tehdit Modeli'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

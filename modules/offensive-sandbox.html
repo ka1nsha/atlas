@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Sandbox Kaçışı</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: sandbox duvarı + dışarıdaki servisler */
+.sb { display: grid; gap: 0; }
+.sb-wall { border: 2px solid var(--warn); background: var(--warn-soft); border-radius: var(--r) var(--r) 0 0; padding: 12px 14px; display: grid; gap: 8px; }
+.sb-wall.breached { border-style: dashed; }
+.sb-wall .wl { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.sb-wall .wl b { font-family: var(--f-display); font-size: 15px; color: var(--warn); }
+.sb-wall .wl .mono { font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.inside { border: 1.5px solid var(--line); border-top: none; background: var(--surface); border-radius: 0 0 var(--r) var(--r); padding: 12px 14px; display: grid; gap: 6px; }
+.inside b { font-family: var(--f-display); font-size: 14px; }
+.perms { display: flex; flex-wrap: wrap; gap: 6px; }
+.perms span { font-family: var(--f-mono); font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--sunk); color: var(--muted); }
+.perms span.allow { background: var(--accent-soft); color: var(--accent); }
+.perms span.deny { background: var(--bad-soft); color: var(--bad); text-decoration: line-through; }
+.chan { text-align: center; font-family: var(--f-mono); font-size: 11.5px; color: var(--track); padding: 6px 0; font-weight: 700; }
+.chan.hot { color: var(--bad); }
+.svcs { display: grid; gap: 8px; margin-top: 2px; }
+.svc { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 10px 12px; display: grid; gap: 4px; min-width: 0; }
+.svc.priv { border-color: var(--bad); }
+.svc.target { box-shadow: inset 0 0 0 2px var(--track); }
+.svc .sl { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.svc .sl b { font-family: var(--f-display); font-size: 14px; }
+.svc.priv .sl b { color: var(--bad); }
+.svc .sl .mono { font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.svc p { margin: 0; font-size: 12px; color: var(--muted); }
+.guard-note { margin-top: 12px; border: 1px solid var(--ok); background: var(--ok-soft); border-radius: var(--r); padding: 8px 10px; font-size: 12.5px; }
+.guard-note b { color: var(--ok); font-family: var(--f-mono); font-size: 11px; }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'offensive',
+  crumbs: 'ofansif › sandbox kaçışı › modül 7',
+  eyebrow: 'Ofansif izlek · Modül 7 · Sandbox',
+  titleHTML: 'Kum havuzundan kaçış: <code>sandbox escape</code>',
+  lede: 'Modern sistemler, ele geçirilen bir sürecin verebileceği zararı kum havuzuyla (sandbox) sınırlar: süreç yalnızca profilinin izin verdiği kaynaklara erişir. Peki saldırgan bu duvarı nasıl aşar? Genellikle duvarı kırarak değil, duvarın içinden dışarıya uzanan izinli bir kapıyı — bir IPC kanalını — kötüye kullanarak. Bu modül sandbox\'ı, kaçış mantığını ve savunmayı kavramsal olarak gösterir.',
+  meta: ['~18 dk', 'ön koşul: IPC + tehdit modeli', 'bağlam: kavramsal'],
+  ethic: '<b>İlke.</b> Bu modül sandbox mekanizmasını ve kaçış kavramını anlatır; çalışır ya da silahlandırılmış exploit kodu içermez. Tüm deneyler <b>kendi makinende, yalnızca gözlem amaçlı</b> komutlarla yapılır. Amaç, kaçış vektörlerini anlayarak sandbox\'ları daha sıkı tasarlamaktır.',
+  intuition: {
+    paras: [
+      'Bir kum havuzu (sandbox), bir sürecin erişebileceği kaynakları bir politika ile kısıtlar: hangi sistem çağrılarını (syscall) yapabilir, hangi dosyalara dokunabilir, kiminle konuşabilir. Örnekler: Android\'de her uygulama kendi UID\'si + SELinux bağlamıyla izole edilir; macOS/iOS\'ta Seatbelt profilleri; Linux\'ta seccomp-BPF; tarayıcılarda sekme süreçleri.',
+      'Sandbox\'ın duvarı genellikle doğrudan kırılmaz — çekirdek onu zorlar. Bunun yerine saldırgan, profilde <strong>izin verilmiş</strong> bir yola bakar: çoğu sandbox, işini yapabilmesi için daha ayrıcalıklı bir servisle konuşmaya izin verir (Android Binder, macOS XPC). Saldırgan bu kanaldan ayrıcalıklı servise öyle bir istek yollar ki, servis girdiyi yeterince doğrulamazsa <strong>onun adına</strong> yasak işi yapar. Buna kafası karışık vekil (confused deputy) denir: yetkili olan servis, yetkisiz olanın işini görür.'
+    ],
+    ideas: [
+      { b: 'Sandbox = izin listesi', span: 'Bir süreç yalnızca profilinin açıkça izin verdiğini yapabilir. Geri kalan her şey çekirdek tarafından reddedilir.' },
+      { b: 'Kaçış = izinli kapı', span: 'Saldırgan duvarı kırmaz; duvardaki izinli bir IPC kapısından geçer. Saldırı yüzeyi, profilde izin verilen her şeydir.' },
+      { b: 'Kafası karışık vekil', span: 'Ayrıcalıklı servis, güvenilmez girdiyi doğrulamazsa, sandbox içindeki sürecin yapamadığı işi onun yerine yapar.' }
+    ]
+  },
+  lab: {
+    intro: 'Aşağıda sandbox içindeki bir sürecin, izinli bir IPC kanalı üzerinden ayrıcalıklı bir servisi kandırarak sınırı nasıl aştığı adım adım işleniyor. Sağda sandbox duvarını, içdeki sürecin izinlerini ve dışarıdaki servisleri izle.',
+    codeLabel: 'kavramsal akış', cmd: '# sandbox içi süreç',
+    foot: 'Bu akış kavramsaldır; somut bir exploit değildir. Değerler temsilîdir.',
+    code: [
+      { t: '<span class="cm">// sandbox içi süreç (kısıtlı profil)</span>' },
+      { t: '<span class="f">open</span>(<span class="s">"/veri/gizli"</span>, O_RDONLY);  <span class="cm">// EPERM: profil yasak</span>', danger: true },
+      { t: '' },
+      { t: '<span class="cm">// ama izinli bir IPC kanalı var:</span>' },
+      { t: 'h = <span class="f">servise_baglan</span>(<span class="s">"com.sistem.dosya"</span>);' },
+      { t: '<span class="f">istek_yolla</span>(h, { yol: <span class="s">"/veri/gizli"</span> });  <span class="cm">// sınırı dolaş</span>', danger: true },
+      { t: '<span class="cm">// --- ayrıcalıklı servis (sandbox dışı) ---</span>' },
+      { t: '<span class="k">if</span> (!<span class="f">cagiran_yetkili_mi</span>(yol))         <span class="cm">// doğrulama EKSİK ise</span>', danger: true },
+      { t: '    veri = <span class="f">oku</span>(istek.yol);           <span class="cm">// servis kendi yetkisiyle okur</span>' }
+    ],
+    steps: [
+      { pc: 1, title: 'Sandbox içindeki süreç', term: ['[*] süreç: sandbox profili etkin', '[*] uid=10234, seccomp açık'],
+        text: 'Ele geçirilmiş süreç bir kum havuzunda çalışıyor. Profil, yapabileceklerini sıkıca kısıtlıyor: yalnızca birkaç syscall, kendi veri klasörü, belirli IPC kanalları. Doğrudan sisteme zarar veremez.',
+        breached: false, inside: { name: 'Ele geçirilmiş süreç (sandbox içi)', perms: [['kendi klasörü', 'allow'], ['birkaç syscall', 'allow'], ['/veri/gizli', 'deny'], ['root', 'deny']] },
+        chan: null, svcHot: null,
+        guard: { n: 'Sandbox profili + seccomp-BPF', t: 'En az ayrıcalık (least privilege): süreç yalnızca işine yetecek kadarını alır. Erişilemeyen kaynak, saldırılamayan kaynaktır.' },
+        verdict: 'Saldırgan konumu: sandbox içinde, kısıtlı' },
+      { pc: 2, title: 'Duvar tutuyor', term: ['[x] open("/veri/gizli") → EPERM', '[x] doğrudan erişim reddedildi'],
+        text: 'Süreç yasak bir kaynağa doğrudan ulaşmayı dener. Çekirdek, sandbox profiline bakar ve reddeder (EPERM). Duvarı doğrudan kırmak mümkün değil; onu çekirdek zorluyor.',
+        breached: false, inside: { name: 'Ele geçirilmiş süreç (sandbox içi)', perms: [['kendi klasörü', 'allow'], ['birkaç syscall', 'allow'], ['/veri/gizli', 'deny'], ['root', 'deny']] },
+        chan: null, svcHot: null,
+        guard: { n: 'Çekirdek zorlaması (mandatory)', t: 'Sandbox isteğe bağlı değildir; çekirdek her erişimde politikayı uygular. Süreç kendi kısıtlamasını kaldıramaz.' },
+        verdict: 'Yetenek: yok — doğrudan yol kapalı' },
+      { pc: [4, 5], title: 'İzinli kapı: IPC', term: ['[>] com.sistem.dosya servisine bağlanıldı', '[*] bu kanal profilde İZİNLİ'],
+        text: 'Ama her sandbox işini yapabilmek için bazı kapılar bırakır. Burada süreç, profilde izin verilmiş bir IPC kanalı (Android’da Binder, macOS’ta XPC) üzerinden ayrıcalıklı bir dosya servisine bağlanabiliyor. Bu izinli kapı, saldırı yüzeyinin ta kendisi.',
+        breached: false, inside: { name: 'Ele geçirilmiş süreç (sandbox içi)', perms: [['kendi klasörü', 'allow'], ['IPC: com.sistem.dosya', 'allow'], ['/veri/gizli', 'deny']] },
+        chan: 'IPC isteği →', svcHot: 'dosya',
+        guard: { n: 'Saldırı yüzeyini daraltma', t: 'Sandbox’a ne kadar az kanal açılırsa kaçış yüzeyi o kadar küçülür. Gereksiz her IPC erişimi profilden çıkarılmalıdır.' },
+        verdict: 'Yetenek: ayrıcalıklı servise bir kanal' },
+      { pc: [6, 8], title: 'Kafası karışık vekil', term: ['[>] istek: oku /veri/gizli', '[!] servis çağıranı doğrulamadı'],
+        text: 'Süreç, servise "şu dosyayı benim için oku" der. Ayrıcalıklı servis, isteğin KİMDEN geldiğini ve o kişinin bu dosyayı görmeye yetkili olup olmadığını doğrulamazsa, isteği KENDİ yüksek yetkisiyle işler. Yetkili vekil, yetkisizin işini görür: confused deputy.',
+        breached: true, inside: { name: 'Ele geçirilmiş süreç (sandbox içi)', perms: [['IPC: com.sistem.dosya', 'allow'], ['/veri/gizli', 'deny']] },
+        chan: 'kötüye kullanılan istek →', svcHot: 'dosya', chanHot: true,
+        guard: { n: 'Çağıran doğrulama (caller validation)', t: 'Servis, her isteğin kimliğini (audit token / UID / yetki) kontrol etmeli ve en dar işi yapmalı. Doğru doğrulama kaçışı baştan keser.' },
+        verdict: 'Kritik an: güvenilmez istek yetkiyle işleniyor' },
+      { pc: 9, title: 'Etki sandbox dışına taştı', term: ['[+] servis /veri/gizli içeriğini döndürdü', '[*] sandbox etkisi aşıldı (kavramsal)'],
+        text: 'Servis dosyayı okuyup içeriği sürece geri verir. Süreç hiçbir zaman dosyaya kendisi dokunmadı — ama vekili aracılığıyla etkisini sandbox’ın dışına taşırdı. Gerçek zincirlerde bu adım, ayrıcalıklı servisteki bir bellek hatasıyla birleşerek tam kod çalıştırmaya (ve oradan çekirdeğe) kadar gider.',
+        breached: true, inside: { name: 'Ele geçirilmiş süreç (artık dolaylı erişimli)', perms: [['IPC: com.sistem.dosya', 'allow'], ['/veri/gizli (vekil ile)', 'allow']] },
+        chan: '← gizli içerik döndü', svcHot: 'dosya', chanHot: true,
+        guard: { n: 'Katmanlı savunma (defense in depth)', t: 'Her servis kendi küçük sandbox’ında, en az yetkiyle çalışmalı; böylece bir vekil kandırılsa bile kazanç sınırlı kalır. Tek bir duvar değil, çok katman.' },
+        verdict: 'Yetenek: sandbox etkisi aşıldı (kavramsal)' }
+    ],
+    render: function (s, stateEl, u) {
+      function perms(list) {
+        return list.map(function (p) { return '<span class="' + p[1] + '">' + u.esc(p[0]) + '</span>'; }).join('');
+      }
+      var svcList = [
+        { id: 'dosya', name: 'Dosya servisi', mono: 'ayrıcalıklı', p: 'Tüm dosya sistemini okuyabilir. Sürecin konuşmasına izin verilen kanal.' },
+        { id: 'ag', name: 'Ağ servisi', mono: 'ayrıcalıklı', p: 'Başka bir sistem servisi (bu senaryoda hedef değil).' }
+      ];
+      var svcs = svcList.map(function (v) {
+        var cls = 'svc priv' + (s.svcHot === v.id ? ' target' : '');
+        return '<div class="' + cls + '"><div class="sl"><b>' + v.name + '</b><span class="mono">' + v.mono + '</span></div><p>' + v.p + '</p></div>';
+      }).join('');
+      var wall = '<div class="sb-wall' + (s.breached ? ' breached' : '') + '"><div class="wl"><b>SANDBOX duvarı (profil)</b><span class="mono">' + (s.breached ? 'izinli kapı kötüye kullanılıyor' : 'etkin') + '</span></div>' +
+        '<div class="inside"><b>' + u.esc(s.inside.name) + '</b><div class="perms">' + perms(s.inside.perms) + '</div></div></div>';
+      var chan = s.chan ? '<div class="chan' + (s.chanHot ? ' hot' : '') + '">' + u.esc(s.chan) + '</div>' : '<div class="chan" style="color:var(--muted)">— kanal yok —</div>';
+      stateEl.innerHTML =
+        '<p class="lab-label">Sandbox, izinli kanal ve ayrıcalıklı servisler</p>' +
+        '<div class="sb">' + wall + '</div>' + chan + '<div class="svcs">' + svcs + '</div>' +
+        '<div class="read-out"><div class="verdict breach"><span class="dot"></span><span>' + u.esc(s.verdict) + '</span></div></div>' +
+        '<div class="guard-note"><b>BU AŞAMAYI SAVUNAN KORUMA · ' + u.esc(s.guard.n) + '</b><br>' + u.esc(s.guard.t) + '</div>';
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: sandbox bir izin listesidir, kaçış izinli bir kapıdır",
+    html: `<p class="lead">Sandbox'ı doğru anlamanın anahtarı şudur: o bir duvar değil, bir <strong>izin listesidir (allow-list)</strong>, ve onu süreç değil çekirdek zorlar. Dolayısıyla kaçış neredeyse hiçbir zaman "duvarı kırmak" değildir — profilde izin verilmiş bir kapıdan, çoğunlukla bir IPC kanalından, daha ayrıcalıklı bir bileşeni kandırarak geçmektir. Bu bölüm Chromium sandbox tasarım belgesi ve Apple Platform Security'nin kamuya açık metinlerine dayanır; kavramsaldır, çalışır kaçış adımı içermez.</p>
+
+<h3>1. Sandbox ne için var: ihlal sonrası hasar sınırlama</h3>
+<p>Sandbox, bir sürecin ele geçirileceğini baştan kabul eder ve amacını buna göre daraltır: ele geçirilen süreç kalıcı zarar veremesin, yanındakine bulaşamasın. Chromium bunu açıkça "ihlali varsay" (assume breach) üzerine kurar.</p>
+<div class="manpage src-docs"><div class="ref">Chromium · sandbox design</div><p class="orig">Sandbox leverages the OS-provided security to allow code execution that cannot make persistent changes to the computer</p><p>Sandbox, işletim sisteminin sağladığı güvenliği kullanarak kodun <strong>bilgisayarda kalıcı değişiklik yapamayacağı</strong> bir çalışma ortamı kurar. Yani hedef, kötü kodu engellemek değil — zaten çalıştığını varsayıp etkisini geçici ve sınırlı tutmaktır.</p></div>
+<div class="manpage src-docs"><div class="ref">Chromium · threat model</div><p class="orig">Assume sandboxed code is malicious code: For threat-modeling purposes, we consider the sandbox compromised</p><p>Tasarım, sandbox içindeki kodu doğrudan <em>kötü niyetli</em> sayar; tehdit modeli açısından sandbox'ı daha baştan "ele geçirilmiş" kabul eder. Bu, lab'daki başlangıç durumunun — ele geçirilmiş süreç — neden gerçekçi olduğunu açıklar.</p></div>
+<p>Apple tarafında aynı fikir app sandbox olarak somutlaşır: her uygulama kendi alanına hapsedilir ve dışarıya yalnızca sistemin açıkça sunduğu servisler üzerinden uzanabilir.</p>
+<div class="manpage src-apple"><div class="ref">Apple Platform Security · app sandbox</div><p class="orig">Sandboxing is designed to prevent apps from gathering or modifying information stored by other apps</p><p>Sandbox'ın tasarım amacı, bir uygulamanın <strong>başka uygulamaların verisini toplamasını ya da değiştirmesini</strong> engellemektir. Yani izolasyon yatay bir duvardır: bir uygulama çökse bile komşusuna erişemez.</p></div>
+
+<h3>2. Politika modeli: izin verilen ne varsa, yüzey odur</h3>
+<p>Bir sandbox profili, sürecin yapabileceklerini tek tek sayar: hangi syscall'lar, hangi dosyalar, hangi IPC kanalları. Geri kalan her şey varsayılan olarak reddedilir. Bu yüzden saldırı yüzeyi (attack surface) tam olarak <strong>profilde izin verilen kümedir</strong> — ne eksik, ne fazla. Profilin mutlaka bıraktığı kapı ise ayrıcalıklı servislere açılan IPC'dir, çünkü sandbox'lı süreç işini tek başına yapamaz.</p>
+<div class="deflist">
+<div><dt>allow-list</dt><dd>Süreç yalnızca açıkça izin verilene erişir; eksik bırakılan her şey reddedilir. Güvenli varsayılan budur: "yoksa yasak".</dd></div>
+<div><dt>mandatory</dt><dd>Politikayı çekirdek uygular, süreç değil. Süreç kendi kısıtlamasını kaldıramaz — bu yüzden duvar "içeriden" kırılamaz.</dd></div>
+<div><dt>least privilege</dt><dd>Profil, işi yapmaya yetecek en dar kümeyle sınırlanır. Erişilemeyen kaynak, saldırılamayan kaynaktır.</dd></div>
+<div><dt>attack surface</dt><dd>Profilde izin verilen her kanal/kaynak. Daraldıkça kaçış yüzeyi küçülür; gereksiz her izin risktir.</dd></div>
+</div>
+<div class="manpage src-docs"><div class="ref">Chromium · least privilege</div><p class="orig">Principle of least privilege: This should be applied both to the sandboxed code and to the code that controls the sandbox.</p><p>En az ayrıcalık (least privilege) yalnızca sandbox içindeki koda değil, <strong>sandbox'ı kontrol eden koda da</strong> uygulanmalıdır. Bu, lab'ın son dersidir: broker/servis tarafı da en dar yetkiyle çalışmazsa, onu kandıran saldırgan büyük bir kazanç elde eder.</p></div>
+
+<h3>3. Neden kaçışın adresi IPC'dir: broker ve confused deputy</h3>
+<p>Sandbox'lı bir süreç yasak bir işi yapmak istediğinde onu kendisi yapmaz; ayrıcalıklı bir <strong>broker</strong>'a (macOS'ta XPC servisleri, Android'de Binder ile erişilen sistem servisleri, Chromium'da broker süreci) IPC üzerinden ricada bulunur. İzinli işlem broker tarafından çalıştırılıp sonuç geri döner.</p>
+<div class="manpage src-docs"><div class="ref">Chromium · broker model</div><p class="orig">The policy-allowed calls are then executed by the broker and the results returned to the target process via the same IPC.</p><p>Politikanın izin verdiği çağrılar <strong>broker tarafından</strong> çalıştırılır ve sonuç aynı IPC üzerinden hedef sürece döner. İşte kaçışın kaldıracı tam burada: eğer broker, isteğin <em>kimden</em> geldiğini ve o kişinin o işe yetkili olup olmadığını doğrulamazsa, sandbox içindeki sürecin yapamadığı işi onun adına kendi yüksek yetkisiyle yapar. Bu, "kafası karışık vekil" (confused deputy) tam da budur.</p></div>
+<p>Bu yüzden sağlam sandbox tasarımı, ayrıcalıklı işi ayrı sürece taşımayı zorunlu kılar — ve o süreci de kendi kafesine koyar.</p>
+<div class="manpage src-docs"><div class="ref">Chromium · isolation</div><p class="orig">Anything that needs to be sandboxed needs to live on a separate process.</p><p>Sandbox'lanması gereken her şey <strong>ayrı bir süreçte</strong> yaşamalıdır. İzolasyonun birimi süreçtir; aynı süreç içinde "güvenli bölge" yoktur. Kaçış da bu süreç sınırının (trust boundary) IPC üzerinden aşılmasıdır.</p></div>
+
+<h3>4. Ayrıcalık yükselmesini neyin kestiği: imzalı entitlement ve katmanlı savunma</h3>
+<p>Apple, sandbox'ın bıraktığı yetkileri (entitlement) kod imzasına bağlar: bir süreç çalışırken kendi yetkisini genişletemez, çünkü yetki listesi imzalıdır ve değiştirilemez.</p>
+<div class="manpage src-apple"><div class="ref">Apple Platform Security · entitlements</div><p class="orig">Since entitlements are digitally signed, they can't be changed. … This greatly reduces the potential for privilege escalation by a compromised system app or daemon.</p><p>Entitlement'lar dijital imzalı olduğu için <strong>değiştirilemez</strong>; bu da ele geçirilmiş bir sistem uygulaması ya da daemon'ın ayrıcalık yükseltme (privilege escalation) olasılığını büyük ölçüde azaltır. Yani saldırgan kandırdığı servisten ancak servisin zaten sahip olduğu yetki kadarını alabilir — fazlasını değil. Bu, broker'ı da en dar yetkiyle çalıştırmanın (least privilege) neden kritik olduğunu gösterir.</p></div>
+<p>Pratik savunma iki ilkeyi birleştirir ve bu modülün özetidir:</p>
+<div class="deflist">
+<div><dt>caller validation</dt><dd>Broker/servis, her isteğin kimliğini (audit token, UID, yetki) doğrular ve en dar işi yapar. Kaçışların çoğu tam burada, eksik doğrulamada doğar.</dd></div>
+<div><dt>attack surface reduction</dt><dd>Profilden gereksiz her IPC kanalı ve syscall çıkarılır. Linux'ta seccomp-BPF, macOS'ta Seatbelt profilleri bunun aracıdır.</dd></div>
+<div><dt>defense in depth</dt><dd>Tek duvar yerine katman: her servis kendi küçük sandbox'ında, en az yetkiyle. Bir vekil kandırılsa bile kazanç sınırlı kalır.</dd></div>
+</div>
+<p>Bağlantı: Linux tarafında aynı izolasyonun yapı taşları <code>namespaces</code>/cgroups ve seccomp modüllerinde, macOS tarafında Seatbelt'in kendisi <strong>macOS Sandbox</strong> modülünde işlenir. Bu modülün kavramları (trust boundary, least privilege, confused deputy) doğrudan <strong>tehdit modeli</strong> modülünden gelir ve bir sonraki durak olan <strong>kernel saldırı yüzeyi</strong> modülüne bağlanır: ayrıcalıklı servise ulaşmak çoğu zaman çekirdeğe giden zincirin yalnızca ilk halkasıdır.</p>`
+  },
+  underHood: {
+    heading: 'Kaputun altında: sandbox türleri ve kaçış vektörleri',
+    html: '<p class="prose">Her platformun sandbox’ı farklı bir mekanizmayla çalışır ama kaçış mantığı benzerdir: profilde izin verilen bir yolu kötüye kullanmak. Aşağıda türler ve kavramsal kaçış vektörleri:</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Sandbox türü</th><th>Mekanizma</th><th>Tipik kaçış vektörü (kavramsal)</th></tr></thead><tbody>' +
+      '<tr><td><b>Android app sandbox</b></td><td>Her uygulamaya ayrı UID + SELinux bağlamı</td><td>İzinli bir sistem servisini (Binder) kandırma</td></tr>' +
+      '<tr><td><b>macOS/iOS Seatbelt</b></td><td>Seatbelt (sandbox) profilleri, mac_syscall</td><td>İzinli bir XPC servisinde zayıf doğrulama</td></tr>' +
+      '<tr><td><b>Linux seccomp-BPF</b></td><td>İzin verilen syscall kümesini daraltma</td><td>İzinli syscall’larda ya da yardımcı süreçte hata</td></tr>' +
+      '<tr><td><b>Tarayıcı (Chromium)</b></td><td>Sekme süreci + broker mimarisi</td><td>Broker IPC’sinde kafası karışık vekil</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px">Ortak ders: sandbox, içindeki sürece <em>güvenmez</em>; ama sürecin konuştuğu ayrıcalıklı servisler de ona güvenmemeli. Kaçışların çoğu bu ikinci noktada, servis tarafındaki eksik <strong>çağıran doğrulamasında (caller validation)</strong> doğar. Bu yüzden iyi tasarım, her servisi de kendi küçük kum havuzunda ve en az ayrıcalıkla (least privilege) çalıştırır: tek bir duvar değil, katmanlı savunma (defense in depth).</p>'
+  },
+  pipeline: { intro: 'Sandbox kaçışı tek başına nadiren son hedeftir; genellikle daha büyük bir zincirin bir halkasıdır. Ayrıcalıklı servise ulaşıldıktan sonra, orada bulunan bir bellek hatası aynı genel sömürü boru hattını (exploitation pipeline) besler — bu kez daha yüksek ayrıcalıkta.' },
+  tryIt: {
+    items: [
+      { h3: '1. Bir sürecin seccomp durumunu gör', p: 'Linux’ta bir sürecin seccomp ile kısıtlanıp kısıtlanmadığını <code>/proc</code> gösterir. Seccomp, en yaygın syscall-düzeyi sandbox mekanizmasıdır. Gözlem amaçlı, güvenli.',
+        shells: [{ label: 'terminal', copy: 'grep Seccomp /proc/self/status', pre: '<span class="c">$</span> grep Seccomp /proc/self/status\nSeccomp:\t0\nSeccomp_filters:\t0\n<span class="c"># 0 = filtre yok; 2 = katı (strict) mod. Sandbox’lı süreçlerde &gt; 0 olur.</span>' }] },
+      { h3: '2. SELinux/MAC bağlamını incele', p: 'SELinux kullanan sistemlerde (Android dahil) her süreç bir güvenlik bağlamı taşır; sandbox izolasyonu buradan gelir. <code>ls -Z</code> ile dosya/süreç bağlamları görülür (SELinux etkinse).',
+        shells: [{ label: 'terminal', copy: 'id -Z 2>/dev/null || echo "SELinux bu sistemde etkin değil"; ls -Zd /etc 2>/dev/null | head', pre: '<span class="c">$</span> id -Z\n<span class="c"># Android’da: u:r:untrusted_app:s0:c123 gibi bir bağlam</span>\n<span class="c"># bu bağlam, uygulamanın neye erişebileceğini belirler</span>' }] },
+      { h3: '3. Bir sürecin açık IPC kanallarını say', p: 'Sandbox’lı bir sürecin dış dünyaya kaç kanalı olduğu, saldırı yüzeyinin büyüklüğüdür. Açık dosya tanımlayıcıları (fd) üzerinden kabaca ölçülebilir.',
+        shells: [{ label: 'terminal', copy: 'ls -l /proc/self/fd | grep -E "socket|pipe" | wc -l', pre: '<span class="c">$</span> ls -l /proc/self/fd | grep -E "socket|pipe" | wc -l\n<span class="c"># her soket/boru = dış dünyaya bir kanal = saldırı yüzeyinin parçası</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Sandbox kaçışı tipik olarak nasıl gerçekleşir?', opts: ['Sandbox duvarını doğrudan kırarak', 'İzin verilmiş bir IPC kanalını kötüye kullanarak', 'Çekirdeği kapatarak'], answer: 'İzin verilmiş bir IPC kanalını kötüye kullanarak',
+        ok: 'Doğru. Duvarı çekirdek zorlar; kırılmaz. Saldırgan profilde izinli bir kapıdan (IPC) ayrıcalıklı bir servise uzanıp onu kandırır.', no: 'İpucu: duvarı çekirdek uyguluyor. Saldırgan nereden geçer — kapalı yerden mi, açık kapıdan mı?' },
+      { q: '"Kafası karışık vekil (confused deputy)" ne demektir?', opts: ['Çöken bir servis', 'Yetkili servisin, yetkisizin işini onun adına yapması', 'İki sandbox’ın çakışması'], answer: 'Yetkili servisin, yetkisizin işini onun adına yapması',
+        ok: 'Doğru. Ayrıcalıklı servis, güvenilmez isteği doğrulamadan kendi yüksek yetkisiyle işlerse, yetkisiz sürecin yapamayacağı işi onun yerine yapar.', no: 'İpucu: "vekil" burada ayrıcalıklı servistir. Kimin işini görürse kafası karışmış olur?' },
+      { q: 'Sandbox kaçışlarına karşı en etkili tasarım ilkesi hangisidir?', opts: ['Tek büyük güçlü duvar', 'Servis tarafında çağıran doğrulama + en az ayrıcalık', 'Daha fazla IPC kanalı açmak'], answer: 'Servis tarafında çağıran doğrulama + en az ayrıcalık',
+        ok: 'Doğru. Kaçışlar çoğu zaman servis tarafındaki eksik doğrulamadan doğar; her servisi en az yetkiyle ve kendi kum havuzunda çalıştırmak (katmanlı savunma) kazancı sınırlar.', no: 'İpucu: zincir servis tarafında kırılır. Orada ne eksikti?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Ofansif Modül 8', title: 'Kullanıcıdan çekirdeğe geçiş', desc: 'Ayrıcalıklı servisten sonra bir sonraki hedef çekirdek: kernel saldırı yüzeyi ve LPE.', href: 'offensive-kernel.html' },
+  sources: [
+    { href: 'https://newosxbook.com/toc3.html', text: 'Levin — OS Internals Cilt III', note: 'Bölüm 8: Sandboxing' },
+    { href: 'https://source.android.com/docs/security/app-sandbox', text: 'Android app sandbox', note: 'UID + SELinux izolasyonu' },
+    { href: 'https://chromium.googlesource.com/chromium/src/+/HEAD/docs/design/sandbox.md', text: 'Chromium sandbox design', note: 'broker mimarisi' },
+    { href: 'https://man7.org/linux/man-pages/man2/seccomp.2.html', text: 'man 2 seccomp', note: 'Linux syscall sandbox’ı' }
+  ],
+  pageTitle: 'Sandbox Kaçışı'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

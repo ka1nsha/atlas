@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Bellek ve Sıkıştırma</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: bellek çubuğu + baskı göstergesi */
+.membar { display: flex; height: 30px; border-radius: 8px; overflow: hidden; border: 1px solid var(--line); font-family: var(--f-mono); font-size: 10.5px; margin-top: 4px; }
+.membar span { display: flex; align-items: center; justify-content: center; color: #fff; min-width: 0; overflow: hidden; white-space: nowrap; transition: flex-basis .35s ease; }
+.seg-used { background: var(--accent); }
+.seg-comp { background: var(--warn); }
+.seg-free { background: var(--sunk); color: var(--muted); }
+.pchip { font-family: var(--f-mono); font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 999px; justify-self: start; }
+.pchip.ok { background: var(--ok-soft); color: var(--ok); }
+.pchip.warn { background: var(--warn-soft); color: var(--warn); }
+.pchip.crit { background: var(--bad-soft); color: var(--bad); }
+.jrow { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); font-size: 13px; min-width: 0; }
+.jrow .jn { font-family: var(--f-mono); font-size: 12px; }
+.jrow .jp { font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.jrow.killed { border-color: var(--bad); background: var(--bad-soft); }
+.jrow.killed .jn { text-decoration: line-through; color: var(--bad); }
+.jtag { font-family: var(--f-mono); font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 999px; background: var(--bad); color: #fff; }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'macos',
+  crumbs: 'macos › bellek › modül 6',
+  eyebrow: 'Modül 6 · macOS / iOS · Bellek yönetimi',
+  titleHTML: 'libmalloc ve <code>bellek sıkıştırma</code>',
+  lede: 'macOS ve iOS bellek yönetiminde diskten çok RAM\'e güvenir. Bu modülde kullanıcı-alanı ayırıcısı libmalloc\'un nano bölgesini (nano zone), bellek baskısı (memory pressure) altında macOS\'un sayfaları nasıl sıkıştırdığını ve iOS\'ta Jetsam\'in uygulamaları nasıl sonlandırdığını adım adım izleyeceksin.',
+  meta: ['~18 dk', 'ön koşul: sanal bellek, malloc', 'bağlam: XNU / Darwin'],
+  intuition: {
+    paras: [
+      'Linux malloc modülünde gördüğün öbek (heap) mantığı burada da geçerli, ama Apple kendi ayırıcısını yazdı: <strong>libmalloc</strong>. Küçük tahsisler (allocations), hız için ayrı bir <strong>nano bölgesinden (nano zone)</strong> gelir; daha büyükler ölçeklenebilir bölgeden (scalable zone) veya doğrudan <code>mach vm_allocate</code> ile ayrılır.',
+      'Asıl fark bellek dolunca ortaya çıkar. Çoğu masaüstü sistem sayfaları diske (swap) yazar. macOS önce <strong>belleği sıkıştırır (compressed memory)</strong>: en az kullanılan sayfaları RAM içinde sıkıştırıp yer açar — diske gitmekten çok daha hızlı. iOS\'ta ise disk takası (swap) yoktur; bellek kritikleşince <strong>Jetsam</strong> (memorystatus), önceliğe göre uygulama sonlandırır.'
+    ],
+    ideas: [
+      { b: 'Nano bölgesi (nano zone)', span: 'Küçük tahsisler için ayrılmış hızlı bölge. Çoğu nesne küçüktür; bu yol çok sık kullanılır.' },
+      { b: 'Sıkıştır, takaslama', span: 'macOS bellek baskısında sayfaları RAM içinde sıkıştırır (WKdm); diske yazmaktan hızlıdır.' },
+      { b: 'iOS: Jetsam', span: 'Swap yok. Bellek azalınca memorystatus en düşük öncelikli (arka plan) uygulamayı öldürür.' }
+    ]
+  },
+  lab: {
+    intro: 'Program küçük ve büyük tahsisler yapar, sonra sistem bellek baskısı altına girer. Sağda bölgeleri (zones), fiziksel bellek çubuğunu (kullanılan / sıkıştırılmış / boş) ve baskı seviyesini izle; son adımlarda macOS ve iOS yolları ayrışır.',
+    codeLabel: 'mem.c (temsilî)', cmd: './mem',
+    foot: 'Değerler ve çıktılar temsilîdir; gerçek araçlar: vm_stat, footprint, heap, memory_pressure.',
+    code: [
+      { t: '<span class="t">void</span> *p = <span class="f">malloc</span>(<span class="n">32</span>);     <span class="cm">// küçük → nano bölgesi</span>' },
+      { t: '<span class="t">void</span> *q = <span class="f">malloc</span>(<span class="n">48</span>);     <span class="cm">// küçük → nano bölgesi</span>' },
+      { t: '<span class="t">void</span> *big = <span class="f">malloc</span>(<span class="n">4</span><<<span class="n">20</span>); <span class="cm">// büyük → scalable / vm_allocate</span>' },
+      { t: '' },
+      { t: '<span class="cm">// ... sistem geneli bellek dolar ...</span>' },
+      { t: '<span class="cm">// macOS: en az kullanılan sayfalar sıkıştırılır</span>' },
+      { t: '<span class="cm">// iOS:   memorystatus (Jetsam) devreye girer</span>' }
+    ],
+    steps: [
+      { pc: 1, title: 'Küçük tahsis → nano bölgesi', term: ['p = 0x600000abc000 (nano)'],
+        text: '<code>malloc(32)</code> gibi küçük bir istek, libmalloc\'un nano bölgesinden (nano zone) gelir. Nano bölgesi küçük ve sık tahsisler için optimize edilmiştir; adresleri tipik olarak yüksek bir aralıktadır.',
+        zones: 'nano', bar: [28, 0, 72], pressure: 'ok', note: 'Çoğu nesne küçüktür; nano bölgesi en sık yürüyen yoldur.' },
+      { pc: 3, title: 'Büyük tahsis → ölçeklenebilir bölge', term: ['p = 0x600000abc000 (nano)', 'big = 0x7f90… (scalable)'],
+        text: 'Büyük bir istek (<code>4&nbsp;MB</code>) nano bölgesine sığmaz; ölçeklenebilir bölgeden (scalable zone) veya doğrudan <code>mach vm_allocate</code> ile ayrılır. Ayırıcı, boyuta göre farklı bölgeler kullanır — Linux\'ta küçük-chunk/arena ve mmap ayrımının karşılığı.',
+        zones: 'scalable', bar: [42, 0, 58], pressure: 'ok', note: 'Boyut, hangi bölgenin kullanılacağını belirler.' },
+      { pc: 5, title: 'Bellek dolar: baskı yükselir', term: ['vm_stat: free azalıyor', 'bellek baskısı: WARN'],
+        text: 'Sistem genelinde tahsisler arttıkça boş (free) sayfalar azalır. Çekirdek bir <strong>bellek baskısı (memory pressure)</strong> seviyesi yayınlar: normal → uyarı (warn) → kritik (critical). Uygulamalar bu sinyale abone olup önbelleklerini boşaltabilir.',
+        zones: null, bar: [78, 0, 22], pressure: 'warn', note: 'Baskı bir sinyaldir; iyi uygulamalar buna tepki verip bellek bırakır.' },
+      { pc: 6, title: 'macOS: belleği sıkıştır', term: ['Compressor: 512 MB → 180 MB', 'bellek baskısı: WARN (rahatladı)'],
+        text: 'macOS diske yazmak yerine önce <strong>sıkıştırır</strong>: en az kullanılan (least-recently-used) sayfaları WKdm algoritmasıyla RAM içinde sıkıştırır. Sayfa yeniden gerekince hızlıca açılır. Bu, diske takas (swap) yapmaktan çok daha hızlıdır; swap yalnızca son çare.',
+        zones: null, bar: [55, 23, 22], pressure: 'warn', note: 'Sıkıştırılmış bölge turuncu. Sayfalar hâlâ RAM\'de, sadece daha küçük.' },
+      { pc: 7, title: 'iOS: Jetsam sonlandırır', term: ['memorystatus: kritik', 'Jetsam: "Fotoğraflar" (arka plan) sonlandırıldı'],
+        text: 'iOS\'ta disk takası (swap) yoktur. Bellek kritikleşince <strong>Jetsam</strong> (memorystatus) devreye girer: uygulamaları bir öncelik bandına göre sıralar ve en düşük öncelikli olanı — genelde arka plandaki bir uygulamayı — sonlandırır. Ön plandaki uygulama ve sistem süreçleri korunur. Linux\'un OOM killer\'ının (oom_score) iOS karşılığıdır.',
+        zones: null, bar: [92, 0, 8], pressure: 'crit',
+        jetsam: [
+          { n: 'SpringBoard (sistem)', p: 'öncelik yüksek', killed: false },
+          { n: 'Mesajlar (ön plan)', p: 'öncelik yüksek', killed: false },
+          { n: 'Safari (arka plan)', p: 'öncelik orta', killed: false },
+          { n: 'Fotoğraflar (arka plan)', p: 'öncelik düşük', killed: true }
+        ],
+        note: 'En düşük öncelikli arka plan uygulaması önce gider; ön plan korunur.' },
+      { pc: 7, title: 'Linux ile köprü', term: [],
+        text: 'Karşılaştırma: Linux da benzer araçlara sahiptir. zram, macOS\'un sıkıştırmasına çok benzer (RAM içinde sıkıştırılmış takas). OOM killer ise Jetsam gibi, bellek tükenince <code>oom_score</code>\'a göre süreç öldürür. Fikirler ortak; isimler ve ayrıntılar farklı.',
+        zones: null, bar: [55, 23, 22], pressure: 'warn', note: 'macOS sıkıştırma ≈ Linux zram · iOS Jetsam ≈ Linux OOM killer.' }
+    ],
+    render: function (s, stateEl, u) {
+      var zone = function (key, title, desc) {
+        return '<div class="box' + (s.zones === key ? ' hi' : '') + '"><b>' + title + '</b><span>' + desc + '</span></div>';
+      };
+      var bar = '<div class="membar">' +
+        '<span class="seg-used" style="flex:0 0 ' + s.bar[0] + '%">' + (s.bar[0] >= 12 ? 'kullanılan ' + s.bar[0] + '%' : '') + '</span>' +
+        (s.bar[1] > 0 ? '<span class="seg-comp" style="flex:0 0 ' + s.bar[1] + '%">' + (s.bar[1] >= 12 ? 'sıkıştırılmış ' + s.bar[1] + '%' : '') + '</span>' : '') +
+        '<span class="seg-free" style="flex:0 0 ' + s.bar[2] + '%">' + (s.bar[2] >= 12 ? 'boş ' + s.bar[2] + '%' : '') + '</span></div>';
+      var plabel = { ok: 'normal', warn: 'uyarı (warn)', crit: 'kritik (critical)' }[s.pressure];
+      var html =
+        '<p class="lab-label">libmalloc bölgeleri (zones)</p>' +
+        '<div class="boxrow">' +
+          zone('nano', 'Nano bölgesi', 'küçük tahsisler, hızlı') +
+          zone('scalable', 'Ölçeklenebilir bölge', 'orta/büyük tahsisler') +
+        '</div>' +
+        '<p class="lab-label" style="margin-top:14px">Fiziksel bellek</p>' + bar +
+        '<div style="margin-top:10px"><span class="pchip ' + s.pressure + '">bellek baskısı: ' + plabel + '</span></div>';
+      if (s.jetsam) {
+        html += '<p class="lab-label" style="margin-top:14px">Jetsam öncelik bandı</p><div style="display:grid;gap:6px">' +
+          s.jetsam.map(function (j) {
+            return '<div class="jrow' + (j.killed ? ' killed' : '') + '"><span class="jn">' + u.esc(j.n) + '</span><span class="jp">' + u.esc(j.p) + '</span>' + (j.killed ? '<span class="jtag">sonlandırıldı</span>' : '<span class="jp">çalışıyor</span>') + '</div>';
+          }).join('') + '</div>';
+      }
+      if (s.note) html += '<p class="note" style="margin-top:12px">' + u.esc(s.note) + '</p>';
+      stateEl.innerHTML = html;
+      if (s.pressure === 'crit') ATLAS.flash(stateEl.querySelector('.membar'), true);
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: libmalloc, compression ve Jetsam",
+    html: `<p class="lead">macOS ve iOS aynı user-space allocator'ı (libmalloc) paylaşır ama bellek baskısına çok farklı tepki verir: macOS sayfaları RAM'de sıkıştırır, iOS ise uygulamaları öldürür. Bu bölüm allocator'ın iç yapısını ve iki platformun memory pressure stratejisini açar.</p>
+
+<h3>1. libmalloc: nano zone ve scalable malloc</h3>
+<p>Apple'ın allocator'ı tek bir yapı değil, boyuta göre ayrılmış birkaç <strong>malloc zone</strong>'dan oluşur. Küçük ve çok sık yapılan tahsisler (tipik olarak ≤ 256 byte) <strong>nano zone</strong>'dan gelir: boyut sınıflarına bölünmüş, kilitsiz hızlı yollar olan, cache-dostu bir bölge. Daha büyük tahsisler <strong>scalable malloc</strong> (magazine malloc) tarafından karşılanır: her CPU'ya bir <strong>magazine</strong> düşer, böylece çok çekirdekli yükte lock contention azalır. Çok büyük istekler doğrudan <code>mmap</code> benzeri sanal bellek çağrılarıyla ayrılır.</p>
+<div class="manpage src-apple"><div class="ref">malloc(3) · DESCRIPTION</div><p class="orig">The malloc() function allocates size bytes of memory and returns a pointer to the allocated memory.</p><p>Bu basit sözleşmenin altında, libmalloc isteği boyutuna göre doğru zone'a yönlendirir; nano zone küçük nesneler için optimize edilmiştir, scalable malloc ise büyük ve paralel yükler için.</p></div>
+<div class="deflist">
+<div><dt>nano zone</dt><dd>Küçük tahsisler (≤ 256 byte). Boyut sınıflarına bölünmüş, çok hızlı; kısa ömürlü nesnelerin çoğunu karşılar.</dd></div>
+<div><dt>scalable malloc</dt><dd>Orta/büyük tahsisler. Per-CPU magazine'ler ile lock contention'ı azaltır.</dd></div>
+<div><dt>malloc zone</dt><dd>Bağımsız heap bölgesi (kendi metadata ve kilidiyle). Uygulamalar özel zone da yaratabilir.</dd></div>
+</div>
+
+<h3>2. Hata ayıklama: Guard Malloc ve MallocStackLogging</h3>
+<p>libmalloc'un güçlü tanı araçları vardır. <code>libgmalloc</code> (Guard Malloc) her tahsisi ayrı bir sayfaya koyup komşu sayfayı korumasız bırakır, böylece bir buffer overflow anında segmentation fault'a döner. <code>MallocStackLogging</code> her tahsisin stack trace'ini tutar; <code>leaks</code> ve <code>malloc_history</code> araçları bununla bir use-after-free veya leak'i tahsis noktasına bağlar. Bunlar ASan'ın macOS'taki tamamlayıcılarıdır.</p>
+
+<h3>3. Memory pressure: sistem haber verir</h3>
+<p>Linux'ta bellek azaldığında genelde iş <strong>page fault</strong> ve OOM killer'a kalır. macOS/iOS daha proaktiftir: kernel bir <strong>memory pressure</strong> seviyesi yayınlar ve uygulamalar bir <code>DISPATCH_SOURCE_TYPE_MEMORYPRESSURE</code> dispatch source ile bunu dinleyip önbelleklerini gönüllü boşaltabilir. Seviyeler kabaca normal → warn → critical olarak ilerler; iyi davranan uygulamalar critical'dan önce bellek bırakarak kendilerinin öldürülmesini önler.</p>
+
+<h3>4. macOS: compressed memory</h3>
+<p>macOS, bellek dolduğunda hemen diske swap yapmak yerine en az kullanılan (least-recently-used) sayfaları <strong>RAM içinde</strong> sıkıştırır (WKdm benzeri hızlı bir algoritma). Sıkıştırılmış bir sayfaya tekrar erişilirse anında açılır — bu, diske gitmekten çok daha hızlıdır. Yalnızca compression de yetmezse sıkıştırılmış sayfalar swap dosyasına yazılır. Böylece "kullanılan bellek" fiziksel RAM'den fazla görünebilir; <code>vm_stat</code> çıktısındaki "compressed" sayacı bunu gösterir.</p>
+
+<h3>5. iOS: Jetsam (memorystatus)</h3>
+<p>iOS'ta kullanıcı tarafından yönetilen bir swap dosyası <strong>yoktur</strong>. Bellek azaldığında devreye <strong>Jetsam</strong> (çekirdekteki <code>memorystatus</code> alt sistemi) girer: her process'e bir <strong>jetsam priority</strong> band'i atanır (ön plandaki uygulama en yüksek, arka plandakiler ve daemon'lar daha düşük) ve bellek baskısında en düşük öncelikli process'ten başlayarak sonlandırır. Ayrıca her process'in bir <strong>dirty page limit</strong>'i vardır; bunu aşan uygulama tek başına da öldürülebilir. Bu yüzden iOS'ta "arka plandaki uygulama hatırlanmıyor" davranışı aslında bir bellek güvenlik politikasıdır.</p>
+<div class="deflist">
+<div><dt>jetsam priority</dt><dd>Process'in öldürülme sırası. Foreground uygulama en korunaklı; idle daemon'lar ilk kurban.</dd></div>
+<div><dt>dirty page limit</dt><dd>Bir process'in tutabileceği değiştirilmiş (dirty) sayfa üst sınırı; aşılırsa tek başına Jetsam hedefi olur.</dd></div>
+</div>
+
+<h3>6. Linux ile karşılaştırma</h3>
+<p>Üç strateji de aynı problemi (fiziksel RAM'den fazla talep) çözer ama farklı tercihlerle: Linux swap/zram + OOM killer kullanır (reaktif, son çare süreç öldürme); macOS compressed memory ile süreçleri yaşatmaya öncelik verir; iOS ise swap'ı tamamen reddedip Jetsam ile agresif ama öngörülebilir biçimde öldürür. zram ile macOS compression kavramsal olarak çok benzer: ikisi de diske gitmeden önce RAM içinde sıkıştırır.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">Kullanıcı tarafında <code>malloc</code>, libmalloc\'un uygun bölgesine iner; bölge yeni sayfaya ihtiyaç duyunca Mach\'ın <code>vm_allocate</code>\'ini çağırır (Mach sanal bellek modülüne köprü). Bellek baskısı tarafında iki ayrı mekanizma vardır.</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">malloc()</span><span class="where">libmalloc</span><p>Boyuta göre nano veya scalable bölge seçilir; nano küçük nesneler için hızlı yoldur.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">vm_allocate / mach_vm_map</span><span class="where">Mach VM</span><p>Bölge yeni sayfa isteyince çekirdekten sanal bellek ayrılır.</p></div></li>' +
+      '<li class="boundary"><div>bellek baskısı altında · iki yol</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">vm_compressor</span><span class="where">macOS / osfmk/vm</span><p>En az kullanılan sayfalar RAM içinde sıkıştırılır (WKdm). Swap son çaredir.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">memorystatus (Jetsam)</span><span class="where">iOS / bsd/kern</span><p>Öncelik bandına göre uygulama sonlandırılır; swap yoktur. Linux OOM killer\'ın karşılığı.</p></div></li>' +
+      '</ol>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Durum</th><th>macOS</th><th>iOS</th><th>Linux</th></tr></thead><tbody>' +
+      '<tr><td>Bellek dolunca</td><td>Sıkıştırma (compressor)</td><td>Sıkıştırma + Jetsam</td><td>zram / swap</td></tr>' +
+      '<tr><td>Kritik seviye</td><td>Swap (son çare)</td><td>Jetsam uygulama öldürür</td><td>OOM killer</td></tr>' +
+      '<tr><td>Öncelik ölçütü</td><td>LRU sayfalar</td><td>Uygulama öncelik bandı</td><td>oom_score</td></tr>' +
+      '</tbody></table></div>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Bellek durumunu gör (macOS)', p: 'vm_stat sıkıştırılmış sayfaları (compressor) ve sayfa durumlarını gösterir. "Pages occupied by compressor" satırına bak.',
+        shells: [{ label: 'terminal (macOS) · temsilî', copy: 'vm_stat', pre: '<span class="c">$</span> vm_stat\nPages free:                      123456.\nPages active:                   987654.\n<span class="y">Pages occupied by compressor:   456789.</span>\nCompressions:                 12345678.\nDecompressions:                9876543.' }] },
+      { h3: '2. Bir uygulamanın bellek izi', p: 'footprint ve heap, bir sürecin dirty/compressed bellek dökümünü ve zone bazlı tahsisleri verir.',
+        shells: [{ label: 'terminal (macOS) · temsilî', copy: 'footprint <pid>', pre: '<span class="c">$</span> footprint 501\n<span class="c"># phys_footprint, dirty, compressed sütunları; MALLOC_NANO / MALLOC_TINY bölgeleri</span>' }] },
+      { h3: '3. Bellek baskısını tetikle (macOS)', p: 'memory_pressure aracı sistemde yapay baskı oluşturur; uygulamaların sıkıştırma ve pressure sinyallerine tepkisini gözlemleyebilirsin.',
+        shells: [{ label: 'terminal (macOS)', copy: 'memory_pressure -l warn', pre: '<span class="c">$</span> sudo memory_pressure -l warn\n<span class="c"># dikkat: sistemi baskı altına alır</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Küçük bir <code>malloc(32)</code> çağrısı tipik olarak hangi bölgeden (zone) gelir?', opts: ['Nano bölgesi (nano zone)', 'Ölçeklenebilir bölge (scalable zone)', 'Doğrudan diskten'], answer: 'Nano bölgesi (nano zone)',
+        ok: 'Doğru. Küçük tahsisler hız için nano bölgesinden gelir; büyükler ölçeklenebilir bölge veya vm_allocate kullanır.', no: 'İpucu: küçük ve sık tahsisler için optimize edilmiş bölge hangisi?' },
+      { q: 'macOS bellek baskısı altında ilk olarak ne yapar?', opts: ['Hemen diske takas (swap) eder', 'Sayfaları RAM içinde sıkıştırır', 'Uygulama öldürür'], answer: 'Sayfaları RAM içinde sıkıştırır',
+        ok: 'Doğru. macOS önce sıkıştırır (compressed memory); diske takas son çaredir. Sıkıştırma diske gitmekten çok daha hızlı.', no: 'İpucu: macOS diske gitmeden önce RAM içinde ne yapar?' },
+      { q: 'iOS\'ta bellek kritikleşince uygulamaları sonlandıran mekanizma hangisidir?', opts: ['Jetsam (memorystatus)', 'vm_compressor', 'launchd'], answer: 'Jetsam (memorystatus)',
+        ok: 'Doğru. iOS\'ta swap yoktur; Jetsam öncelik bandına göre (genelde arka plan) uygulama sonlandırır. Linux OOM killer\'ın karşılığı.', no: 'İpucu: iOS\'ta swap yok; önceliğe göre uygulama öldüren mekanizma hangisi?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · macOS Modül 7', title: 'XPC', desc: 'Servisler arası güvenli mesajlaşma; Mach port\'ları ve GCD\'nin üstüne kurulu modern IPC.' },
+  sources: [
+    { href: 'https://newosxbook.com/toc1.html', text: 'Levin — OS Internals Cilt I', note: 'Bölüm 9: Process Memory' },
+    { href: 'https://developer.apple.com/documentation/os/logging/responding_to_memory_pressure', text: 'Apple — Bellek baskısına yanıt' },
+    { href: 'https://github.com/apple-oss-distributions/libmalloc', text: 'apple-oss — libmalloc', note: 'nano/scalable zone kaynağı' },
+    { href: 'https://github.com/apple-oss-distributions/xnu', text: 'XNU kaynağı', note: 'osfmk/vm compressor, memorystatus' }
+  ],
+  pageTitle: 'Bellek ve Sıkıştırma'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

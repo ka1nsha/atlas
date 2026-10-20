@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Windows Kernel Temelleri</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: mod göstergesi ve IRP akış kutusu */
+.mode-box { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 10px 12px; display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.mode-box.kernel { border-color: var(--track); background: var(--track-soft); }
+.mode-box .ml { font-family: var(--f-mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.mode-box .mv { font-family: var(--f-display); font-weight: 800; font-size: 16px; }
+.mode-box.kernel .mv { color: var(--track); }
+.flow { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.flow .node { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 8px 11px; font-family: var(--f-mono); font-size: 12.5px; display: flex; align-items: center; gap: 8px; opacity: .45; transition: opacity .15s, border-color .15s; }
+.flow .node.on { opacity: 1; border-color: var(--track); background: var(--track-soft); color: var(--track); font-weight: 500; }
+.flow .node .ni { font-size: 10.5px; color: var(--muted); }
+.flow .node.on .ni { color: var(--track); }
+.irpbox { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 10px; font-family: var(--f-mono); font-size: 12.5px; }
+.irpbox b { color: var(--track); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'windows',
+  crumbs: 'windows › kernel temelleri › modül 1',
+  eyebrow: 'Modül 1 · Windows · Kernel mimarisi',
+  titleHTML: 'Windows kernel temelleri: <code>user mode</code>, <code>driver</code> ve <code>IRP</code>',
+  lede: 'Windows\'ta bir uygulama diske yazmak, bir aygıtla konuşmak ya da bir sürücüye komut göndermek istediğinde kernel mode\'a geçmek zorundadır. Bu modülde Windows\'un user mode / kernel mode ayrımını, sürücü (driver) türlerini ve bir isteğin DeviceIoControl → I/O Manager → IRP → driver yolculuğunu izleyeceksin. Linux ve macOS modüllerindeki syscall/driver modelinin Windows karşılığıdır.',
+  meta: ['~15 dk', 'ön koşul: user/kernel kavramı (bkz. Linux modül 3)', 'platform: Windows NT'],
+  intuition: {
+    paras: [
+      'Windows da tıpkı Linux ve XNU gibi işlemciyi iki ayrı privilege level\'da çalıştırır: uygulamalar <b>user mode</b>\'da, çekirdek bileşenleri ve sürücüler <b>kernel mode</b>\'da. Fark, Windows\'un kernel mode\'da tek bir paylaşılan adres uzayı kullanmasıdır: user mode\'da her process izole iken, kernel mode\'da bir sürücünün hatası tüm sistemi çökertebilir.',
+      'User mode kodu donanıma, diske ya da başka process\'in belleğine doğrudan dokunamaz. Bu işler yalnızca <code>ntoskrnl</code> (NT kernel) ve HAL üzerinden, kernel mode\'da yapılır. Bir sürücüye komut göndermek istediğinde uygulama <code>DeviceIoControl</code> çağırır; çağrı I/O Manager tarafından bir <b>IRP</b>\'ye (I/O Request Packet) paketlenir ve sürücüye iletilir. IRP, Windows sürücü dünyasının "mesaj zarfı"dır.'
+    ],
+    ideas: [
+      { b: 'Ayrıcalık ayrımı', span: 'User mode izole ve çökme-güvenli; kernel mode tek adres uzayı paylaşır, bir sürücü hatası tüm OS\'u çökertir.' },
+      { b: 'IRP = istek zarfı', span: 'Sürücülere giden isteklerin çoğu bir IRP yapısında paketlenir; IRP, isteği işlemek için gereken tüm bilgiyi kendi içinde taşır.' },
+      { b: 'Driver türleri', span: 'Legacy/WDM → KMDF/WDF (framework, daha güvenli) → minifilter (dosya sistemi süzgeçleri). Her biri farklı soyutlama seviyesi.' }
+    ]
+  },
+  lab: {
+    intro: 'Aşağıda user mode\'dan bir sürücüye <code>DeviceIoControl</code> ile bir IOCTL gönderiliyor. Sağda CPU modunu ve isteğin I/O Manager üzerinden bir IRP\'ye paketlenip driver\'a inişini izle.',
+    codeLabel: 'client.c (user mode) → driver', cmd: 'client.exe',
+    foot: 'Akış, Microsoft Learn\'deki WDM/IRP modeline dayanır. ← → tuşlarıyla da ilerleyebilirsin.',
+    code: [
+      { t: '<span class="cm">// user mode: sürücüye IOCTL gönder</span>' },
+      { t: '<span class="t">HANDLE</span> h = <span class="f">CreateFile</span>(' },
+      { t: '    <span class="s">"\\\\\\\\.\\\\MyDevice"</span>, GENERIC_READ|GENERIC_WRITE,' },
+      { t: '    <span class="n">0</span>, NULL, OPEN_EXISTING, <span class="n">0</span>, NULL);' },
+      { t: '' },
+      { t: '<span class="f">DeviceIoControl</span>(h,          <span class="cm">// device handle</span>' },
+      { t: '    IOCTL_MYDEV_HELLO,          <span class="cm">// kontrol kodu</span>' },
+      { t: '    inBuf, inLen,               <span class="cm">// giriş tamponu</span>' },
+      { t: '    outBuf, outLen, &amp;ret, NULL);<span class="cm"> // çıkış tamponu</span>' },
+      { t: '<span class="cm">// → I/O Manager bir IRP oluşturur ve driver\'a yollar</span>' }
+    ],
+    steps: [
+      { pc: [2, 3, 4], title: 'Aygıtı aç (CreateFile)', term: [], mode: 'user',
+        text: '<code>CreateFile</code> ile sürücünün yayımladığı device object\'e bir handle alınır. Hâlâ user mode\'dayız (ring 3): uygulama izole kendi adres uzayında çalışır, kernel adreslerine dokunamaz.',
+        node: 0, irp: null },
+      { pc: [6, 7, 8, 9], title: 'DeviceIoControl çağrısı', term: [], mode: 'user',
+        text: '<code>DeviceIoControl</code> bir kontrol kodu (IOCTL) ve giriş/çıkış tamponlarıyla çağrılır. Bu çağrı altında bir system call\'a iner; kontrol I/O Manager\'a geçmek üzere kernel\'e girer.',
+        node: 1, irp: null },
+      { pc: 10, title: 'Kernel moduna geçiş', term: [], mode: 'kernel',
+        text: 'CPU ayrıcalık seviyesini ring 3 → ring 0\'a yükseltir. Artık <code>ntoskrnl</code> (NT kernel) adına, tüm sürücülerle paylaşılan tek kernel adres uzayında çalışıyoruz.',
+        node: 2, irp: null },
+      { pc: 10, title: 'I/O Manager IRP\'yi paketler', term: [], mode: 'kernel',
+        text: 'I/O Manager isteği bir <b>IRP</b> yapısına paketler: kontrol kodu, tampon işaretçileri ve uzunluklar IRP içine yazılır. IRP, sürücünün isteği işlemek için gereken her şeyi kendi içinde taşır.',
+        node: 3, irp: { code: 'IOCTL_MYDEV_HELLO', major: 'IRP_MJ_DEVICE_CONTROL' } },
+      { pc: 10, title: 'IRP driver\'a iner', term: ['[driver] IRP_MJ_DEVICE_CONTROL alindi'], mode: 'kernel',
+        text: '<code>IoCallDriver</code> IRP\'yi device stack\'in tepesindeki device object\'e yollar; istek stack boyunca aşağı iner. Sürücünün dispatch rutini (örn. <code>DispatchDeviceControl</code>) IRP\'yi alır ve kontrol kodunu işler.',
+        node: 4, irp: { code: 'IOCTL_MYDEV_HELLO', major: 'IRP_MJ_DEVICE_CONTROL' } },
+      { pc: 10, title: 'Tamamlama ve dönüş', term: ['[driver] IRP_MJ_DEVICE_CONTROL alindi', 'client: ret = 0 (STATUS_SUCCESS)'], mode: 'user',
+        text: 'Sürücü IRP\'yi <code>IoCompleteRequest</code> ile tamamlar, durum kodunu (ör. STATUS_SUCCESS) ve çıkış tamponunu doldurur. Kontrol user mode\'a döner; <code>DeviceIoControl</code> başarıyla sonuçlanır. Bütün bu yolculuk tek bir user mode çağrısının arkasında gizlidir.',
+        node: 4, irp: { code: 'IOCTL_MYDEV_HELLO', major: 'tamamlandı: STATUS_SUCCESS' } }
+    ],
+    render: function (s, stateEl, u) {
+      var kernel = s.mode === 'kernel';
+      var nodes = [
+        ['CreateFile', 'user mode · handle al'],
+        ['DeviceIoControl', 'user mode · IOCTL gönder'],
+        ['ntoskrnl girişi', 'ring 0 · kernel'],
+        ['I/O Manager', 'IRP oluştur'],
+        ['Driver dispatch', 'IRP işlenir']
+      ];
+      var flow = nodes.map(function (n, i) {
+        var on = i === s.node;
+        return '<div class="node' + (on ? ' on' : '') + '"><span>' + u.esc(n[0]) + '</span><span class="ni">' + u.esc(n[1]) + '</span></div>';
+      }).join('');
+      stateEl.innerHTML =
+        '<p class="lab-label">CPU modu (ayrıcalık seviyesi)</p>' +
+        '<div class="mode-box ' + (kernel ? 'kernel' : '') + '"><span class="ml">ring / mod</span>' +
+          '<span class="mv">' + (kernel ? 'ring 0 · kernel mode' : 'ring 3 · user mode') + '</span></div>' +
+        '<p class="lab-label" style="margin-top:14px">İstek yolu (I/O path)</p><div class="flow">' + flow + '</div>' +
+        (s.irp ? '<div class="irpbox">IRP<br>&nbsp;&nbsp;MajorFunction: <b>' + u.esc(s.irp.major) + '</b><br>&nbsp;&nbsp;IoControlCode: <b>' + u.esc(s.irp.code) + '</b></div>' : '');
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: Windows kernel'in anatomisi",
+    html: `<p class="lead">Windows NT kernel'i, Linux ve XNU ile aynı temel fikri (user/kernel ayrımı, denetimli geçiş) paylaşır ama kendi mimarisi, sürücü modeli ve soyutlamaları vardır. Bu bölüm Microsoft'un resmi sürücü belgelerine dayanır ve kavramları Linux/macOS karşılıklarıyla ilişkilendirir.</p>
+
+<h3>1. İki mod: user mode ve kernel mode</h3>
+<p>Windows işlemciyi iki modda çalıştırır. Uygulamalar user mode'da izole, her biri kendi private virtual address space'inde koşar; bir uygulama çökse diğerlerini etkilemez. Kernel mode ise tek bir paylaşılan adres uzayıdır — bu, performans getirir ama izolasyon maliyetine mal olur.</p>
+<div class="manpage src-docs"><div class="ref">Microsoft Learn · User mode and kernel mode</div><p class="orig">A processor in a computer that runs Windows operates in two different modes: user mode and kernel mode. Applications operate in user mode. Core operating system components function in kernel mode.</p><p>Uygulamalar <strong>user mode</strong>'da, çekirdek bileşenleri <strong>kernel mode</strong>'da çalışır. User mode'da her uygulama izole bir <code>process</code> içindedir ve işletim sistemi için ayrılmış sanal adreslere erişemez.</p></div>
+<div class="manpage src-docs"><div class="ref">Microsoft Learn · Kernel mode</div><p class="orig">All code that runs in kernel mode shares a single virtual address space. As a result, a kernel-mode driver isn't isolated from other drivers or the operating system.</p><p>Kernel mode'da tüm kod <strong>tek bir sanal adres uzayını paylaşır</strong>. Bu yüzden bir kernel-mode driver yanlış bir adrese yazarsa işletim sistemini ya da başka bir sürücüyü bozabilir; çökerse <strong>tüm sistem çöker</strong> (BSOD). Linux'ta bir kernel modülü hatası ve XNU'da bir kernel panic ile aynı kritik sınır budur.</p></div>
+
+<h3>2. Mimari katmanlar: ntoskrnl, HAL, Executive</h3>
+<p>Windows kernel mode'u katmanlıdır:</p>
+<div class="deflist">
+<div><dt>ntoskrnl.exe</dt><dd>NT kernel'in çekirdeği. Alt seviyede <strong>Kernel (Ke)</strong> katmanı (zamanlama, senkronizasyon, interrupt), üstünde <strong>Executive</strong> katmanı (I/O Manager, Memory Manager, Object Manager, Process Manager gibi alt sistemler).</dd></div>
+<div><dt>HAL</dt><dd>Hardware Abstraction Layer. Donanım/anakart farklarını kernel'den gizler — Linux'taki arch-bağımlı katmanın karşılığı.</dd></div>
+<div><dt>Executive alt sistemleri</dt><dd>I/O Manager (sürücü istekleri, IRP), Memory Manager, Object Manager (handle'lar, nesneler), Configuration Manager (registry) gibi servisler.</dd></div>
+<div><dt>Device drivers</dt><dd>Kernel mode'a yüklenen, donanımı veya sanal aygıtları yöneten modüller. Güvenlik ve kararlılık için en kritik üçüncü-taraf koddur.</dd></div>
+</div>
+
+<h3>3. Sürücü türleri: WDM'den WDF'ye</h3>
+<p>Windows sürücü modeli zamanla evrildi. Eski model doğrudan ve hataya açıktı; yeni framework'ler güvenli varsayılanlar sağlar.</p>
+<div class="manpage src-docs"><div class="ref">Microsoft Learn · WDM</div><p class="orig">The Windows Driver Model (WDM) was introduced to enable driver developers to write device drivers that are source-code compatible across all Microsoft Windows operating systems. Kernel-mode drivers that follow WDM rules are called WDM drivers.</p><p><strong>WDM</strong>, sürücülerin tüm Windows sürümlerinde kaynak-uyumlu olmasını sağlamak için getirildi. Ancak Microsoft artık WDM'i önermiyor: üstüne kurulan <strong>WDF</strong> (Windows Driver Frameworks) tercih ediliyor — <strong>KMDF</strong> (kernel-mode) ve <strong>UMDF</strong> (user-mode). WDF, IRP yönetimi, PnP ve güç durumu gibi hataya açık ayrıntıların çoğunu framework'e devreder.</p></div>
+<div class="deflist">
+<div><dt>Legacy / WDM</dt><dd>En düşük seviye; IRP'leri, PnP ve power olaylarını sürücü elle yönetir. Hata payı yüksek.</dd></div>
+<div><dt>KMDF</dt><dd>Kernel-Mode Driver Framework. Çoğu kernel sürücüsü için önerilen model; nesne tabanlı, güvenli varsayılanlar.</dd></div>
+<div><dt>UMDF</dt><dd>User-Mode Driver Framework. Mümkün olduğunda sürücüyü user mode'a taşır — çökme tüm sistemi değil yalnızca sürücü host'unu düşürür.</dd></div>
+<div><dt>Minifilter</dt><dd>Dosya sistemi filtre sürücüsü (Filter Manager üzerinden). Antivürüs, EDR ve şifreleme ürünleri dosya I/O'sunu buradan izler.</dd></div>
+</div>
+
+<h3>4. IRP: I/O isteklerinin zarfı</h3>
+<p>Windows'ta sürücülere giden isteklerin çoğu bir <strong>IRP</strong> (I/O Request Packet) içinde paketlenir. IRP, isteği işlemek için gereken tüm bilgiyi (major function kodu, tampon işaretçileri, parametreler) kendi içinde taşıyan, kendine yeten bir yapıdır.</p>
+<div class="manpage src-docs"><div class="ref">Microsoft Learn · I/O request packets</div><p class="orig">Most of the requests that are sent to device drivers are packaged in I/O request packets (IRPs). The IRP structure is self-contained in the sense that it holds all of the information that a driver needs to handle an I/O request.</p><p>Bir IRP, <code>IoCallDriver</code> ile bir <code>DEVICE_OBJECT</code>'e gönderilir ve genellikle önce <strong>device stack</strong>'in tepesindeki nesneye ulaşır; oradan aşağı doğru iner. Bir filtre sürücüsü (örn. bir EDR'nin minifilter'ı) IRP'yi görür, işler ve bir alttaki fonksiyonel aygıta geçirir — "IRP'yi device stack'te aşağı geçirmek" denir. Bu stack yapısı, güvenlik ürünlerinin I/O'yu araya girerek izlemesini mümkün kılar.</p></div>
+
+<h3>5. User ↔ kernel iletişimi ve neden saldırı/savunmanın merkezi</h3>
+<p>User mode ile sürücü arasındaki ana köprü <code>DeviceIoControl</code> çağrısı ve ona karşılık gelen <code>IRP_MJ_DEVICE_CONTROL</code> IRP'sidir. Kontrol kodu (IOCTL), buffering yöntemini (buffered / direct / neither I/O) de kodlar. Bu arayüz hem meşru sürücü denetiminin hem de saldırının merkezidir: zayıf doğrulanmış bir IOCTL işleyicisi, user mode'dan kernel'e bir zafiyet kapısı açar. Linux'ta <code>ioctl()</code> + <code>copy_from_user</code> sınır denetimi, XNU'da IOKit external method yüzeyi ile aynı risk sınıfıdır — ve bu izleğin ileriki modüllerinde (rootkit teknikleri, BYOVD, EDR/ETW savunması) tam da bu sınır işlenir.</p>`
+  },
+  quiz: {
+    questions: [
+      { q: 'Windows\'ta kernel mode hakkında doğru olan hangisi?', opts: ['Her sürücü izole adres uzayındadır', 'Tüm kod tek bir paylaşılan adres uzayını paylaşır', 'User mode ile aynı ayrıcalıktadır'], answer: 'Tüm kod tek bir paylaşılan adres uzayını paylaşır',
+        ok: 'Doğru. Kernel mode\'da tek paylaşılan adres uzayı vardır; bu yüzden bir sürücü hatası tüm OS\'u (BSOD) çökertebilir. User mode ise process başına izoledir.', no: 'İpucu: user mode izole, kernel mode paylaşımlı. Çökme neden tüm sistemi düşürür?' },
+      { q: 'Bir uygulama bir sürücüye komut göndermek için tipik olarak hangisini çağırır?', opts: ['DeviceIoControl', 'malloc', 'CreateProcess'], answer: 'DeviceIoControl',
+        ok: 'Doğru. DeviceIoControl bir IOCTL kodu ve tamponlarla çağrılır; I/O Manager bunu bir IRP\'ye paketleyip sürücüye iletir.', no: 'İpucu: "I/O control" kelimelerini içeren çağrı hangisi?' },
+      { q: 'IRP (I/O Request Packet) nedir?', opts: ['Bir ağ paketi', 'İsteği işlemek için gereken tüm bilgiyi taşıyan kendine yeten yapı', 'Bir registry anahtarı'], answer: 'İsteği işlemek için gereken tüm bilgiyi taşıyan kendine yeten yapı',
+        ok: 'Doğru. IRP, sürücünün isteği işlemesi için gereken her şeyi (kod, tampon, parametre) içinde taşır ve device stack boyunca aşağı iner.', no: 'İpucu: Microsoft "self-contained" diyor — isteğin tüm bilgisini taşıyan zarf.' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Windows Modül 2', title: 'Sürücü anatomisi ve nesne modeli', href: 'win-driver-anatomy.html', desc: 'DriverObject, DeviceObject, driver yükleme/kaldırma ve IRP dispatch rutinleri.' },
+  sources: [
+    { href: 'https://learn.microsoft.com/en-us/windows-hardware/drivers/gettingstarted/user-mode-and-kernel-mode', text: 'Microsoft Learn — User mode and kernel mode', note: 'ayrıcalık ayrımı' },
+    { href: 'https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/introduction-to-wdm', text: 'Microsoft Learn — Introduction to WDM', note: 'sürücü modeli' },
+    { href: 'https://learn.microsoft.com/en-us/windows-hardware/drivers/gettingstarted/i-o-request-packets', text: 'Microsoft Learn — I/O request packets', note: 'IRP yapısı ve device stack' },
+    { href: 'https://www.xintra.org/courses/11-windows-kernel-offensive-defensive-reverse-engineering', text: 'Xintra — Windows Kernel (O/D/RE)', note: 'izlek müfredatı' }
+  ],
+  pageTitle: 'Windows Kernel Temelleri'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

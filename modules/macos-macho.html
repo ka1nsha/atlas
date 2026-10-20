@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Mach-O Formatı</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: dosya haritası + karşılaştırma */
+.mo-map { display: grid; gap: 6px; }
+.mo-row { border: 1.5px solid var(--line); border-radius: 8px; background: var(--surface); padding: 8px 10px; display: grid; grid-template-columns: 1fr auto; gap: 6px 10px; align-items: baseline; min-width: 0; opacity: .5; transition: opacity .2s, border-color .2s, background .2s; }
+.mo-row.on { opacity: 1; border-color: var(--track); background: var(--track-soft); }
+.mo-row .lbl { font-family: var(--f-mono); font-size: 12.5px; font-weight: 700; }
+.mo-row .sub { font-size: 11.5px; color: var(--muted); grid-column: 1 / -1; }
+.mo-row .prot { font-family: var(--f-mono); font-size: 11px; color: var(--track); }
+.mo-kind { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: .04em; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 6px; }
+.mo-cmp { display: grid; grid-template-columns: 1fr auto 1fr; gap: 6px 10px; align-items: center; }
+@media (max-width: 560px) { .mo-cmp { grid-template-columns: 1fr; } .mo-cmp .mid { display: none; } }
+.mo-cell { border: 1px solid var(--line); border-radius: 7px; padding: 6px 9px; font-family: var(--f-mono); font-size: 11.5px; min-width: 0; overflow-wrap: anywhere; background: var(--surface); }
+.mo-cell.elf { border-color: var(--accent); } .mo-cell.macho { border-color: var(--track); }
+.mo-cmp .mid { color: var(--muted); text-align: center; font-family: var(--f-mono); font-size: 12px; }
+.mo-hd { font-family: var(--f-mono); font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MAP = [
+  { key: 'header', lbl: 'Mach header', sub: 'magic 0xFEEDFACF · cputype ARM64 · filetype MH_EXECUTE · ncmds 7', kind: 'başlık' },
+  { key: 'pz',     lbl: 'LC_SEGMENT_64 __PAGEZERO', sub: 'vmsize 4 GB · izin yok (---) · null erişimini yakalar', kind: 'segment', prot: '---' },
+  { key: 'text',   lbl: 'LC_SEGMENT_64 __TEXT', sub: 'kod + salt okunur sabitler · section: __text, __cstring', kind: 'segment', prot: 'r-x' },
+  { key: 'dconst', lbl: 'LC_SEGMENT_64 __DATA_CONST', sub: 'başlatmadan sonra salt okunur işaretçiler', kind: 'segment', prot: 'r--' },
+  { key: 'data',   lbl: 'LC_SEGMENT_64 __DATA', sub: 'değişkenler · section: __data, __bss', kind: 'segment', prot: 'rw-' },
+  { key: 'link',   lbl: 'LC_SEGMENT_64 __LINKEDIT', sub: 'semboller, bağlama bilgisi, kod imzası', kind: 'segment', prot: 'r--' },
+  { key: 'main',   lbl: 'LC_MAIN', sub: 'entryoff → programın giriş noktası', kind: 'komut' },
+  { key: 'dyld',   lbl: 'LC_LOAD_DYLINKER', sub: '/usr/lib/dyld — dinamik bağlayıcı', kind: 'komut' },
+  { key: 'dylib',  lbl: 'LC_LOAD_DYLIB', sub: '/usr/lib/libSystem.B.dylib — gerekli kütüphane', kind: 'komut' }
+];
+var CMP = [
+  ['ELF header (e_ident, e_type)', 'Mach header (magic, filetype)'],
+  ['PT_LOAD (R-E)', 'LC_SEGMENT_64 __TEXT (r-x)'],
+  ['PT_LOAD (RW)', 'LC_SEGMENT_64 __DATA (rw-)'],
+  ['PT_INTERP → /lib64/ld-linux', 'LC_LOAD_DYLINKER → /usr/lib/dyld'],
+  ['PT_DYNAMIC → DT_NEEDED', 'LC_LOAD_DYLIB'],
+  ['e_entry', 'LC_MAIN (entryoff)'],
+  ['Section headers (ayrı tablo)', 'section\'lar segment içinde gömülü']
+];
+
+var MODULE = {
+  track: 'macos',
+  crumbs: 'macos › mach-o › modül 3',
+  eyebrow: 'Modül 3 · macOS / iOS · Çalıştırılabilir format',
+  titleHTML: '<code>Mach-O</code>: bir programın anatomisi',
+  lede: 'XNU bir programı Mach-O formatında saklar. Linux\'un ELF\'i gibi, bu da çekirdeğe "bu dosyayı belleğe nasıl yerleştireceğini" anlatan bir harita taşır. Bu modülde bir Mach-O dosyasını yukarıdan aşağıya gezecek ve ELF ile yan yana koyacağız.',
+  meta: ['~18 dk', 'ön koşul: sanal bellek, ELF fikri', 'bağlam: XNU, arm64'],
+  intuition: {
+    paras: [
+      'Bir çalıştırılabilir dosya (executable) yalnızca makine kodu değildir; çekirdeğe onu belleğe nasıl açacağını söyleyen bir tarifnamedir. Mach-O\'da bu tarifname bir başlıktan (header) ve ardışık <strong>yükleme komutları</strong>\'ndan (load command) oluşur.',
+      'Her yükleme komutu bir şey anlatır: "şu bölütü (segment) şu adrese şu izinlerle eşle", "dinamik bağlayıcı (dynamic linker) dyld\'dir", "şu kütüphaneye ihtiyacım var". Çekirdeğin <code>mach_loader</code>\'ı bu komutları sırayla uygular; dosyayı çalışan bir sürece bu çevirir.',
+      'ELF ile aynı işi yapar, farklı kelimelerle: ELF\'teki program header\'ların karşılığı Mach-O\'daki load command\'lerdir. Birini bilen, diğerini hızla okur.'
+    ],
+    ideas: [
+      { b: 'Başlık (header)', span: 'magic sayısı (0xFEEDFACF), CPU türü (cputype) ve kaç yükleme komutu olduğu (ncmds).' },
+      { b: 'Yükleme komutları (load commands)', span: 'Ardışık kayıtlar; her biri {cmd, cmdsize}. Segment eşleme, giriş noktası, dylib bağımlılıkları.' },
+      { b: 'Bölütler ve bölümler (segments & sections)', span: '__TEXT (r-x), __DATA (rw-), __LINKEDIT. Her segment içinde section\'lar: __text, __cstring, __data.' }
+    ]
+  },
+  lab: {
+    intro: 'Soldaki <code>otool -l</code> çıktısı (temsilî) satır satır bir Mach-O\'yu gezer; sağda dosyanın haritası canlanır. Son adımda ELF ile yan yana koyuyoruz.',
+    codeLabel: 'otool -l (temsilî)', cmd: 'otool -l app',
+    foot: 'macOS araçları bu konteynerde çalışmaz; otool çıktısı temsilîdir. ELF karşılaştırması gerçek readelf çıktısına dayanır.',
+    code: [
+      { t: '<span class="cm">Mach header</span>' },
+      { t: '  magic 0xFEEDFACF  cputype ARM64  ncmds <span class="n">7</span>' },
+      { t: '<span class="cm">Load command 0</span>' },
+      { t: '  cmd <span class="t">LC_SEGMENT_64</span>  segname <span class="s">__PAGEZERO</span>' },
+      { t: '<span class="cm">Load command 1</span>' },
+      { t: '  segname <span class="s">__TEXT</span>  vmaddr 0x100000000  initprot <span class="n">r-x</span>' },
+      { t: '<span class="cm">Load command 2</span>' },
+      { t: '  segname <span class="s">__DATA</span>  initprot <span class="n">rw-</span>' },
+      { t: '<span class="cm">Load command 3</span>' },
+      { t: '  segname <span class="s">__LINKEDIT</span>  (semboller, imza)' },
+      { t: '<span class="cm">Load command 4</span>' },
+      { t: '  cmd <span class="t">LC_MAIN</span>  entryoff 0x3f9c' },
+      { t: '<span class="cm">Load command 5</span>' },
+      { t: '  cmd <span class="t">LC_LOAD_DYLINKER</span>  <span class="s">/usr/lib/dyld</span>' },
+      { t: '<span class="cm">Load command 6</span>' },
+      { t: '  cmd <span class="t">LC_LOAD_DYLIB</span>  <span class="s">/usr/lib/libSystem.B.dylib</span>' }
+    ],
+    steps: [
+      { pc: 2, title: 'Sihir ve başlık', view: 'map', hi: ['header'], term: ['app: Mach-O 64-bit executable arm64'],
+        text: 'İlk 32 bayt başlıktır (header). <code>magic</code> dosyanın türünü ve bayt sırasını belirler (0xFEEDFACF = 64-bit). <code>cputype</code> mimariyi (burada ARM64), <code>ncmds</code> kaç yükleme komutu geleceğini söyler. Çekirdek önce bunu okur.' },
+      { pc: [3, 5, 7, 9, 11, 13, 15], title: 'Yükleme komutlarını gez', view: 'map', hi: ['pz', 'text', 'dconst', 'data', 'link', 'main', 'dyld', 'dylib'], term: [],
+        text: 'Başlıktan sonra <code>ncmds</code> tane yükleme komutu (load command) ardışık durur; her biri bir <code>{cmd, cmdsize}</code> ile başlar. <code>cmdsize</code> sayesinde çekirdek tanımadığı bir komutu atlayıp bir sonrakine geçebilir. Komutlar segment eşlemeden kütüphane bağımlılıklarına kadar her şeyi anlatır.' },
+      { pc: [5, 7], title: 'Bölütler belleğe eşlenir', view: 'map', hi: ['pz', 'text', 'dconst', 'data', 'link'], term: ['app: __TEXT → 0x100000000 r-x', 'app: __DATA → rw-'],
+        text: 'Her <code>LC_SEGMENT_64</code> bir bölütü (segment) sanal belleğe eşler: __TEXT salt okunur-çalıştırılabilir (r-x), __DATA okunur-yazılır (rw-). İlk bölüt __PAGEZERO\'dur: 4 GB\'lık, hiç izni olmayan bir tuzak — null işaretçi erişimlerini anında yakalar. Her segment içinde section\'lar (__text, __cstring, __data) bulunur.' },
+      { pc: [11, 13], title: 'Giriş ve dyld', view: 'map', hi: ['main', 'dyld'], term: ['app: entry 0x3f9c · dyld devralıyor'],
+        text: '<code>LC_MAIN</code> giriş noktasını (entryoff) verir. <code>LC_LOAD_DYLINKER</code> ise işi dinamik bağlayıcıya (dyld) devreder: çekirdek önce dyld\'yi yükler, dyld de gerekli dylib\'leri (LC_LOAD_DYLIB) bağlayıp programı başlatır. Bir sonraki modülün konusu tam budur.' },
+      { pc: [], title: 'ELF ile yan yana', view: 'compare', term: [],
+        text: 'Aynı fikirler, farklı isimler. ELF\'teki program header\'lar (PT_LOAD, PT_INTERP, PT_DYNAMIC) Mach-O\'daki load command\'lere birebir yakın karşılık gelir. En görünür fark: ELF\'te section header\'lar ayrı bir tabloda; Mach-O\'da section\'lar segment\'in içine gömülüdür.' }
+    ],
+    render: function (s, stateEl, u) {
+      if (s.view === 'compare') {
+        var rows = CMP.map(function (r) {
+          return '<div class="mo-cell elf">' + u.esc(r[0]) + '</div><div class="mid">≈</div><div class="mo-cell macho">' + u.esc(r[1]) + '</div>';
+        }).join('');
+        stateEl.innerHTML =
+          '<p class="lab-label">ELF ↔ Mach-O karşılığı</p>' +
+          '<div class="mo-cmp"><div class="mo-hd">ELF (Linux)</div><div class="mid"></div><div class="mo-hd">Mach-O (macOS)</div>' + rows + '</div>';
+        return;
+      }
+      var hi = s.hi || [];
+      var rows = MAP.map(function (m) {
+        var on = hi.indexOf(m.key) >= 0;
+        return '<div class="mo-row' + (on ? ' on' : '') + '">' +
+          '<span class="lbl">' + u.esc(m.lbl) + '</span>' +
+          '<span class="mo-kind">' + u.esc(m.kind) + (m.prot ? ' · <span class="prot">' + m.prot + '</span>' : '') + '</span>' +
+          '<span class="sub">' + u.esc(m.sub) + '</span></div>';
+      }).join('');
+      stateEl.innerHTML = '<p class="lab-label">Mach-O dosya haritası</p><div class="mo-map">' + rows + '</div>';
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: Mach-O'nun anatomisi",
+    html: `<p class="lead">Mach-O, macOS ve iOS'ta her executable, dylib ve bundle'ın dosya formatıdır. ELF'in Apple karşılığı gibi görünür ama daha fazlasını taşır: code signature, dyld bilgisi ve entitlements doğrudan dosyanın içine gömülüdür. Bu bölüm xnu kaynağındaki loader.h başlığına dayanır.</p>
+
+<h3>1. Header: dosyanın kimliği</h3>
+<p>Her Mach-O dosyası bir <strong>mach_header_64</strong> ile başlar. Çekirdek ve dyld önce bunu okur: dosya hangi mimari için, ne tür bir dosya (executable mı, dylib mi) ve kaç tane load command izliyor.</p>
+<div class="deflist">
+<div><dt>magic</dt><dd>MH_MAGIC_64 — dosyanın Mach-O olduğunu ve 64-bit/endianness bilgisini verir.</dd></div>
+<div><dt>cputype / cpusubtype</dt><dd>Hedef mimari (x86_64, arm64, arm64e). fat binary doğru parçayı bununla seçer.</dd></div>
+<div><dt>filetype</dt><dd>MH_EXECUTE (program), MH_DYLIB (kütüphane), MH_BUNDLE (plugin), MH_DSYM (semboller).</dd></div>
+<div><dt>ncmds</dt><dd>Header'dan sonra gelen load command sayısı.</dd></div>
+</div>
+<div class="manpage src-apple"><div class="ref">xnu · loader.h</div><p class="orig">The 64-bit mach header appears at the very beginning of object files for 64-bit architectures. ... magic: mach magic number identifier ... ncmds: number of load commands</p><p>Header dosyanın en başındadır ve sabit boyutludur; bir yükleyici tek bir okumayla dosyanın ne olduğunu ve kaç load command izleyeceğini öğrenir.</p></div>
+
+<h3>2. Load commands: dosyanın yapılacaklar listesi</h3>
+<p>Header'dan hemen sonra bir load command dizisi gelir. Her biri yükleyiciye bir talimat verir: "şu segment'i belleğe şöyle eşle", "şu dylib'i yükle", "dyld'yi çalıştır", "code signature burada". Mach-O'yu ELF'ten daha zengin yapan budur — bağlama ve imza bilgisi formatın parçasıdır.</p>
+<div class="deflist">
+<div><dt>LC_SEGMENT_64</dt><dd>Bir segment'i (ve section'larını) dosyadan belleğe eşler.</dd></div>
+<div><dt>LC_MAIN</dt><dd>Programın entry point'i (eski LC_UNIXTHREAD yerine).</dd></div>
+<div><dt>LC_LOAD_DYLINKER</dt><dd>Hangi dynamic linker'ın (/usr/lib/dyld) devralacağını söyler.</dd></div>
+<div><dt>LC_LOAD_DYLIB</dt><dd>Bağımlı bir dylib — her biri için bir tane.</dd></div>
+<div><dt>LC_CODE_SIGNATURE</dt><dd>__LINKEDIT içindeki code signature bloğunu işaret eder.</dd></div>
+<div><dt>LC_DYLD_INFO / LC_DYLD_CHAINED_FIXUPS</dt><dd>dyld için rebase/bind bilgisi (ASLR kaydırması ve sembol bağlama).</dd></div>
+</div>
+<div class="manpage src-apple"><div class="ref">xnu · loader.h</div><p class="orig">The load commands directly follow the mach_header. ... All load commands must have as their first two fields cmd and cmdsize.</p><p>Her load command ortak bir başlıkla (cmd türü + cmdsize) başladığı için, bir yükleyici tanımadığı bir command'i boyutu kadar atlayıp devam edebilir; format bu sayede ileriye dönük uyumludur.</p></div>
+
+<h3>3. Segments ve sections</h3>
+<p>Bir <strong>segment</strong> dosyanın belleğe bir bütün olarak eşlenen ve ortak koruma (protection) taşıyan bir parçasıdır. Her segment sıfır veya daha çok <strong>section</strong> içerir. Koruma bitleri segment düzeyindedir: kod yazılamaz, veri çalıştırılamaz.</p>
+<div class="deflist">
+<div><dt>__TEXT (r-x)</dt><dd>Kod ve salt okunur veri. section'lar: __text (makine kodu), __cstring (string sabitleri), __const.</dd></div>
+<div><dt>__DATA (rw-)</dt><dd>Yazılabilir veri: __data, __bss, __objc_* (Objective-C metadata). __DATA_CONST ile bazıları başlangıçtan sonra salt okunur yapılır.</dd></div>
+<div><dt>__LINKEDIT</dt><dd>Linker ve dyld'nin ürettiği her şey: symbol table, string table, rebase/bind opcode'ları ve code signature.</dd></div>
+</div>
+<div class="manpage src-apple"><div class="ref">xnu · loader.h</div><p class="orig">A segment is made up of zero or more sections. ... __LINKEDIT: the segment containing all structs created and maintained by the link editor.</p><p>__LINKEDIT kritiktir: code signature imza doğrulanırken bu segment üzerinden hesaplanır; dyld de bind/rebase tablolarını buradan okur.</p></div>
+
+<h3>4. Fat (universal) binary</h3>
+<p>Tek bir dosya birden çok mimari için kod taşıyabilir: başta bir <strong>fat_header</strong> + her mimari için bir fat_arch kaydı, ardından arka arkaya Mach-O'lar. macOS'un Intel'den Apple Silicon'a geçişini tek bir ikili ile mümkün kılan budur; <code>lipo</code> aracıyla parçalar ayrılır veya birleştirilir. Çekirdek çalıştırırken CPU'ya uyan parçayı seçer.</p>
+
+<h3>5. ELF ile karşılaştırma</h3>
+<p>Kavramsal olarak Mach-O load command'leri ELF program header'larına benzer: ikisi de "şu parçayı belleğe şöyle eşle" der. Ama Mach-O daha fazlasını formatın içine gömer. ELF'te code signing, dinamik bağlama bilgisi ve entitlements genelde ayrı mekanizmalar veya bölümlerdeyken, Mach-O'da bunlar birer load command'dir (LC_CODE_SIGNATURE, LC_DYLD_INFO/LC_DYLD_CHAINED_FIXUPS). Bu yüzden Apple platformlarında "ikili = kod + imza + bağlama planı" tek bir dosyadır — bu bütünlük, code signing ve AMFI zorlamasının temelidir.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">Çekirdek tarafında bir Mach-O\'yu çalışan sürece çeviren yol <code>bsd/kern/mach_loader.c</code>\'dedir. <code>execve</code> bu zinciri tetikler.</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">execve()</span><span class="where">bsd/kern</span><p>Yeni program yükleme isteği; eski süreç görüntüsü temizlenir.</p></div></li>' +
+      '<li class="boundary"><div>çekirdek · görüntü yükleme</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/mach_loader.c" target="_blank" rel="noopener">load_machfile()</a><span class="where">bsd/kern/mach_loader.c</span><p>Yeni bir adres uzayı (vm_map) kurar, parse_machfile\'ı çağırır.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">parse_machfile()</span><span class="where">bsd/kern/mach_loader.c</span><p>Başlığı doğrular, yükleme komutlarını sırayla gezer ve her birini ilgili yükleyiciye dağıtır.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">load_segment()</span><span class="where">bsd/kern/mach_loader.c</span><p>LC_SEGMENT_64\'leri belleğe eşler; izinleri (initprot) uygular.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">load_dylinker() → dyld</span><span class="where">bsd/kern/mach_loader.c</span><p>LC_LOAD_DYLINKER\'ı da yükler ve kontrolü dyld\'ye devreder.</p></div></li>' +
+      '</ol>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. ELF tarafını gerçek gör (Linux)', p: 'Mach-O\'nun load command\'lerinin ELF karşılığı program header\'lardır. Konteynerde gerçek çıktı:',
+        shells: [{ label: 'terminal (gerçek, ELF)', copy: 'cc -o m m.c && readelf -l m', pre: '<span class="c">$</span> readelf -l m\nElf file type is DYN (PIE)\nEntry point 0x1040\n  Type           VirtAddr           Flags Align\n  <span class="g">INTERP</span>  /lib64/ld-linux-x86-64.so.2\n  <span class="g">LOAD</span>   0x0000...0000   R      0x1000\n  <span class="g">LOAD</span>   0x0000...1000   R <span class="y">E</span>    0x1000   <span class="c"># __TEXT benzeri</span>\n  <span class="g">LOAD</span>   0x0000...3df0   R<span class="y">W</span>     0x1000   <span class="c"># __DATA benzeri</span>\n  <span class="g">DYNAMIC</span> ...' }] },
+      { h3: '2. Mach-O tarafı (macOS)', p: 'Aynı bilgiyi macOS\'ta otool verir. Load command\'leri, bağımlı dylib\'leri ve mimarileri listeler.',
+        shells: [{ label: 'terminal (macOS, temsilî)', copy: 'otool -l app | less; otool -L app; file app', pre: '<span class="c">$</span> otool -l app        <span class="c"># tüm load command\'ler</span>\n<span class="c">$</span> otool -L app        <span class="c"># bağımlı dylib\'ler</span>\napp:\n\t/usr/lib/libSystem.B.dylib\n<span class="c">$</span> file app\napp: Mach-O 64-bit executable arm64' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Mach-O\'da bir bölütün (segment) belleğe nasıl eşleneceğini hangi yapı anlatır?', opts: ['Section header tablosu', 'LC_SEGMENT_64 yükleme komutu', 'Mach header'], answer: 'LC_SEGMENT_64 yükleme komutu',
+        ok: 'Doğru. Her LC_SEGMENT_64, bir segmenti vmaddr\'a verilen izinlerle (initprot) eşler. Section\'lar bu segmentin içinde gömülüdür.', no: 'İpucu: Mach-O\'da eşlemeyi yükleme komutları (load commands) anlatır.' },
+      { q: '__PAGEZERO segmentinin görevi nedir?', opts: ['Kodu tutar', 'Null işaretçi erişimlerini yakalar', 'Sembolleri tutar'], answer: 'Null işaretçi erişimlerini yakalar',
+        ok: 'Doğru. __PAGEZERO 4 GB\'lık, hiç izni olmayan bir bölgedir; adres 0 civarına erişim anında hata üretir. ELF\'te bunun karşılığı eşlenmemiş ilk sayfadır.', no: 'İpucu: izni "---" olan, adres 0\'dan başlayan dev bir bölge ne işe yarar?' },
+      { q: 'ELF\'teki PT_INTERP\'in Mach-O karşılığı hangisidir?', opts: ['LC_MAIN', 'LC_LOAD_DYLINKER', 'LC_SEGMENT_64 __LINKEDIT'], answer: 'LC_LOAD_DYLINKER',
+        ok: 'Doğru. İkisi de dinamik bağlayıcının yolunu söyler: ELF\'te /lib64/ld-linux, Mach-O\'da /usr/lib/dyld.', no: 'İpucu: PT_INTERP, dinamik bağlayıcıyı (dynamic linker) işaret eder. Mach-O\'da bunu hangi komut yapar?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · macOS Modül 4', title: 'dyld ve paylaşılan önbellek', desc: 'dyld bir Mach-O\'yu nasıl başlatır? Kütüphaneler neden tek dev bir önbellekte (shared cache) birleştirilir?' },
+  sources: [
+    { href: 'https://newosxbook.com/toc1.html', text: 'Levin — OS Internals Cilt I', note: 'Bölüm 6: Mach-O' },
+    { href: 'https://developer.apple.com/documentation/kernel/mach-o_file_format', text: 'Apple — Mach-O File Format' },
+    { href: 'https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/mach_loader.c', text: 'xnu — mach_loader.c', note: 'çekirdek yükleyici' },
+    { href: 'https://man7.org/linux/man-pages/man5/elf.5.html', text: 'man 5 elf', note: 'karşılaştırma için ELF' }
+  ],
+  pageTitle: 'Mach-O Formatı'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

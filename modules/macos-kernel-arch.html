@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>XNU Çekirdek Mimarisi</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: EL0/EL1 ayrımı ve çağrı türü yönlendirmesi */
+.ring { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 10px 12px; display: grid; gap: 4px; min-width: 0; }
+.ring .rh { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.ring .rh b { font-family: var(--f-display); font-size: 15px; }
+.ring .rh .mono { font-family: var(--f-mono); font-size: 11.5px; color: var(--muted); }
+.ring p { margin: 0; font-size: 12.5px; color: var(--muted); }
+.ring.lit { border-color: var(--track); background: var(--track-soft); }
+.ring.lit p { color: var(--fg); }
+.ring.user { border-left: 3px solid var(--muted); }
+.ring.kern { border-left: 3px solid var(--track); }
+.bound { font-family: var(--f-mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); display: flex; align-items: center; gap: 10px; padding-block: 2px; }
+.bound::before, .bound::after { content: ""; height: 1px; background: var(--muted); flex: 1; opacity: .5; }
+.bound.lit { color: var(--track); }
+.tables { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 2px; }
+@media (max-width: 460px) { .tables { grid-template-columns: 1fr; } }
+.dtbl { border: 1.5px solid var(--line); border-radius: 8px; padding: 8px; background: var(--surface); display: grid; gap: 2px; min-width: 0; }
+.dtbl.lit { border-color: var(--track); background: var(--track-soft); }
+.dtbl .dn { font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.dtbl b { font-size: 13px; }
+.dtbl .sign { font-family: var(--f-mono); font-size: 11px; font-weight: 700; }
+.dtbl.lit .sign { color: var(--track); }
+.regbox { font-family: var(--f-mono); font-size: 12px; background: var(--sunk); border-radius: 8px; padding: 8px 10px; display: grid; gap: 2px; margin-top: 2px; }
+.regbox .rk { color: var(--muted); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'macos',
+  crumbs: 'macos › çekirdek mimarisi › modül 10',
+  eyebrow: 'Modül 10 · macOS / iOS · Çekirdek mimarisi',
+  titleHTML: 'XNU\'da çekirdeğe iki ayrı kapı',
+  lede: 'Linux\'ta çekirdeğe tek bir kapı vardır: sistem çağrı tablosu. XNU ise ikiye ayrılır — pozitif numaralı BSD sistem çağrıları (system calls) ve negatif numaralı Mach tuzakları (Mach traps). Bu modül kullanıcı/çekirdek geçişini ve bir çağrının numarasının işaretine göre hangi yola gittiğini gösterir.',
+  meta: ['~15 dk', 'ön koşul: sistem çağrıları (Linux Modül 3)', 'bağlam: XNU, ARM64'],
+  intuition: {
+    paras: [
+      'Bir kullanıcı programı donanıma veya çekirdek verisine doğrudan dokunamaz; bunu çekirdekten ister. İşlemci iki ayrıcalık seviyesinde (privilege level) çalışır: ARM64\'te kullanıcı kodu EL0\'da (x86\'da ring 3), çekirdek EL1\'de (ring 0). Geçiş, bir istisna (exception) ile olur: ARM64\'te <code>svc</code>, x86\'da <code>syscall</code> komutu.',
+      'XNU\'yu Linux\'tan ayıran şey, bu kapının ardında <strong>iki ayrı dağıtım tablosu (dispatch table)</strong> olmasıdır. Çağrının numarası pozitifse BSD tarafına (POSIX: <code>read</code>, <code>open</code>...), negatifse Mach tarafına (<code>mach_msg</code>, port işlemleri) gider. XNU\'nun melez (hybrid) doğası tam da burada görünür: tek çekirdek, iki çağrı dünyası.'
+    ],
+    ideas: [
+      { b: 'EL0 → EL1', span: 'svc/syscall komutu işlemciyi kullanıcı seviyesinden çekirdek seviyesine geçirir; istisna vektörü (exception vector) çalışır.' },
+      { b: 'İşaret yolu belirler', span: 'Çağrı numarası pozitif → BSD syscall tablosu (sysent); negatif → Mach tuzak tablosu (mach_trap_table).' },
+      { b: 'Donanım soyutlaması', span: 'Aynı XNU hem Intel (x86-64) hem Apple Silicon (ARM64) üzerinde çalışır; alt kat makineye özeldir, üst kat ortak.' }
+    ]
+  },
+  lab: {
+    intro: 'Bir <code>read()</code> çağrısı (POSIX) ile bir <code>mach_msg()</code> çağrısının (Mach) aynı kapıdan girip nasıl ayrı tablolara dağıldığını izle. Aydınlanan katman/tablo o adımda aktiftir.',
+    codeLabel: 'çağrı yolu', cmd: 'read() vs mach_msg()',
+    foot: 'Syscall numaraları ve sysctl çıktısı temsilîdir; gerçek değerler sürüme göre değişir. Linux karşılaştırması gerçektir.',
+    code: [
+      { t: '<span class="cm">// POSIX: pozitif numara → BSD</span>' },
+      { t: 'mov x16, <span class="n">#3</span>        <span class="cm">; SYS_read = 3</span>' },
+      { t: '<span class="f">svc</span> <span class="n">#0x80</span>          <span class="cm">; EL0 → EL1</span>' },
+      { t: '' },
+      { t: '<span class="cm">// Mach: negatif numara → trap</span>' },
+      { t: 'mov x16, <span class="n">#-31</span>      <span class="cm">; mach_msg_trap</span>' },
+      { t: '<span class="f">svc</span> <span class="n">#0x80</span>          <span class="cm">; EL0 → EL1</span>' },
+      { t: '' },
+      { t: '<span class="cm">// dağıtım işarete göre dallanır</span>' },
+      { t: '<span class="k">if</span> (num &gt; <span class="n">0</span>) unix_syscall(); <span class="k">else</span> mach_syscall();' }
+    ],
+    steps: [
+      { pc: null, title: 'İki seviye', term: ['kern.ostype: Darwin'],
+        text: 'Başlangıç: kullanıcı kodu EL0\'da (ring 3) çalışıyor. Çekirdek EL1\'de (ring 0), kendi belleği ve ayrıcalıklarıyla, kullanıcıdan yalıtılmış. Aradaki sınır donanımla zorlanır.',
+        user: true, kern: false, bound: false, tbl: null,
+        reg: [['durum', 'EL0 (kullanıcı)'], ['komut', '— henüz syscall yok —']] },
+      { pc: [1, 2], title: 'read(): numara register\'a', term: ['SYS_read = 3  (pozitif)'],
+        text: '<code>read()</code> çağrısı için çağrı numarası (3) bir register\'a (ARM64\'te x16) konur, argümanlar diğer register\'lara. Henüz EL0\'dayız; <code>svc</code> komutu birazdan kapıyı çalacak.',
+        user: true, kern: false, bound: false, tbl: null,
+        reg: [['x16', '3  (SYS_read, pozitif)'], ['x0', 'fd'], ['durum', 'EL0']] },
+      { pc: 3, title: 'svc: EL0 → EL1 geçişi', term: ['svc #0x80 → istisna vektörü'],
+        text: '<code>svc</code> komutu bir senkron istisna (synchronous exception) üretir. İşlemci EL1\'e geçer ve XNU\'nun istisna vektörüne (exception vector) dallanır: <code>sleh_synchronous</code>. Artık çekirdekteyiz.',
+        user: false, kern: true, bound: true, tbl: null,
+        reg: [['durum', 'EL0 → EL1'], ['giriş', 'sleh_synchronous']] },
+      { pc: 10, title: 'İşaret yolu seçer', term: ['3 > 0  → BSD yolu'],
+        text: 'XNU çağrı numarasının işaretine bakar. 3 pozitiftir → BSD tarafı. Dağıtıcı <code>unix_syscall</code>\'a, oradan BSD sistem çağrı tablosuna (<code>sysent</code>) gider. (Negatif olsaydı Mach yoluna sapacaktı.)',
+        user: false, kern: true, bound: false, tbl: 'bsd',
+        reg: [['x16', '3 (pozitif)'], ['karar', 'num > 0 → BSD']] },
+      { pc: null, title: 'BSD işleyici çalışır', term: ['sysent[3] → read_nocancel → VFS'],
+        text: '<code>sysent</code> tablosunun 3. girdisi BSD\'nin <code>read</code> işleyicisidir; oradan VFS\'e ve dosya sistemine iner. İş biter, sonuç bir register\'a konur ve EL1→EL0 ile kullanıcıya dönülür. Bu yol Linux\'un syscall yoluna çok benzer.',
+        user: false, kern: true, bound: false, tbl: 'bsd',
+        reg: [['sysent[3]', 'read → VFS'], ['dönüş', 'okunan bayt sayısı']] },
+      { pc: [5, 6], title: 'mach_msg(): negatif yol', term: ['mach_msg_trap = -31  (negatif)', '-31 < 0 → Mach yolu'],
+        text: 'Şimdi bir Mach çağrısı: <code>mach_msg</code> için numara negatiftir (örn. -31). Aynı <code>svc</code> kapısından girilir ama işaret negatif olduğu için dağıtıcı <code>mach_syscall</code>\'a, oradan <code>mach_trap_table</code>\'a sapar. BSD hiç devreye girmez.',
+        user: false, kern: true, bound: true, tbl: 'mach',
+        reg: [['x16', '-31 (negatif)'], ['karar', 'num < 0 → Mach'], ['tablo', 'mach_trap_table']] },
+      { pc: 10, title: 'Linux ile karşılaştır', term: ['Linux: tek sys_call_table', 'XNU: sysent + mach_trap_table'],
+        text: 'Linux\'ta tek bir <code>sys_call_table</code> ve tek çağrı türü vardır. XNU\'da iki ayrı tablo ve numara işaretiyle dallanan iki dünya bulunur — artı makineye özel (machine-dependent) çağrılar için üçüncü bir küçük yol. Bu, XNU\'nun Mach mirasının doğrudan görünür sonucudur.',
+        user: true, kern: true, bound: false, tbl: 'both',
+        reg: [['BSD', 'sysent (pozitif)'], ['Mach', 'mach_trap_table (negatif)']] }
+    ],
+    render: function (s, stateEl, u) {
+      var html = '<p class="lab-label">Ayrıcalık seviyeleri ve dağıtım</p>';
+      html += '<div class="ring user' + (s.user ? ' lit' : '') + '"><div class="rh"><b>Kullanıcı · EL0 (ring 3)</b><span class="mono">uygulama kodu</span></div><p>Yalıtılmış; çekirdeğe yalnızca svc/syscall ile ulaşır.</p></div>';
+      html += '<div class="bound' + (s.bound ? ' lit' : '') + '">svc · EL0 → EL1 geçişi (istisna)</div>';
+      html += '<div class="ring kern' + (s.kern ? ' lit' : '') + '"><div class="rh"><b>Çekirdek · EL1 (ring 0)</b><span class="mono">XNU</span></div><p>sleh_synchronous dağıtıcıya girer, numaranın işaretine bakar.</p></div>';
+      html += '<div class="tables">';
+      html += '<div class="dtbl' + (s.tbl === 'bsd' || s.tbl === 'both' ? ' lit' : '') + '"><span class="dn">unix_syscall →</span><b>sysent</b><span class="sign">numara &gt; 0 (BSD/POSIX)</span></div>';
+      html += '<div class="dtbl' + (s.tbl === 'mach' || s.tbl === 'both' ? ' lit' : '') + '"><span class="dn">mach_syscall →</span><b>mach_trap_table</b><span class="sign">numara &lt; 0 (Mach)</span></div>';
+      html += '</div>';
+      if (s.reg && s.reg.length) {
+        html += '<div class="regbox">' + s.reg.map(function (r) { return '<div><span class="rk">' + u.esc(r[0]) + ':</span> ' + u.esc(r[1]) + '</div>'; }).join('') + '</div>';
+      }
+      stateEl.innerHTML = html;
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: iki syscall dünyası",
+    html: `<p class="lead">XNU'da çekirdeğe giriş tek bir komutla (svc/syscall) olur, ama ardında iki ayrı dispatch table, iki ayrı ABI ve iki ayrı hata modeli vardır. Bu ayrım XNU'nun Mach + BSD mirasının en somut izidir ve hem performansı hem güvenlik saldırı yüzeyini (attack surface) şekillendirir. Bu bölüm XNU kaynağına ve Levin'in OS Internals serisine dayanır.</p>
+
+<h3>1. EL0 → EL1: istisnayla geçiş</h3>
+<p>Bir user space programı çekirdek belleğine veya ayrıcalıklı komutlara doğrudan erişemez; CPU donanımla iki exception level arasına bir duvar koyar. Geçiş yalnızca kontrollü bir istisna (exception) ile olur.</p>
+<div class="deflist">
+<div><dt>svc (ARM64)</dt><dd>"Supervisor call" komutu bir synchronous exception üretir. CPU, <code>VBAR_EL1</code>'deki exception vector'e dallanır ve EL0'dan EL1'e geçer.</dd></div>
+<div><dt>syscall (x86-64)</dt><dd>Intel'de karşılığı <code>syscall</code> komutudur; <code>MSR LSTAR</code>'da kayıtlı giriş noktasına atlayarak ring 3'ten ring 0'a geçer.</dd></div>
+<div><dt>sleh_synchronous</dt><dd>XNU'nun giriş noktası. Önce <code>ESR_EL1</code> (exception syndrome) ile istisnanın türünü ayırır: system call mı, page fault mı, yoksa başka bir trap mı.</dd></div>
+</div>
+
+<h3>2. BSD mi, Mach mı? İşaret yolu belirler</h3>
+<p>Çekirdeğe girdikten sonra XNU, çağrı numarasının <strong>işaretine</strong> bakarak iki dünyadan birine dallanır. Bu kural rastgele değil; XNU kaynağında açıkça belgelenmiştir.</p>
+<div class="manpage src-apple"><div class="ref">xnu · syscall_sw.c</div><p class="orig">Don't use numbers 0 through -9. They (along with the positive numbers) are reserved for Unix.</p><p>XNU kaynağındaki bu uyarı mimarinin kalbini özetler: pozitif numaralar (ve 0 ile -9 arası) BSD/Unix tarafına, daha negatif numaralar Mach trap'lerine ayrılmıştır. Numara aralığı, hangi dispatch table'ın kullanılacağını belirler.</p></div>
+<div class="deflist">
+<div><dt>BSD system call</dt><dd>Pozitif numara → <code>unix_syscall</code> → <code>sysent</code> tablosu. POSIX çağrıları burada: read, open, fork. Linux syscall yoluna en çok benzeyen kısım.</dd></div>
+<div><dt>Mach trap</dt><dd>Negatif numara → <code>mach_syscall</code> → <code>mach_trap_table</code>. Mach IPC ve port işlemleri: mach_msg, task_self_trap.</dd></div>
+<div><dt>machine-dependent</dt><dd>Ayrı bir aralık; platforma özel düşük seviye çağrılar (ör. thread-local storage kurulumu).</dd></div>
+</div>
+<div class="manpage src-apple"><div class="ref">xnu · syscall_sw.c</div><p class="orig">/* traps 100-107 reserved for IOKit */</p><p>Mach trap tablosunda bazı aralıklar belirli alt sistemlere ayrılmıştır — örneğin IOKit. Bu, trap tablosunun tek bir düz liste değil, bölümlenmiş bir ABI olduğunu gösterir.</p></div>
+
+<h3>3. copyin / copyout: sınırı geçen bellek</h3>
+<p>Bir syscall argüman olarak user space pointer'ı alır. Çekirdek bu pointer'ı <strong>asla doğrudan</strong> dereference etmez: adres geçersiz olabilir (page fault) veya kötü niyetle çekirdek adresini gösteriyor olabilir. Bunun yerine güvenli kopyalama rutinleri kullanılır.</p>
+<div class="deflist">
+<div><dt>copyin</dt><dd>User space'ten kernel'e güvenli kopyalar; önce adresin gerçekten user address space içinde olduğunu doğrular. ARM64'te PAN (Privileged Access Never) bu kuralı donanımla da zorlar.</dd></div>
+<div><dt>copyout</dt><dd>Kernel'den user space'e sonucu yazar; yine adres doğrulamasıyla.</dd></div>
+</div>
+<p>Bir syscall'ın user pointer'ı doğrulamadan okuması/yazması klasik bir kernel bug sınıfıdır — bu yüzden copyin/copyout mekanizması güvenliğin temel taşıdır.</p>
+
+<h3>4. Dönüş: errno vs kern_return_t</h3>
+<p>İki dünyanın iki ayrı hata modeli de vardır:</p>
+<div class="deflist">
+<div><dt>errno (BSD)</dt><dd>BSD system call'lar POSIX kuralını izler: hata durumunda -1 döner ve <code>errno</code> ayarlanır (ENOENT, EACCES...). Linux'taki modelle aynı.</dd></div>
+<div><dt>kern_return_t (Mach)</dt><dd>Mach rutinleri bir <code>kern_return_t</code> döndürür: <code>KERN_SUCCESS</code> (0), <code>KERN_INVALID_ARGUMENT</code>, <code>KERN_PROTECTION_FAILURE</code>... Başarı 0'dır, hata pozitif bir koddur — errno'dan farklı bir sözleşme.</dd></div>
+</div>
+
+<h3>5. Linux ile fark ve saldırı yüzeyi</h3>
+<p>Linux'ta tek bir <code>sys_call_table</code> ve tek çağrı türü vardır. XNU'da iki ayrı tablo, numara işaretiyle dallanma ve makineye özel üçüncü bir yol bulunur. Güvenlik açısından bu, <strong>iki ayrı giriş = iki ayrı attack surface</strong> demektir. Özellikle port argümanı alan Mach trap'leri, bir right (yetki) doğrulama hatası doğrudan çekirdek içinde güçlü sonuçlar doğurabildiği için iOS kernel araştırmasında tekrar eden bir hedeftir. Burada yalnızca mimariyi anlatıyoruz; somut teknikler için ofansif izleğe bakın.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">Geçiş ve dağıtım kodu XNU kaynağında nettir: istisna giriş noktası <code>osfmk/</code> altındaki makineye özel vektörde başlar, sonra çağrı türüne göre BSD veya Mach dağıtıcısına dallanır. Numaranın işareti bu dallanmayı belirleyen basit ama XNU\'ya özgü kuraldır.</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">svc #0x80</span><span class="where">kullanıcı (EL0)</span><p>Senkron istisna üretir; işlemci EL1\'e geçer.</p></div></li>' +
+      '<li class="boundary"><div>istisna sınırı · EL0 → EL1</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://github.com/apple-oss-distributions/xnu" target="_blank" rel="noopener">sleh_synchronous()</a><span class="where">osfmk/arm64</span><p>İstisnayı sınıflandırır; sistem çağrısıysa dağıtıcıya yollar.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">unix_syscall()</span><span class="where">bsd/dev/arm64</span><p>Pozitif numara: BSD. sysent tablosundan işleyiciyi bulur (örn. read).</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">mach_syscall()</span><span class="where">osfmk/kern</span><p>Negatif numara: Mach. mach_trap_table\'dan işleyiciyi bulur (örn. mach_msg).</p></div></li>' +
+      '</ol>' +
+      '<div class="tbl-wrap" style="margin-top:14px"><table class="bugs"><thead><tr><th>Çağrı türü</th><th>Numara</th><th>Tablo</th><th>Örnek</th></tr></thead><tbody>' +
+      '<tr><td><b>BSD sistem çağrısı</b></td><td>pozitif (&gt; 0)</td><td><code>sysent</code></td><td>read, open, fork</td></tr>' +
+      '<tr><td><b>Mach tuzağı (trap)</b></td><td>negatif (&lt; 0)</td><td><code>mach_trap_table</code></td><td>mach_msg, task_self</td></tr>' +
+      '<tr><td><b>Makineye özel</b></td><td>ayrı aralık</td><td>platform koduna</td><td>thread_set_tsd gibi</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px">Güvenlik açısından: iki ayrı giriş yolu, iki ayrı saldırı yüzeyi (attack surface) demektir. Mach tuzakları, özellikle port argümanları alanlar, iOS çekirdek araştırmasında tekrar eden bir hedeftir; çünkü bir hak (right) doğrulama hatası doğrudan çekirdek içinde güçlü sonuçlar doğurabilir.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Çağrı türlerini say (macOS)', p: 'macOS kaynağında syscalls.master dosyası BSD çağrılarını, mach_traps.h Mach tuzaklarını listeler. İkisinin ayrı olduğunu gör.',
+        shells: [{ label: 'terminal (macOS · temsilî)', copy: 'sysctl kern.ostype kern.osrelease', pre: '<span class="c">$</span> sysctl kern.ostype kern.osrelease\nkern.ostype: Darwin\nkern.osrelease: 24.0.0\n<span class="c"># BSD: bsd/kern/syscalls.master  ·  Mach: osfmk/mach/mach_traps.h</span>' }] },
+      { h3: '2. Linux\'ta tek tabloyu gör (gerçek)', p: 'Linux\'ta çağrıların hepsi tek bir tabloda; negatif/pozitif ayrımı yoktur. Sayıyı kabaca gör.',
+        shells: [{ label: 'terminal (Linux · gerçek)', copy: 'ausyscall --dump 2>/dev/null | wc -l || grep -c "" /usr/include/asm*/unistd_64.h 2>/dev/null || echo "~400 syscall"', pre: '<span class="c">$</span> uname -m; echo "tek sys_call_table, ~400 giriş"\nx86_64\ntek sys_call_table, ~400 giriş' }] },
+      { h3: '3. XNU kaynağında iki yolu oku', p: 'unix_syscall ve mach_syscall\'ı kaynakta bul; aynı istisnadan sonra nasıl ayrıldıklarını izle.',
+        shells: [{ label: 'terminal', copy: 'git clone https://github.com/apple-oss-distributions/xnu && grep -rl "mach_trap_table" xnu/osfmk', pre: '<span class="c">$</span> grep -rl "mach_trap_table" xnu/osfmk\nosfmk/kern/syscall_sw.c' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'XNU bir çağrının BSD mi Mach mı olduğunu neye bakarak anlar?', opts: ['Dosya adına', 'Çağrı numarasının işaretine (pozitif/negatif)', 'Thread önceliğine'], answer: 'Çağrı numarasının işaretine (pozitif/negatif)',
+        ok: 'Doğru. Pozitif numara BSD sysent tablosuna, negatif numara mach_trap_table\'a gider. Basit ama XNU\'ya özgü bir kural.', no: 'İpucu: numaranın bir özelliği yolu belirliyor. İşareti düşün.' },
+      { q: 'ARM64\'te kullanıcıdan çekirdeğe geçişi hangi komut tetikler?', opts: ['svc', 'ret', 'mov'], answer: 'svc',
+        ok: 'Doğru. svc senkron bir istisna üretir, işlemci EL0\'dan EL1\'e geçer. x86\'daki karşılığı syscall komutudur.', no: 'İpucu: "supervisor call". x86\'da syscall, ARM64\'te ne?' },
+      { q: 'Linux ile XNU\'nun syscall mimarisindeki temel fark nedir?', opts: ['Linux\'ta tablo yok', 'XNU\'da iki ayrı dağıtım tablosu var (BSD + Mach)', 'XNU syscall kullanmaz'], answer: 'XNU\'da iki ayrı dağıtım tablosu var (BSD + Mach)',
+        ok: 'Doğru. Linux tek sys_call_table kullanır; XNU, Mach mirası yüzünden sysent ve mach_trap_table olarak ikiye ayrılır.', no: 'İpucu: bu modülün ana fikri — XNU\'da kaç kapı var?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · macOS Modül 11', title: 'Mach zamanlayıcı', desc: 'Thread\'ler, run queue\'lar, öncelikler ve XNU\'nun zamanlama algoritması.' },
+  sources: [
+    { href: 'https://newosxbook.com/TOC2-2.html', text: 'Levin — OS Internals Cilt II', note: 'Bölüm 8: Kernel Architectures' },
+    { href: 'https://github.com/apple-oss-distributions/xnu', text: 'XNU kaynağı', note: 'osfmk/kern/syscall_sw.c' },
+    { href: 'https://developer.apple.com/documentation/kernel', text: 'Apple — Kernel belgeleri' },
+    { href: 'https://www.antid0te.com/training/kernel-internals.html', text: 'Antid0te — Kernel Internals', note: 'Mach trap saldırı yüzeyi' }
+  ],
+  pageTitle: 'XNU Çekirdek Mimarisi'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

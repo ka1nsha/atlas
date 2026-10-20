@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Kernel Heap ve kalloc</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: zone slotları */
+.zone { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 10px; display: grid; gap: 8px; min-width: 0; }
+.zone.active { border-color: var(--track); background: var(--track-soft); }
+.zone-h { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; font-family: var(--f-mono); font-size: 12px; }
+.zone-h b { font-family: var(--f-display); font-size: 14px; }
+.zone-h .zc { color: var(--muted); }
+.slots { display: flex; gap: 6px; flex-wrap: wrap; }
+.slot { width: 64px; border: 1.5px solid var(--line); border-radius: 6px; padding: 6px 4px; text-align: center; font-family: var(--f-mono); font-size: 10.5px; line-height: 1.3; background: var(--bg); }
+.slot .nm { font-weight: 700; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slot .st { color: var(--muted); font-size: 9.5px; }
+.slot.obj-a { border-color: var(--accent); color: var(--accent); }
+.slot.obj-b { border-color: var(--warn); color: var(--warn); }
+.slot.free { border-style: dashed; color: var(--muted); }
+.slot.danger { border-color: var(--bad); color: var(--bad); background: var(--bad-soft); }
+.zonelegend { font-size: 12px; color: var(--muted); display: flex; gap: 12px; flex-wrap: wrap; margin-top: 4px; }
+.zonelegend span { display: inline-flex; gap: 5px; align-items: center; }
+.sw { width: 11px; height: 11px; border-radius: 3px; border: 1.5px solid currentColor; }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'macos',
+  crumbs: 'macos › kernel heap ve kalloc › modül 20',
+  eyebrow: 'Modül 20 · macOS / iOS · İleri çekirdek güvenliği',
+  titleHTML: 'Çekirdek heap\'i: <code>zone</code> ve <code>kalloc</code>',
+  lede: 'XNU çekirdeği kendi nesnelerini — task, thread, port, buffer — özel bir ayırıcıyla tutar. Bu modülde zone allocator (bölge ayırıcı) ve kalloc\'un nasıl çalıştığını, bir use-after-free\'in çekirdek bağlamında neden bu kadar güçlü olduğunu ve kalloc_type (tür ayrımı) savunmasının onu nasıl zorlaştırdığını izleyeceksin.',
+  meta: ['~20 dk', 'ön koşul: UAF (Ofansif Modül 2), Mach VM', 'bağlam: XNU osfmk, Antid0te izleği'],
+  ethic: '<b>İlke.</b> Bu modül çekirdek ayırıcısının <b>mimarisini ve savunmasını</b> anlatır; çalışır/silahlandırılmış exploit kodu, adres ya da offset içermez. Amaç, çekirdek heap zafiyetlerinin neden önemli olduğunu ve modern XNU\'nun onları nasıl azalttığını anlamak.',
+  intuition: {
+    paras: [
+      'Kullanıcı alanında <code>malloc</code> vardı (Linux Modül 5, macOS libmalloc). Çekirdeğin de kendi heap\'ine ihtiyacı var ama farklı kısıtlarla: hız kritik, parçalanma (fragmentation) pahalı ve bir hata tüm sistemi düşürür. XNU bunu <strong>zone allocator (bölge ayırıcı)</strong> ile çözer: aynı boyuttaki (ve modern XNU\'da aynı türdeki) nesneler kendi <strong>bölgesinde (zone)</strong> tutulur.',
+      'Her bölge sabit boyutlu yuvalardan (slot) oluşur; serbest bırakılan yuvalar bir serbest listede (freelist) bekler ve sonraki aynı-boyut isteğine geri verilir. Genel amaçlı küçük tahsisler için <strong>kalloc</strong>, isteği en yakın <strong>boyut sınıfına (size class)</strong> yuvarlayıp uygun bölgeden verir. Bu yeniden kullanım, use-after-free\'i çekirdekte güvenilir ve tehlikeli kılar; <strong>kalloc_type (tür ayrımı / type isolation)</strong> bu riski azaltmak için gelen yeni savunmadır.'
+    ],
+    ideas: [
+      { b: 'Zone = sabit boyut kovası', span: 'Aynı boyuttaki nesneler bir bölgede; serbest yuva (slot) freelist\'te bekler ve geri verilir.' },
+      { b: 'kalloc = boyut sınıfı', span: 'Genel amaçlı tahsis; isteği en yakın boyut sınıfına yuvarlar (ör. 48 bayt → kalloc.64 bölgesi).' },
+      { b: 'kalloc_type = tür ayrımı', span: 'Aynı türdeki nesneleri ayrı bölgelerde tutar; saldırganın farklı türleri çakıştırmasını zorlaştırır.' }
+    ]
+  },
+  lab: {
+    intro: 'Çekirdek önce bir nesne (A türü) tahsis eder, serbest bırakır, sonra aynı boyutta farklı bir nesne (B türü) tahsis eder. Klasik kalloc\'ta B, A\'nın yuvasına düşer — bu bir use-after-free fırsatıdır. Son adımda kalloc_type\'ın bunu nasıl engellediğini gör.',
+    codeLabel: 'çekirdek (kavramsal)', cmd: 'xnu: kalloc / kfree',
+    foot: 'Bölge adları ve yuvalar gösterim içindir. Somut adres/offset yoktur; kavramsaldır.',
+    code: [
+      { t: '<span class="cm">// A türü nesne tahsis (48 bayt)</span>' },
+      { t: 'objA = <span class="f">kalloc_type</span>(struct A);' },
+      { t: '' },
+      { t: '<span class="cm">// A serbest bırakılır ama bir</span>' },
+      { t: '<span class="cm">// işaretçi hâlâ ona bakıyor olabilir</span>' },
+      { t: '<span class="f">kfree</span>(objA);              <span class="cm">// yuva freelist\'e döner</span>', danger: true },
+      { t: '' },
+      { t: '<span class="cm">// aynı boyutta B türü tahsis</span>' },
+      { t: 'objB = <span class="f">kalloc</span>(<span class="n">48</span>);         <span class="cm">// A\'nın yuvasına düşebilir</span>', danger: true }
+    ],
+    steps: [
+      { pc: 2, title: 'A tahsis edilir', active: 'k64', termBad: null,
+        term: ['kalloc.64: objA tahsis @ slot 2'],
+        slots: { k64: [ {k:'free'}, {k:'free'}, {k:'obj-a', nm:'A', st:'tür A'}, {k:'free'}, {k:'free'} ] },
+        note: 'struct A, boyutuna uygun kalloc.64 bölgesinden bir yuva aldı (48 bayt → 64 boyut sınıfına yuvarlandı).' },
+      { pc: 6, title: 'A serbest bırakılır', active: 'k64',
+        term: ['kfree(objA): slot 2 freelist\'e döndü'],
+        slots: { k64: [ {k:'free'}, {k:'free'}, {k:'free', nm:'·', st:'serbest'}, {k:'free'}, {k:'free'} ] },
+        note: 'Yuva serbest listeye (freelist) döndü. Ama koda kalmış sarkan bir işaretçi (dangling pointer) hâlâ bu yuvayı gösteriyor olabilir.', dangling: true },
+      { pc: 9, title: 'B aynı yuvaya düşer', active: 'k64',
+        term: ['kalloc(48): objB @ slot 2 (A\'nın eski yeri)'],
+        slots: { k64: [ {k:'free'}, {k:'free'}, {k:'danger', nm:'B', st:'A sanılıyor!'}, {k:'free'}, {k:'free'} ] },
+        note: 'Aynı boyut sınıfı olduğu için freelist A\'nın yuvasını B\'ye verdi. Sarkan işaretçi artık B\'yi A gibi okuyor/yazıyor — çekirdekte type confusion.', dangling: true, breach: true },
+      { pc: 9, title: 'Neden tehlikeli', active: 'k64',
+        term: ['saldırgan: B\'yi kontrol eder → A alanları ele geçer'],
+        text_override: true,
+        slots: { k64: [ {k:'free'}, {k:'free'}, {k:'danger', nm:'B', st:'kontrol edilen'}, {k:'free'}, {k:'free'} ] },
+        note: 'Saldırgan B\'nin içeriğini seçebilirse, A\'nın bir fonksiyon işaretçisi ya da yetki alanı B verisiyle dolar. Çekirdek bağlamında bu, tam sistem ele geçirmeye giden kapıdır.', breach: true },
+      { pc: 2, title: 'kalloc_type savunması', active: 'split',
+        term: ['kalloc_type: A ve B ayrı bölgelerde'],
+        slots: {
+          kta: [ {k:'free'}, {k:'obj-a', nm:'A', st:'tür A'}, {k:'free'} ],
+          ktb: [ {k:'obj-b', nm:'B', st:'tür B'}, {k:'free'}, {k:'free'} ]
+        },
+        split: true,
+        note: 'kalloc_type aynı türdeki nesneleri kendi bölgesinde tutar. A serbest kalsa bile B farklı bir bölgeden gelir; artık A\'nın yuvasına düşemez. Tür karıştırma (type confusion) saldırısı bu sınıf için kapanır.', safe: true }
+    ],
+    render: function (s, stateEl, u) {
+      function zoneHTML(title, cls, slots, active) {
+        var sl = slots.map(function (o) {
+          var nm = o.nm ? '<span class="nm">' + u.esc(o.nm) + '</span>' : '<span class="nm">&nbsp;</span>';
+          var st = o.st ? '<span class="st">' + u.esc(o.st) + '</span>' : '<span class="st">boş</span>';
+          return '<div class="slot ' + o.k + '">' + nm + st + '</div>';
+        }).join('');
+        return '<div class="zone' + (active ? ' active' : '') + '"><div class="zone-h"><b>' + title + '</b><span class="zc">' + cls + '</span></div><div class="slots">' + sl + '</div></div>';
+      }
+      var html = '<p class="lab-label">Çekirdek bölgeleri (zone)</p>';
+      if (s.split) {
+        html += zoneHTML('kalloc_type · A', 'yalnızca tür A', s.slots.kta, true);
+        html += '<div style="height:8px"></div>';
+        html += zoneHTML('kalloc_type · B', 'yalnızca tür B', s.slots.ktb, true);
+      } else {
+        html += zoneHTML('kalloc.64', 'boyut sınıfı: 64 bayt', s.slots.k64, s.active === 'k64');
+      }
+      html += '<div class="zonelegend">' +
+        '<span><i class="sw" style="color:var(--accent)"></i> tür A</span>' +
+        '<span><i class="sw" style="color:var(--warn)"></i> tür B</span>' +
+        '<span><i class="sw" style="color:var(--bad)"></i> çakışma (UAF)</span>' +
+        '<span><i class="sw" style="color:var(--muted);border-style:dashed"></i> serbest</span></div>';
+      if (s.dangling) html += '<div class="read-out"><div class="verdict breach"><span class="dot"></span><span>sarkan işaretçi (dangling pointer) hâlâ slot 2\'yi gösteriyor</span></div></div>';
+      if (s.safe) html += '<div class="read-out"><div class="verdict safe"><span class="dot"></span><span>tür ayrımı (type isolation) → çakışma engellendi</span></div></div>';
+      if (s.note) html += '<p class="note" style="margin-top:10px">' + u.esc(s.note) + '</p>';
+      stateEl.innerHTML = html;
+      if (s.breach) ATLAS.flash(stateEl.querySelector('.slot.danger'), true);
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: XNU çekirdek heap'i ve kalloc_type savunması",
+    html: `<p class="lead">Kullanıcı alanındaki malloc'un (Linux Modül 5) çekirdek karşılığı tek bir ayırıcı değil, katmanlı bir sistemdir: sabit boyutlu nesneler için zone allocator, genel amaçlı küçük tahsisler için kalloc, ve son yıllarda eklenen type-aware savunma kalloc_type. Bu bölüm bu katmanların nasıl çalıştığını ve neden bir çekirdek use-after-free'inin bu kadar değerli olduğunu, Apple'ın kendi belgelerine ve XNU kaynağına dayanarak açar.</p>
+
+<h3>1. Zone allocator: sabit boyut kovaları</h3>
+<p>XNU'nun temel çekirdek ayırıcısı <strong>zone allocator</strong>'dır (<code>osfmk/kern/zalloc.c</code>). Fikir basit: sık tahsis edilen her nesne tipi — task, thread, ipc_port, vm_map_entry — kendi <strong>zone</strong>'unda tutulur. Her zone yalnızca tek bir sabit eleman boyutuna (element size) sahiptir ve bellekten chunk'lar hâlinde sayfa (page) alır; o chunk sabit boyutlu slot'lara bölünür. Bu tasarım fragmentation'ı düşük tutar ve tahsis/serbest bırakma işlemini neredeyse sabit zamanlı yapar: serbest bir slot her zaman o zone'un freelist'inin başındadır.</p>
+<div class="manpage src-apple"><div class="ref">Apple Security · XNU memory safety</div><p class="orig">The zone allocator, which serves smaller sized allocations (mostly sub-page)… The zone subsystem monitors its chunks for usage, and if a chunk is made only of free elements, then the memory, both physical and virtual, may be reclaimed.</p><p>Yani bir zone chunk'ı tamamen boşalırsa, fiziksel ve sanal bellek geri alınabilir — ama normal işleyişte serbest bir slot, aynı zone'dan gelen bir sonraki isteğe geri verilir. İşte bu "aynı zone → aynı slot geri gelir" davranışı, lab'da gördüğün use-after-free'in motorudur.</p></div>
+
+<h3>2. kalloc: boyut sınıfına yuvarlama</h3>
+<p>Her tahsisin kendi tipli zone'u yoktur. Değişken boyutlu, genel amaçlı küçük istekler için <strong>kalloc</strong> kullanılır. kalloc bir size class ailesidir: isteği en yakın üst boyut sınıfına yuvarlar ve o sınıfın zone'undan verir. Örneğin 48 baytlık bir istek <code>kalloc.64</code> zone'una düşer (lab'da gördüğün gibi). Yuvarlama mantığı, az sayıda zone ile geniş bir boyut aralığını karşılamayı sağlar; bedeli ise iç parçalanmadır (internal fragmentation — 48 bayt istedin, 64 bayt tüketti).</p>
+<div class="deflist">
+<div><dt>zalloc / zfree</dt><dd>En alttaki ilkel (primitive): belirli bir zone'dan tek bir sabit boyutlu eleman al / geri ver. Tüm üst ayırıcılar buna iner.</dd></div>
+<div><dt>kalloc / kfree</dt><dd>Boyuta göre uygun kalloc.N zone'unu seçen genel amaçlı sarmalayıcı (wrapper). Değişken boyut burada size class'a yuvarlanır.</dd></div>
+<div><dt>size class</dt><dd>Önceden tanımlı boyut kademeleri (… 32, 48, 64, 96 …). Aynı size class'a düşen farklı boyutlar aynı zone'u, dolayısıyla aynı slot havuzunu paylaşır.</dd></div>
+<div><dt>freelist</dt><dd>Zone başına serbest slot listesi. kfree edilen slot listenin başına eklenir; sonraki zalloc onu geri verir. Klasik UAF'ın "yuva geri geldi" adımı tam olarak budur.</dd></div>
+</div>
+
+<h3>3. Neden çekirdek UAF'ı bu kadar değerli?</h3>
+<p>Bir use-after-free'de (kavramsal olarak Ofansif Modül 2'deki kullanıcı-alanı UAF'ının aynısı) serbest bırakılmış bir nesneye sarkan işaretçi (dangling pointer) hâlâ bakar. Aynı boyut sınıfından yeni bir nesne tahsis edilirse, freelist eski slot'u yeni nesneye verir ve iki farklı tip aynı belleği paylaşır. Saldırgan yeni nesnenin içeriğini kontrol edebilirse, eski nesnenin bir function pointer'ı ya da yetki alanı artık saldırgan verisiyle doludur. Çekirdek en yüksek ayrıcalık seviyesinde çalıştığı için buradaki bir okuma/yazma primitifi, kod imzalama (code signing) ve sandbox dâhil tüm korumaları aşmaya giden yoldur. Apple bu gerçeği açıkça ifade eder:</p>
+<div class="manpage src-apple"><div class="ref">Apple Security · XNU memory safety</div><p class="orig">Almost all attacks hinge at some point on establishing a type confusion… The security benefit comes from the fact that a confusion between pure data and control is almost always exploitable.</p><p>Bu cümle savunma tasarımının çıkış noktasıdır: eğer saldırganlar neredeyse her zaman bir <strong>type confusion</strong> kurmak zorundaysa, savunma da tam o adımı — "farklı tipleri aynı slot'ta çakıştırma" imkânını — ortadan kaldırmaya odaklanmalıdır.</p></div>
+
+<h3>4. kalloc_type: derleme zamanı tür ayrımı</h3>
+<p>Modern XNU'nun cevabı <strong>kalloc_type</strong>'tır. Fikir, her tahsis edilen C tipinin bir imzasını (signature) derleyicide statik olarak üretmek ve aynı imzaya sahip nesneleri ayrı zone'larda toplamaktır. Böylece A tipi ve B tipi farklı zone'lara düşer; A serbest kalsa bile B onun slot'una <em>düşemez</em>, çünkü B başka bir zone'dan gelir. Lab'ın son adımındaki "çakışma engellendi" durumu budur.</p>
+<div class="manpage src-apple"><div class="ref">Apple Security · XNU memory safety</div><p class="orig">The basic idea is to use the compiler to statically generate a "signature" of each type that gets allocated.</p><p>İmza derleme zamanında bilindiği için, tür ayrımı çalışma zamanında ek bir kontrol maliyeti getirmeden sağlanır. Bu, type confusion'ı belirli bir tahsis sınıfı için yapısal olarak kapatır — saldırgan artık istediği iki tipi aynı havuzda buluşturamaz.</p></div>
+<p>İkinci bir ayrım daha vardır: <strong>veri</strong> tahsisleriyle <strong>işaretçi/kontrol</strong> tahsislerini ayırmak. XNU bunun için ayrı bir "data" heap'i tanıttı:</p>
+<div class="manpage src-apple"><div class="ref">Apple Security · XNU memory safety</div><p class="orig">We also added a new heap, called the "data" heap (KHEAP_DATA_BUFFERS), to hold allocations made of pure data… a new kalloc_data(...) family of calls translates to kheap_alloc(KHEAP_DATA_BUFFERS, ...).</p><p>Saf veri (örneğin bir kullanıcıdan gelen bayt tamponu) ile function pointer içeren kontrol yapıları aynı bellekte buluşamazsa, saldırganın en işlek primitifi olan "veri ↔ kontrol karışıklığı" kırılır. <code>kalloc_data</code> veri için, <code>kalloc_type</code> tipli yapılar içindir.</p></div>
+
+<h3>5. Tamamlayıcı savunma: zone_require</h3>
+<p>Tür ayrımı tahsis tarafını sertleştirir; <strong>zone_require</strong> ise kullanım tarafını denetler. Çekirdek, kritik bir nesneyi kullanmadan önce "bu işaretçi gerçekten beklediğim zone'dan mı geliyor?" diye doğrulayabilir. Saldırgan bir nesneyi yanlış tipte bir slot'a yerleştirmeye çalışırsa, bu kontrol tutarsızlığı yakalar ve sistem güvenli şekilde panic eder — sessiz bir ele geçirme yerine denetlenebilir bir çökme. zone_require, kalloc_type ile birlikte "saldırganın istediği nesneyi istediği yuvaya düşürmesi" (heap grooming) adımını iki ayrı noktadan kırar.</p>
+<p>Özetle XNU heap güvenliği bir denge değil, katmanlı bir caydırma zinciridir: zone izolasyonu fragmentation'ı düşürürken tahsisi hızlandırır, kalloc_type ve kalloc_data type confusion'ı yapısal olarak zorlaştırır, zone_require de kalan kaçış yollarını çalışma zamanında yakalar. Bu modül mekanizmayı ve savunmayı anlatır; sömürü tekniklerinin kendisi Ofansif izlekte kavramsal düzeyde ele alınır.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">Çekirdek tahsisi XNU\'da <code>osfmk/kern/zalloc.c</code> (zone allocator) ve <code>kalloc</code> üstünde yürür. Modern XNU, tür güvenliği için <code>kalloc_type</code>\'ı derleme zamanında zorlar.</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Ayırıcı</th><th>Ne için</th><th>Güvenlik özelliği</th></tr></thead><tbody>' +
+      '<tr><td><b>zone allocator</b> (zalloc)</td><td>Sabit boyutlu, sık kullanılan çekirdek nesneleri (task, thread, port)</td><td>Bölge başına izolasyon; zone_require ile tür/bölge doğrulama</td></tr>' +
+      '<tr><td><b>kalloc</b></td><td>Genel amaçlı, değişken boyutlu küçük tahsisler</td><td>Boyut sınıfına yuvarlar; data/pointer ayrımı (kalloc_data vs kalloc_type)</td></tr>' +
+      '<tr><td><b>kalloc_type</b></td><td>Tür bilgisiyle tahsis (struct türü derlemede bilinir)</td><td>Tür ayrımı: aynı türler aynı bölgede → farklı türleri çakıştırma (type confusion) zorlaşır</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px"><strong>Neden güvenlik araştırmasının kalbi?</strong> Bir çekirdek use-after-free\'i (Ofansif Modül 2\'deki kullanıcı-alanı UAF\'ının çekirdek sürümü) saldırgana çekirdek belleğinde okuma/yazma primitifi verebilir — bu da tam ayrıcalık demektir. Saldırgan, serbest kalan bir nesnenin yuvasına kendi kontrol ettiği bir nesneyi düşürmeye (heap grooming) çalışır. kalloc_type ve zone_require gibi savunmalar tam da bu "yuvaya istediğini düşürme" adımını kırar.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Bölgeleri listele (macOS)', p: 'zprint, çekirdek bölgelerini, eleman boyutlarını ve kullanım sayılarını gösterir; kalloc.* ve tür bölgelerini görürsün.',
+        shells: [{ label: 'terminal (macOS · temsilî)', copy: 'sudo zprint | head', pre: '<span class="c">$</span> sudo zprint | head\n<span class="c"># ZONE NAME            ELEM_SIZE  ...  ALLOC</span>\n<span class="c"># kalloc.64                  64  ...</span>\n<span class="c"># kalloc.type.var ...        ...</span>\n<span class="c"># proc                      ...  ...</span>' }] },
+      { h3: '2. Kullanıcı-alanı UAF\'ına geri dön', p: 'Çekirdek heap\'inin mantığı Ofansif Modül 2\'deki tcache UAF\'ıyla aynıdır. Aradaki tek fark: çekirdekte hata tüm sistemi etkiler. O modüldeki güvenli deneyi tekrar çalıştırıp "aynı boyut → aynı yuva" fikrini pekiştir.',
+        shells: [{ label: 'terminal (kavram · kendi makinende güvenli)', copy: 'gcc -fsanitize=address -g -o uaf uaf.c && ./uaf', pre: '<span class="c"># kullanıcı-alanı eşdeğeri: ASan UAF\'ı yakalar</span>\n<span class="c">$</span> ./uaf   # Ofansif Modül 2\'deki örnek' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Klasik <code>kalloc</code> bir nesne serbest bırakılıp aynı boyutta yeni bir nesne istendiğinde ne yapar?', opts: ['Her zaman yeni bölge açar', 'Serbest kalan yuvayı yeni nesneye geri verebilir', 'İsteği reddeder'], answer: 'Serbest kalan yuvayı yeni nesneye geri verebilir',
+        ok: 'Doğru. Aynı boyut sınıfı olduğu için freelist eski yuvayı geri verir. Sarkan bir işaretçi varsa bu, use-after-free / type confusion fırsatıdır.', no: 'İpucu: freelist aynı boyuttaki bir sonraki isteğe ne verir?' },
+      { q: 'kalloc_type (tür ayrımı) bir saldırgan için neyi zorlaştırır?', opts: ['Bölgeyi listelemeyi', 'Farklı türdeki iki nesneyi aynı yuvada çakıştırmayı', 'TLB kullanımını'], answer: 'Farklı türdeki iki nesneyi aynı yuvada çakıştırmayı',
+        ok: 'Doğru. Aynı türler aynı bölgede tutulduğu için serbest kalan A\'nın yuvasına farklı türde B düşemez; type confusion bu sınıf için kapanır.', no: 'İpucu: aynı türler ayrı bölgelere konursa farklı türler çakışabilir mi?' },
+      { q: 'Bir çekirdek use-after-free\'i neden kullanıcı-alanı UAF\'ından daha kritiktir?', opts: ['Daha hızlı olduğu için', 'Çekirdek belleğinde R/W → tam sistem ayrıcalığı verebildiği için', 'ASan yakalayamadığı için'], answer: 'Çekirdek belleğinde R/W → tam sistem ayrıcalığı verebildiği için',
+        ok: 'Doğru. Çekirdek en yüksek ayrıcalık seviyesidir; oradaki okuma/yazma primitifi tüm korumaları (imza, sandbox) devre dışı bırakmaya giden yoldur.', no: 'İpucu: çekirdek hangi ayrıcalık seviyesinde çalışır?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · macOS Modül 21', title: 'Donanım destekli korumalar', desc: 'KTRR/CTRR, APRR/SPRR, PPL ve GXF: Apple Silicon çekirdeği belleğini donanımla nasıl kilitler?' },
+  sources: [
+    { href: 'https://www.antid0te.com/training/kernel-internals.html', text: 'Antid0te — Kernel Internals', note: 'kalloc zone\'ları, bug sınıfları' },
+    { href: 'https://newosxbook.com/TOC2-2.html', text: 'Levin — OS Internals Cilt II', note: 'Mach bellek yönetimi' },
+    { href: 'https://github.com/apple-oss-distributions/xnu', text: 'XNU kaynağı', note: 'osfmk/kern/zalloc.c, kalloc' },
+    { href: 'https://security.apple.com/blog/towards-the-next-generation-of-xnu-memory-safety/', text: 'Apple Security — XNU bellek güvenliği', note: 'kalloc_type gerekçesi' }
+  ],
+  pageTitle: 'Kernel Heap ve kalloc'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

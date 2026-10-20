@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>XNU Genel Yapısı</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: XNU katman yığını */
+.xnu { display: grid; gap: 8px; }
+.layer { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 10px 12px; display: grid; gap: 4px; min-width: 0; opacity: .5; transition: opacity .2s, border-color .2s, background .2s; }
+.layer.lit { opacity: 1; border-color: var(--track); background: var(--track-soft); }
+.layer .lh { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.layer .lh b { font-family: var(--f-display); font-size: 16px; }
+.layer .lh .mono { font-family: var(--f-mono); font-size: 11.5px; color: var(--muted); }
+.layer p { margin: 0; font-size: 13px; color: var(--muted); }
+.layer.lit p { color: var(--fg); }
+.route { font-family: var(--f-mono); font-size: 12px; color: var(--track); font-weight: 700; margin-top: 2px; }
+.hw { border-style: dashed; border-color: var(--muted); background: var(--sunk); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'macos',
+  crumbs: 'macos › xnu › modül 1',
+  eyebrow: 'Modül 1 · macOS / iOS · Çekirdek mimarisi',
+  titleHTML: '<code>XNU</code>: üç mirasın tek çekirdeği',
+  lede: 'macOS, iOS, tvOS ve watchOS\'un hepsi aynı çekirdeği, XNU\'yu paylaşır. XNU tek parça değildir: bir Mach mikroçekirdeği (microkernel), bir BSD katmanı ve C++ ile yazılmış IOKit sürücü çatısının birleşimidir. Bu modül üçünün nasıl bir arada çalıştığını ve bir isteğin hangi katmana gittiğini gösterir.',
+  meta: ['~15 dk', 'ön koşul: temel çekirdek kavramı', 'bağlam: Darwin / XNU'],
+  intuition: {
+    paras: [
+      'XNU açılımı "X is Not Unix". Kökeni NeXTSTEP\'e (ve dolayısıyla Mach + BSD\'ye) dayanır; Apple 1997\'de NeXT\'i satın alınca bu çekirdek Mac OS X\'in temeli oldu. Bugün aynı çekirdek, telefondan saate kadar tüm Apple cihazlarında çalışır; yalnızca yapılandırma ve sürücüler değişir.',
+      'XNU\'ya "melez çekirdek (hybrid kernel)" denir çünkü Mach\'ın mikroçekirdek tasarımını (her şey port üzerinden mesajlaşır) alıp performans için BSD\'yi ve sürücüleri aynı adres uzayına, çekirdek içine koyar. Yani Mach\'ın soyutlamaları vardır ama Linux gibi monolitik çalışır.'
+    ],
+    ideas: [
+      { b: 'Mach', span: 'Alttaki çekirdek: task, thread, port (IPC) ve sanal bellek (VM). Zamanlama ve mesajlaşmanın temeli.' },
+      { b: 'BSD', span: 'Üstteki POSIX yüzü: süreçler, kullanıcılar, dosya sistemi (VFS), ağ ve sistem çağrıları. Unix\'in tanıdık tarafı.' },
+      { b: 'IOKit', span: 'C++ ile yazılmış sürücü çatısı (driver framework): aygıtlar, güç yönetimi, sürücü eşleştirme.' }
+    ]
+  },
+  lab: {
+    intro: 'XNU\'nun üç bileşenini aşağıdan yukarıya kuralım, sonra iki farklı isteğin (bir POSIX syscall\'ı ve bir Mach trap\'i) hangi katmana indiğini izleyelim. Aydınlanan katman o adımda aktif olandır.',
+    codeLabel: 'istek yolu', cmd: 'uname -v  (Darwin)',
+    foot: 'Darwin sürüm çıktısı temsilîdir; gerçek değer cihaza/sürüme göre değişir. Linux karşılaştırması gerçek çıktıdır.',
+    code: [
+      { t: '<span class="cm">// POSIX tarafı (BSD)</span>' },
+      { t: 'fd = <span class="f">open</span>(<span class="s">"/etc/hosts"</span>, O_RDONLY);' },
+      { t: 'n  = <span class="f">read</span>(fd, buf, <span class="n">128</span>);' },
+      { t: '' },
+      { t: '<span class="cm">// Mach tarafı</span>' },
+      { t: '<span class="f">mach_port_allocate</span>(self, RECEIVE, &amp;p);' },
+      { t: '<span class="f">mach_msg</span>(&amp;msg, SEND, ...);' },
+      { t: '' },
+      { t: '<span class="cm">// IOKit tarafı</span>' },
+      { t: 'svc = <span class="f">IOServiceGetMatchingService</span>(...);' }
+    ],
+    steps: [
+      { pc: null, title: 'Mach: temel katman', term: ['kern.ostype: Darwin'],
+        text: 'En altta Mach var: task (sürecin Mach karşılığı), thread, port (tüm IPC\'nin temeli) ve sanal bellek yöneticisi (VM). Zamanlayıcı (scheduler) da buradadır. Mach kendi başına "program çalıştırma" kavramını bilmez; onu BSD ekler.',
+        lit: ['mach'], route: '' },
+      { pc: null, title: 'BSD: POSIX yüzü', term: ['kern.ostype: Darwin'],
+        text: 'Mach\'ın üstüne BSD katmanı oturur: süreç (process) ve kullanıcı kavramı, sinyaller, dosya sistemi soyutlaması (VFS), ağ yığını (network stack) ve sistem çağrıları (system calls). Bir Mach task\'ı + BSD proc yapısı birlikte, bildiğin Unix sürecini oluşturur.',
+        lit: ['mach', 'bsd'], route: '' },
+      { pc: null, title: 'IOKit: sürücüler', term: ['kern.ostype: Darwin'],
+        text: 'En üstte IOKit: C++ ile yazılmış sürücü çatısı. Aygıtları bir ağaç (I/O Registry) olarak modeller, sürücüleri donanıma eşler (matching), güç yönetimini yürütür. Linux\'un C ile yazılmış sürücü modelinin Apple karşılığıdır.',
+        lit: ['mach', 'bsd', 'iokit'], route: '' },
+      { pc: [2, 3], title: 'Bir POSIX syscall nereye gider?', term: ['open()/read() → BSD syscall tablosu'],
+        text: '<code>open()</code> ve <code>read()</code> gibi çağrılar BSD katmanına iner: BSD sistem çağrı tablosundan geçip VFS\'e ulaşır. Tanıdık Unix yüzü burasıdır; Linux\'taki syscall yoluna çok benzer.',
+        lit: ['bsd'], route: 'syscall → BSD → VFS' },
+      { pc: [6, 7], title: 'Bir Mach trap nereye gider?', term: ['mach_msg() → Mach trap → ipc'],
+        text: '<code>mach_msg</code> ve <code>mach_port_allocate</code> gibi çağrılar BSD\'yi atlar: doğrudan Mach trap sınırından geçip IPC alt sistemine iner. XNU\'nun iki ayrı çağrı dünyası (BSD syscall vs Mach trap) vardır; sayıları bile farklı aralıktadır.',
+        lit: ['mach'], route: 'Mach trap → ipc_mqueue' },
+      { pc: 10, title: 'Linux ile karşılaştır', term: ['Linux: monolitik', 'XNU: melez (hybrid)'],
+        text: 'Linux monolitik bir çekirdektir: tek tasarım, tek çağrı türü (syscall), sürücüler çekirdek modülleri. XNU ise Mach\'ın mikroçekirdek soyutlamalarını taşır ama performans için her şeyi tek adres uzayında tutar — bu yüzden "melez" denir. IOKit\'in C++ olması da onu Linux\'tan ayırır.',
+        lit: ['mach', 'bsd', 'iokit'], route: 'XNU = Mach + BSD + IOKit' }
+    ],
+    render: function (s, stateEl, u) {
+      var layers = [
+        { id: 'iokit', b: 'IOKit', mono: 'C++ · sürücüler', p: 'Sürücü çatısı, I/O Registry, güç yönetimi.' },
+        { id: 'bsd', b: 'BSD', mono: 'POSIX · syscall', p: 'Süreç, kullanıcı, VFS, ağ, sistem çağrıları.' },
+        { id: 'mach', b: 'Mach', mono: 'microkernel', p: 'task, thread, port (IPC), sanal bellek, zamanlayıcı.' }
+      ];
+      var html = '<p class="lab-label">XNU katmanları</p><div class="xnu">';
+      layers.forEach(function (L) {
+        var lit = s.lit && s.lit.indexOf(L.id) >= 0;
+        html += '<div class="layer' + (lit ? ' lit' : '') + '"><div class="lh"><b>' + L.b + '</b><span class="mono">' + L.mono + '</span></div><p>' + L.p + '</p></div>';
+      });
+      html += '<div class="layer hz hw" style="opacity:1"><div class="lh"><b style="font-size:14px">Donanım (hardware)</b><span class="mono">x86-64 / ARM64</span></div></div>';
+      html += '</div>';
+      if (s.route) html += '<p class="route">' + u.esc(s.route) + '</p>';
+      stateEl.innerHTML = html;
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: XNU neden hybrid kernel?",
+    html: `<p class="lead">XNU, "X is Not Unix" — ama aslında derinden Unix'tir. İki büyük çekirdek geleneğini (Mach microkernel ve BSD) tek bir binary içinde birleştirir. Bu melez yapı, macOS ve iOS'un davranışının çoğunu açıklar: neden iki ayrı system call dünyası var, neden her process'in hem bir task hem bir proc kimliği var, neden sürücüler C++ ile yazılır. Bu bölüm Apple'ın açık kaynak XNU deposuna ve Jonathan Levin'in OS Internals serisine dayanır.</p>
+
+<h3>1. Üç miras: Mach + BSD + IOKit</h3>
+<p>XNU tek bir kernel binary olarak derlenir, ama kaynak ağacı net biçimde ayrı altsistemlere bölünür. Her biri farklı bir kökenden gelir ve farklı bir sorumluluk taşır.</p>
+<div class="deflist">
+<div><dt>osfmk/ (Mach)</dt><dd>Carnegie Mellon'daki Mach microkernel'inden gelir. task, thread, IPC (Mach port), virtual memory ve scheduling'in çekirdeğidir. Sistemin en alt katmanı.</dd></div>
+<div><dt>bsd/ (BSD layer)</dt><dd>FreeBSD'den türetilmiştir. POSIX API'si, process (proc), signal, VFS (dosya sistemi), network stack ve BSD system call'ları burada yaşar. Mach'ın üstünde, tanıdık Unix yüzü.</dd></div>
+<div><dt>iokit/ + libkern/</dt><dd>IOKit, sürücüler için C++ (Embedded C++) framework'üdür; libkern onun temel sınıflarını sağlar. Linux'un C sürücü modelinden farklı olarak nesne yönelimli.</dd></div>
+<div><dt>pexpert/</dt><dd>Platform Expert: platforma özel kod — interrupt handling, atomics, boot. Donanım farklılıklarını soyutlar (Intel vs Apple Silicon).</dd></div>
+</div>
+<div class="manpage src-apple"><div class="ref">xnu · README</div><p class="orig">XNU is a hybrid kernel combining the Mach kernel developed at Carnegie Mellon University with components from FreeBSD and a C++ API for writing drivers called IOKit.</p><p>Apple'ın kendi tanımı: Mach çekirdeği + FreeBSD bileşenleri + IOKit. "Hybrid" kelimesi tam da bu birleşimi anlatır — saf microkernel de değil, saf monolitik de değil.</p></div>
+
+<h3>2. "Hybrid kernel" tam olarak ne demek?</h3>
+<p>Mach aslında bir <strong>microkernel</strong> olarak tasarlandı: fikir, servisleri (dosya sistemi, sürücüler, network) çekirdek dışında, ayrı user-space server'larda çalıştırmak ve aralarında Mach message ile konuşmaktı. Bu tasarım temiz ama yavaştır — her servis çağrısı bir IPC round-trip demektir.</p>
+<p>XNU bu saflıktan vazgeçer: Mach ve BSD katmanları <strong>aynı address space</strong>'te, tek bir kernel içinde çalışır. Yani Mach'ın soyutlamaları (task, port, VM) korunur ama servisler çekirdeğin içindedir, IPC maliyeti ödenmez. İşte "hybrid" bu: microkernel'in <em>yapısı</em>, monolitik kernel'in <em>performansı</em>. Mach IPC hâlâ gerçektir ve her yerde kullanılır (XPC, launchd, sürücüler bunun üstüne kuruludur — bkz. Mach port ve XPC modülleri), ama çekirdek-içi olduğu için ucuzdur.</p>
+
+<h3>3. İki ayrı system call dünyası</h3>
+<p>XNU'nun melez doğasının en somut sonucu: tek bir syscall tablosu yoktur, iki ayrı çağrı mekanizması vardır. Çağrı numarasının <strong>işareti</strong> hangi dünyaya gidileceğini belirler.</p>
+<div class="deflist">
+<div><dt>BSD system call</dt><dd>Pozitif numara. Tanıdık POSIX çağrıları: <code>open</code>, <code>read</code>, <code>fork</code>, <code>mmap</code>. <code>bsd/kern/syscalls.master</code>'dan üretilir, Linux'taki gibi bir tabloya (sysent) girer.</dd></div>
+<div><dt>Mach trap</dt><dd>Negatif numara. Mach'ın kendi çağrıları: <code>mach_msg</code>, <code>task_self_trap</code>, <code>mach_port_allocate</code>. Ayrı bir tabloya (mach_trap_table) gider. IPC ve düşük seviye primitive'ler buradan geçer.</dd></div>
+</div>
+<p>Bu yüzden bir process'in hem bir BSD <strong>proc</strong> yapısı (PID, signal, dosya) hem de bir Mach <strong>task</strong> yapısı (port namespace, VM map, thread'ler) vardır — ikisi birbirine bağlıdır ama ayrı kimliklerdir. BSD modülünde bu "dual identity" ayrıntılı işlenir.</p>
+
+<h3>4. Darwin ve tek çekirdek, çok platform</h3>
+<p>XNU, Apple'ın açık kaynak <strong>Darwin</strong> temelinin çekirdeğidir ve <code>apple-oss-distributions/xnu</code> deposunda yayımlanır (tamamen değil — bazı Apple Silicon parçaları kapalıdır). Aynı çekirdek macOS, iOS, iPadOS, tvOS, watchOS ve visionOS'ta çalışır; platform farkları büyük ölçüde pexpert ve derleme bayraklarıyla ele alınır. Bu, iOS güvenlik araştırmasının neden büyük ölçüde macOS üzerinde yapılabildiğini de açıklar — çekirdek ortaktır.</p>
+
+<h3>5. Linux ile karşılaştırma</h3>
+<p>Linux saf bir <strong>monolitik</strong> kernel'dir: tek bir tasarım, tek bir syscall tablosu, C sürücü modeli, process = tek kimlik. XNU ise iki geleneği birleştirir. Pratik farklar: XNU'da IPC birinci sınıf bir vatandaştır (Mach port), sürücüler C++'tır (IOKit), ve bir "process" iki katmanlı bir nesnedir (task + proc). Linux'ta bunların karşılığı sırasıyla pipe/socket/eventfd, C <code>file_operations</code>, ve tek bir <code>task_struct</code>'tır. İkisi de modern, hızlı çekirdeklerdir; farklı tasarım felsefelerinden aynı pratik sonuçlara ulaşırlar.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">XNU tek bir ikili (binary) olarak derlenir ama kaynak ağacı net biçimde üçe ayrılır: <code>osfmk/</code> (Mach), <code>bsd/</code> (BSD) ve <code>iokit/</code> (IOKit). Apple kaynağı tam olarak yayımlar; <code>apple-oss-distributions/xnu</code> deposundan okunabilir.</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Bileşen</th><th>Kökeni</th><th>Sorumluluğu</th></tr></thead><tbody>' +
+      '<tr><td><b>Mach</b> <span class="mono">osfmk/</span></td><td>CMU Mach mikroçekirdeği</td><td>task, thread, port (IPC), sanal bellek, zamanlama</td></tr>' +
+      '<tr><td><b>BSD</b> <span class="mono">bsd/</span></td><td>FreeBSD türevi</td><td>POSIX süreç/kullanıcı, VFS, ağ, sistem çağrıları, sinyaller</td></tr>' +
+      '<tr><td><b>IOKit</b> <span class="mono">iokit/</span></td><td>Apple (Embedded C++)</td><td>sürücü modeli, I/O Registry, güç yönetimi</td></tr>' +
+      '<tr><td><b>libkern</b> <span class="mono">libkern/</span></td><td>Apple</td><td>IOKit için C++ çalışma zamanı ve temel sınıflar</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px">Neden önemli? Bir güvenlik araştırmacısı için "bu kod hangi katmanda?" sorusu, hangi saldırı yüzeyine (attack surface) baktığını belirler: Mach port hataları IPC\'de, dosya sistemi hataları BSD/VFS\'te, sürücü hataları IOKit\'te yaşar. Aynı çekirdeğin iPhone\'da da çalışması, masaüstünde bulunan bir hatanın mobilde de geçerli olabileceği anlamına gelir.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Çekirdek kimliğini sor (macOS)', p: 'macOS\'ta çekirdeğin Darwin sürümünü ve türünü sysctl ile öğren.',
+        shells: [{ label: 'terminal (macOS · temsilî)', copy: 'uname -v; sysctl kern.ostype kern.osrelease kern.version', pre: '<span class="c">$</span> uname -v\nDarwin Kernel Version 24.0.0: ... root:xnu-11215.1.10~2/RELEASE_ARM64_T6000\n<span class="c">$</span> sysctl kern.ostype kern.osrelease\nkern.ostype: Darwin\nkern.osrelease: 24.0.0' }] },
+      { h3: '2. Linux ile karşılaştır (gerçek)', p: 'Aynı soruyu Linux\'a sor; tek "Linux" çekirdeği, tek sürüm şeması. XNU\'daki üç-mirası burada görmezsin.',
+        shells: [{ label: 'terminal (Linux · gerçek)', copy: 'uname -a', pre: '<span class="c">$</span> uname -a\nLinux vm 6.18.44-fc-v139 #1 SMP PREEMPT_DYNAMIC x86_64 GNU/Linux' }] },
+      { h3: '3. XNU kaynağını gez', p: 'Apple kaynağı açık. osfmk/, bsd/ ve iokit/ klasörlerine bakarak üç katmanı dosya düzeyinde gör.',
+        shells: [{ label: 'terminal', copy: 'git clone https://github.com/apple-oss-distributions/xnu && ls xnu', pre: '<span class="c">$</span> ls xnu\nosfmk/   bsd/   iokit/   libkern/   pexpert/   ...' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'XNU neden "melez (hybrid)" çekirdek sayılır?', opts: ['Hem Windows hem Unix olduğu için', 'Mach soyutlamalarını taşıyıp her şeyi tek adres uzayında çalıştırdığı için', 'Yarısı kullanıcı alanında olduğu için'], answer: 'Mach soyutlamalarını taşıyıp her şeyi tek adres uzayında çalıştırdığı için',
+        ok: 'Doğru. Mach mikroçekirdek tasarımına sahiptir ama performans için BSD ve sürücüler çekirdek içinde, tek adres uzayında çalışır — monolitik gibi davranan bir mikroçekirdek.', no: 'İpucu: mikroçekirdek tasarımı + monolitik yerleşim. İkisinin karışımı.' },
+      { q: '<code>read()</code> çağrısı XNU\'da hangi katmana iner?', opts: ['Mach', 'BSD', 'IOKit'], answer: 'BSD',
+        ok: 'Doğru. POSIX sistem çağrıları BSD katmanına gider; oradan VFS\'e. Mach tarafı mach_msg gibi trap\'lerle ayrı bir dünyadır.', no: 'İpucu: read() bir POSIX çağrısıdır. Unix yüzü hangi katman?' },
+      { q: 'IOKit\'i Linux\'un sürücü modelinden ayıran en belirgin fark nedir?', opts: ['C++ ile yazılmış olması', 'Kullanıcı alanında çalışması', 'Port kullanmaması'], answer: 'C++ ile yazılmış olması',
+        ok: 'Doğru. IOKit, nesne yönelimli C++ ve libkern çalışma zamanı üzerine kuruludur; Linux sürücüleri ise C ile yazılır.', no: 'İpucu: dil farkı. Linux sürücüleri C, IOKit ne?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · macOS Modül 2', title: 'Mach task, thread ve port\'lar', desc: 'Sürecin Mach karşılığı: task\'lar, thread\'ler ve tüm IPC\'nin temeli olan port hakları.' },
+  sources: [
+    { href: 'https://newosxbook.com/TOC2-2.html', text: 'Levin — OS Internals Cilt II', note: 'Çekirdek modu' },
+    { href: 'https://github.com/apple-oss-distributions/xnu', text: 'XNU kaynağı', note: 'osfmk / bsd / iokit' },
+    { href: 'https://developer.apple.com/documentation/kernel', text: 'Apple — Kernel belgeleri' },
+    { href: 'https://www.antid0te.com/training/kernel-internals.html', text: 'Antid0te — Kernel Internals', note: 'güvenlik görünümü' }
+  ],
+  pageTitle: 'XNU Genel Yapısı'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Windows Yürütme Modeli</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: IRQL merdiveni ve yetenek tablosu */
+.irql-ladder { display: grid; gap: 6px; }
+.irql-row { display: flex; align-items: center; gap: 10px; border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 8px 12px; }
+.irql-row .lv { font-family: var(--f-mono); font-size: 11px; letter-spacing: .05em; color: var(--muted); min-width: 118px; }
+.irql-row .nm { font-family: var(--f-display); font-weight: 700; font-size: 14px; }
+.irql-row .hi { margin-left: auto; font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.irql-row.on { border-color: var(--track); background: var(--track-soft); }
+.irql-row.on .nm, .irql-row.on .lv { color: var(--track); }
+.irql-row.on .hi { color: var(--track); font-weight: 700; }
+.capbox { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 10px 12px; display: grid; gap: 5px; }
+.capbox .cap { display: flex; justify-content: space-between; font-size: 13px; }
+.capbox .cap b { font-weight: 500; }
+.capbox .yes { color: var(--ok); font-family: var(--f-mono); font-size: 12px; }
+.capbox .no { color: var(--bad); font-family: var(--f-mono); font-size: 12px; }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'windows',
+  crumbs: 'windows › yürütme modeli › modül 3',
+  eyebrow: 'Modül 3 · Windows · Thread · APC · DPC · IRQL',
+  titleHTML: 'Windows yürütme modeli: <code>IRQL</code> kodun ne yapabileceğini belirler',
+  lede: 'Windows çekirdeğinde "hangi kod ne zaman, neyi yapabilir" sorusunun cevabı tek bir kavrama bağlıdır: IRQL (Interrupt Request Level). Bir kesme geldiğinde işin nasıl ikiye bölündüğünü (kısa ISR + ertelenmiş DPC), APC\'lerin bir thread bağlamına kod nasıl soktuğunu ve bir system thread\'in neden rahatça uyuyabildiğini bu modülde izleyeceksin. Linux\'un üst/alt yarı (top/bottom half) modelini biliyorsan, karşılıklarını da göreceksin.',
+  meta: ['~15 dk', 'ön koşul: kesme ve syscall kavramı', 'kaynak: Windows kernel-mode'],
+  intuition: {
+    paras: [
+      'Bir processor her an bir <strong>IRQL</strong> değerinde çalışır. IRQL, o anki işin "önceliğidir": processor yalnızca <em>daha yüksek</em> IRQL\'deki kesmelere cevap verir, eşit veya düşük olanlar <strong>maskelenir</strong> (beklemeye alınır). Yani IRQL yükseldikçe sistem daha az şeye izin verir ama daha az kesilir.',
+      'Bu yüzden bir aygıt kesmesi geldiğinde iş ikiye bölünür. Çok yüksek IRQL\'de (<strong>DIRQL</strong>) çalışan <strong>ISR</strong> (Interrupt Service Routine) yalnızca ertelenemez minimumu yapar — donanımı oku, onayla — ve geri kalanı bir <strong>DPC</strong>\'ye (Deferred Procedure Call) erteleyip hızlıca çıkar. DPC daha düşük bir seviyede (DISPATCH_LEVEL), kesmeler yeniden açıkken çalışır. Bu, Linux\'taki top half / bottom half bölünmesinin birebir karşılığıdır.',
+      'Yüksek IRQL\'de bir bedel vardır: DISPATCH_LEVEL ve üstünde kod <strong>uyuyamaz</strong>, bloklayamaz ve <strong>pageable</strong> (diskten çağrılabilir) belleğe dokunamaz — çünkü page fault\'u çözecek olan mekanizmanın kendisi daha düşük IRQL ister. Uyuması veya bloklaması gereken iş bu yüzden PASSIVE_LEVEL\'de çalışan bir <strong>system thread</strong> veya work item\'a bırakılır.'
+    ],
+    ideas: [
+      { b: 'IRQL maskeler', span: 'Processor yalnızca daha yüksek IRQL\'deki kesmeleri alır; eşit/düşük olanlar maskelenir. IRQL ne kadar yüksekse o kadar az API çağrılabilir.' },
+      { b: 'ISR kısa, DPC erteler', span: 'ISR yüksek IRQL\'de minimumu yapar ve bir DPC kuyruklar; ağır iş DISPATCH_LEVEL\'de çalışır. Linux top half/bottom half ile aynı fikir.' },
+      { b: 'Uyku = PASSIVE', span: 'Bloklama, bekleme ve pageable belleğe erişim yalnızca PASSIVE_LEVEL\'de (system thread / work item) güvenlidir.' }
+    ]
+  },
+  lab: {
+    intro: 'Bir aygıt kesmesinin yolculuğunu IRQL merdiveni üzerinde izle. Soldaki sözde-kod üç bölümden oluşur: kısa ISR, ertelenmiş DPC ve uyuyabilen bir system thread. Sağda o an hangi IRQL\'de olduğunu ve o seviyede nelere izin verildiğini gör.',
+    codeLabel: 'yürütme akışı (sözde-kod)', cmd: '(aygıt kesmesi)',
+    foot: 'IRQL seviyeleri yukarı çıktıkça izin azalır. ← → tuşlarıyla da ilerleyebilirsin.',
+    code: [
+      { t: '<span class="cm">// ISR — en yüksek seviye (DIRQL), çok kısa</span>' },
+      { t: '<span class="f">ISR</span>(interrupt):' },
+      { t: '    veri = <span class="f">READ_REGISTER</span>(device);  <span class="cm">// donanımı oku</span>' },
+      { t: '    <span class="f">KeInsertQueueDpc</span>(&amp;dpc);        <span class="cm">// ağır işi ertele</span>' },
+      { t: '    <span class="k">return</span>;                        <span class="cm">// hızlıca çık</span>' },
+      { t: '' },
+      { t: '<span class="cm">// DPC — DISPATCH_LEVEL, kesmeler açık</span>' },
+      { t: '<span class="f">DpcForIsr</span>(ctx):' },
+      { t: '    islenmis = <span class="f">process</span>(ctx);       <span class="cm">// ertelenmiş iş</span>' },
+      { t: '    <span class="cm">// hâlâ uyuyamaz / pageable belleğe dokunamaz</span>' },
+      { t: '' },
+      { t: '<span class="cm">// system thread — PASSIVE_LEVEL</span>' },
+      { t: '<span class="f">WorkerThread</span>():' },
+      { t: '    <span class="f">KeWaitForSingleObject</span>(&amp;evt);  <span class="cm">// bloklayabilir, uyuyabilir</span>' }
+    ],
+    steps: [
+      { pc: [12, 13], title: 'Normal: PASSIVE_LEVEL', level: 'passive',
+        text: 'Başlangıçta bir thread çekirdek kodunu <strong>PASSIVE_LEVEL</strong>\'de (IRQL 0) çalıştırıyor. Burada neredeyse her şey serbesttir: pageable belleğe erişebilir, bir olayı bekleyebilir (bloklayabilir), çoğu kernel API\'sini çağırabilir.',
+        note: 'thread normal çalışıyor, hiçbir şey maskeli değil' },
+      { pc: [1, 2, 3], title: 'Kesme gelir → DIRQL', level: 'dirql',
+        text: 'Aygıt bir kesme üretir. Processor IRQL\'i aygıtın <strong>DIRQL</strong>\'ine (Device IRQL — DISPATCH\'in de üstü) yükseltir ve <strong>ISR</strong>\'yi çağırır. Bu seviyede eşit/düşük tüm kesmeler maskelidir; kod pageable belleğe dokunamaz, uyuyamaz. Bu yüzden ISR yalnızca donanımı okur.',
+        note: 'ISR çalışıyor — sadece ertelenemez minimum' },
+      { pc: [3, 4], title: 'ISR, DPC kuyruklar ve çıkar', level: 'dirql',
+        text: 'ISR ağır işi kendisi yapmaz: <code>KeInsertQueueDpc</code> ile bir <strong>DPC</strong> kuyruklar ve hemen <code>return</code> eder. Böylece processor yüksek IRQL\'de minimum süre kalır — tıpkı Linux top half\'in bir softirq planlayıp çıkması gibi.',
+        note: 'DPC kuyruklandı, ISR bitti' },
+      { pc: [6, 7, 8, 9], title: 'DPC: DISPATCH_LEVEL', level: 'dispatch',
+        text: 'ISR dönünce IRQL DIRQL\'den düşer; kuyruktaki <strong>DPC</strong>, <strong>DISPATCH_LEVEL</strong>\'de (IRQL 2) çalışır. Artık aygıt kesmeleri yeniden gelebilir, ama DISPATCH ve APC seviyesi hâlâ maskelidir. Ertelenmiş iş burada yapılır — fakat kod hâlâ uyuyamaz ve pageable belleğe dokunamaz.',
+        note: 'ertelenmiş iş işleniyor (uyku hâlâ yasak)' },
+      { pc: [11, 12, 13], title: 'PASSIVE\'e dönüş: uyuyabilen iş', level: 'passive',
+        text: 'DPC bitince IRQL <strong>PASSIVE_LEVEL</strong>\'e döner. Bloklaması veya uyuması gereken iş (ör. bir olayı <code>KeWaitForSingleObject</code> ile beklemek) bir <strong>system thread</strong> veya work item\'da burada yapılır. Bu, Linux\'ta işin <code>workqueue</code>\'ya düşmesinin karşılığıdır.',
+        note: 'system thread bloklayabilir / uyuyabilir' }
+    ],
+    render: function (s, stateEl, u) {
+      var levels = [
+        { k: 'dirql',    lv: 'IRQL yüksek', nm: 'DIRQL', hi: 'aygıt kesmesi' },
+        { k: 'dispatch', lv: 'IRQL 2',      nm: 'DISPATCH_LEVEL', hi: 'DPC / zamanlayıcı' },
+        { k: 'apc',      lv: 'IRQL 1',      nm: 'APC_LEVEL', hi: 'kernel APC' },
+        { k: 'passive',  lv: 'IRQL 0',      nm: 'PASSIVE_LEVEL', hi: 'normal thread' }
+      ];
+      var ladder = levels.map(function (L) {
+        return '<div class="irql-row ' + (L.k === s.level ? 'on' : '') + '">' +
+          '<span class="lv">' + u.esc(L.lv) + '</span><span class="nm">' + u.esc(L.nm) + '</span>' +
+          '<span class="hi">' + u.esc(L.hi) + '</span></div>';
+      }).join('');
+      // o seviyede yetenekler
+      var caps = {
+        passive:  { page: true,  wait: true,  api: 'çoğu kernel API' },
+        apc:      { page: true,  wait: false, api: 'çoğu API (bazı bekleme kısıtlı)' },
+        dispatch: { page: false, wait: false, api: 'yalnızca DISPATCH-güvenli API' },
+        dirql:    { page: false, wait: false, api: 'yalnızca ISR-güvenli API' }
+      }[s.level];
+      function row(label, ok) {
+        return '<div class="cap"><b>' + u.esc(label) + '</b><span class="' + (ok ? 'yes' : 'no') + '">' + (ok ? 'izinli ✓' : 'yasak ✕') + '</span></div>';
+      }
+      stateEl.innerHTML =
+        '<p class="lab-label">IRQL merdiveni</p>' +
+        '<div class="irql-ladder">' + ladder + '</div>' +
+        '<div class="box" style="margin-top:10px"><span class="mono">' + u.esc(s.note) + '</span></div>' +
+        '<p class="lab-label" style="margin-top:14px">Bu seviyede ne yapılabilir?</p>' +
+        '<div class="capbox">' +
+          row('Pageable belleğe erişim', caps.page) +
+          row('Bloklama / uyku', caps.wait) +
+          '<div class="cap"><b>Çağrılabilir API</b><span class="mono" style="font-size:12px;color:var(--muted)">' + u.esc(caps.api) + '</span></div>' +
+        '</div>';
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: IRQL, DPC, APC ve system thread",
+    html: `<p class="lead">Windows'un yürütme modelini tek cümleyle özetlemek gerekirse: <strong>bir kod parçasının ne yapabileceğini, çalıştığı IRQL belirler.</strong> Bu bölüm IRQL merdivenini, işin ISR + DPC olarak nasıl bölündüğünü, APC'lerin bir thread bağlamına kod sokma mekanizmasını ve bunların Linux karşılıklarını ayrıntılandırır.</p>
+
+<h3>1. IRQL: tek bir sayı neyi belirler?</h3>
+<p>Her processor her an bir <strong>IRQL</strong> (Interrupt Request Level) değerindedir. Kural basittir: processor yalnızca o anki IRQL'den <em>yüksek</em> IRQL'li kesmelere cevap verir; eşit veya düşük olanlar maskelenir ve bekler. Dolayısıyla IRQL, hem kesme önceliğini hem de — daha önemlisi — kodun hangi API'leri çağırabileceğini belirler.</p>
+<div class="manpage src-docs"><div class="ref">docs · Managing Hardware Priorities</div><p class="orig">The IRQL at which a driver routine executes determines which kernel-mode driver support routines it can call.</p><p>Yani IRQL yalnızca "ne zaman kesilirim" değil, "şu an hangi çekirdek fonksiyonlarını çağırabilirim" sorusunun da cevabıdır. Seviye yükseldikçe çağrılabilir API kümesi daralır.</p></div>
+<p>Soldan sağa, düşükten yükseğe başlıca seviyeler:</p>
+<div class="deflist">
+<div><dt>PASSIVE_LEVEL (0)</dt><dd>Normal thread kodunun çalıştığı seviye. Hiçbir şey maskeli değildir; kod pageable belleğe erişebilir, bir nesneyi bekleyip <strong>uyuyabilir</strong>, çoğu kernel API'sini çağırabilir. Kullanıcı modundaki ve çoğu sürücü giriş noktasındaki kod buradadır.</dd></div>
+<div><dt>APC_LEVEL (1)</dt><dd>Yalnızca <strong>APC</strong> teslimini maskeler. Sayfalama (paging) hâlâ mümkündür ama bazı bekleme işlemleri kısıtlıdır. Bir thread kendi APC'lerine karşı kısa süreli korunmak istediğinde bu seviyeye çıkar.</dd></div>
+<div><dt>DISPATCH_LEVEL (2)</dt><dd>Thread zamanlayıcının (dispatcher) ve <strong>DPC</strong>'lerin seviyesi. Burada ve üstünde kod <strong>uyuyamaz, bloklayamaz ve pageable belleğe dokunamaz</strong>. Zamanlayıcı maskeli olduğundan, bu seviyedeki kod başka bir thread'e geçiş yapamaz — bitene kadar processor'ı tutar.</dd></div>
+<div><dt>DIRQL (Device IRQL)</dt><dd>Aygıt kesmelerinin (ISR) çalıştığı, DISPATCH'in de üstündeki yüksek seviyeler. Son derece kısıtlıdır: yalnızca ISR-güvenli, non-paged işlemler yapılabilir.</dd></div>
+</div>
+<p>DISPATCH_LEVEL'da nelerin maskelendiğini belgenin kendi ifadesiyle:</p>
+<div class="manpage src-docs"><div class="ref">docs · Managing Hardware Priorities</div><p class="orig">DISPATCH_LEVEL and APC_LEVEL interrupts are masked off. Device, clock, and power failure interrupts can occur.</p><p>DISPATCH_LEVEL'da thread zamanlayıcı ve APC teslimi durur; yalnızca aygıt, saat ve güç kesmeleri gibi daha yüksek seviyeler gelebilir. Bu yüzden DPC kodu bir bekleme işlemine giremez — onu uyandıracak zamanlayıcının kendisi maskelidir.</p></div>
+
+<h3>2. ISR + DPC: işin ikiye bölünmesi</h3>
+<p>Bir aygıt kesmesi geldiğinde processor IRQL'i DIRQL'e yükseltir ve sürücünün <strong>ISR</strong>'sini (Interrupt Service Routine) çağırır. Bu seviye o kadar kısıtlıdır ki ISR yalnızca ertelenemez minimumu yapmalıdır: donanım kayıtlarını oku, kesmeyi onayla ve geri kalanı ertele. Erteleme aracı <strong>DPC</strong>'dir — ISR bir DPC kuyruklar ve çıkar.</p>
+<div class="manpage src-docs"><div class="ref">docs · Introduction to DPCs</div><p class="orig">A DpcForIsr or CustomDpc routine is called in an arbitrary DPC context at IRQL DISPATCH_LEVEL.</p><p>DPC, ISR'den daha düşük olan DISPATCH_LEVEL'de çalışır; yani kesmeler yeniden açıkken ağır işi yapar ama hâlâ uyuyamaz. "Arbitrary DPC context" ifadesi önemlidir: DPC belirli bir thread'in bağlamında çalışmaz, o an processor'da hangi thread varsa onun üstünde çalışır — bu yüzden thread'e özel hiçbir şeye güvenemez.</p></div>
+<p>Bu bölünme Linux'taki <strong>top half / bottom half</strong> modelinin birebir karşılığıdır: ISR ≈ top half (hardirq), DPC ≈ softirq/tasklet. Her iki sistemde de amaç aynıdır — yüksek öncelikli bağlamda minimum süre kal, gerisini daha rahat bir seviyeye ertele.</p>
+
+<h3>3. APC: bir thread'in bağlamına kod sokmak</h3>
+<p><strong>APC</strong> (Asynchronous Procedure Call), belirli bir thread'in bağlamında, o thread uygun bir noktaya geldiğinde çalıştırılacak bir fonksiyondur. DPC'den farkı şudur: DPC bağlamsızdır (herhangi bir thread üstünde çalışır), APC ise <em>hedef thread'in</em> adres alanında ve kimliğinde çalışır. İki türü vardır:</p>
+<div class="deflist">
+<div><dt>kernel APC</dt><dd>Çekirdek modunda, APC_LEVEL'de çalışır. Çekirdek, bir işi tam olarak belirli bir thread'in bağlamında yaptırmak istediğinde kullanır (ör. I/O tamamlandığında sonucu başlatan thread'e taşımak).</dd></div>
+<div><dt>user APC</dt><dd>Hedef thread "alertable" bir bekleme durumuna girdiğinde kullanıcı modunda çalışır. Windows'ta I/O completion routine'leri ve <code>QueueUserAPC</code> bunun üstüne kuruludur.</dd></div>
+</div>
+<p>APC mekanizması güçlüdür çünkü kodu <em>başka bir thread'in</em> bağlamına taşımaya yarar; bu, I/O tamamlama gibi meşru işlerin temelidir.</p>
+
+<h3>4. System thread: uyuyabilen iş nereye gider?</h3>
+<p>DPC ve ISR uyuyamadığına göre, bloklaması gereken iş (bir olayı beklemek, pageable belleğe erişmek, uzun süren bir işlem) bir <strong>system thread</strong>'e devredilir. System thread tamamen çekirdek modunda yaşayan, <code>PsCreateSystemThread</code> ile oluşturulan ve PASSIVE_LEVEL'de çalışan bir thread'dir; dolayısıyla <code>KeWaitForSingleObject</code> gibi bloklayan çağrıları rahatça yapabilir. Sürücüler sık sık bir DPC'den "work item" kuyruklayıp asıl işi bir system worker thread'ine bırakır. Bu, Linux'ta işin bir <strong>workqueue</strong>'ya (process context, uyuyabilir) düşmesinin tam karşılığıdır.</p>
+
+<h3>5. User'dan kernel'e: syscall ve fault yolu</h3>
+<p>Bir kullanıcı programı bir sistem hizmeti istediğinde, <code>syscall</code>/<code>sysenter</code> komutuyla çekirdeğe geçer; giriş noktası <code>KiSystemCall64</code> gibi bir dispatcher'dır ve istek <strong>SSDT</strong> (System Service Descriptor Table) üzerinden ilgili çekirdek fonksiyonuna yönlendirilir. Bu geçiş PASSIVE_LEVEL'de olur, çünkü syscall işleyicisi bloklayabilen, pageable koda dokunabilen gerçek işi yapacaktır.</p>
+<p>Pageable bir adrese erişim o an bellekte değilse bir <strong>page fault</strong> oluşur; fault işleyicisi sayfayı diskten getirir. İşte DISPATCH_LEVEL ve üstünde pageable belleğe dokunmanın yasak olmasının asıl nedeni budur: page fault'u çözecek mekanizma daha düşük IRQL ve thread geçişi gerektirir, ama o seviyede zamanlayıcı maskelidir — sonuç çözülemeyen bir fault, yani <strong>bug check</strong> (ünlü mavi ekran, BSOD) olur. Bir sürücünün DISPATCH_LEVEL'de pageable belleğe dokunması Windows'ta klasik bir çökme sebebidir.</p>`
+  },
+  quiz: {
+    questions: [
+      { q: 'Bir DPC neden uyuyamaz veya bir olayı bekleyemez?', opts: ['DPC kodu çok kısadır', 'DISPATCH_LEVEL\'de thread zamanlayıcı maskelidir, başka thread\'e geçilemez', 'DPC kullanıcı modunda çalışır'], answer: 'DISPATCH_LEVEL\'de thread zamanlayıcı maskelidir, başka thread\'e geçilemez',
+        ok: 'Doğru. DPC DISPATCH_LEVEL\'de çalışır; bu seviyede dispatcher maskeli olduğu için beklemeye girip başka bir thread\'e geçiş yapılamaz. Bloklayan iş PASSIVE_LEVEL\'deki bir system thread\'e bırakılır.', no: 'İpucu: DISPATCH_LEVEL\'de hangi mekanizma maskelidir?' },
+      { q: 'ISR (yüksek IRQL) ile DPC (DISPATCH_LEVEL) bölünmesinin Linux\'taki karşılığı nedir?', opts: ['sistem çağrısı / vDSO', 'top half / bottom half', 'process / thread'], answer: 'top half / bottom half',
+        ok: 'Doğru. ISR ≈ top half (hardirq, kısa), DPC ≈ bottom half (softirq/tasklet, ertelenmiş). Her iki sistemde de yüksek öncelikli bağlamda minimum süre kalma amacı aynıdır.', no: 'İpucu: Linux\'ta kesme işi hangi iki parçaya bölünür?' },
+      { q: 'Bloklaması veya pageable belleğe erişmesi gereken sürücü işi nerede çalıştırılmalı?', opts: ['ISR içinde', 'Bir DPC içinde', 'PASSIVE_LEVEL\'deki bir system thread / work item içinde'], answer: 'PASSIVE_LEVEL\'deki bir system thread / work item içinde',
+        ok: 'Doğru. Yalnızca PASSIVE_LEVEL\'de uyku, bekleme ve pageable belleğe erişim güvenlidir; bu iş bir system thread veya work item\'a bırakılır (Linux\'ta workqueue karşılığı).', no: 'İpucu: uyku ve sayfalama hangi seviyede serbesttir?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Windows', title: 'Kernel callback\'leri ve ETW', desc: 'Çekirdek hangi olaylara (süreç, thread, image, registry) kanca takar ve ETW bu olayları nasıl yayınlar?', href: 'win-callbacks.html' },
+  sources: [
+    { href: 'https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/managing-hardware-priorities', text: 'Microsoft Learn — Managing Hardware Priorities', note: 'IRQL ve maskeleme' },
+    { href: 'https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/introduction-to-dpcs', text: 'Microsoft Learn — Introduction to DPCs', note: 'DPC / DISPATCH_LEVEL' },
+    { href: 'https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/introduction-to-apcs', text: 'Microsoft Learn — Introduction to APCs', note: 'kernel / user APC' },
+    { href: 'https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/system-worker-threads', text: 'Microsoft Learn — System Worker Threads', note: 'PASSIVE_LEVEL, uyuyabilen iş' },
+    { href: 'https://www.xintra.org/courses/11-windows-kernel-offensive-defensive-reverse-engineering', text: 'Xintra — Windows Kernel (müfredat)', note: 'Internals bölümü' }
+  ],
+  pageTitle: 'Windows Yürütme Modeli'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

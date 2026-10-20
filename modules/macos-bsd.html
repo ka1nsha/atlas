@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>XNU BSD Katmanı</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: ikili kimlik (proc ↔ task) eşlemesi */
+.dual { display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: stretch; }
+@media (max-width: 560px) { .dual { grid-template-columns: 1fr; } }
+. side { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 10px 12px; display: grid; gap: 6px; align-content: start; min-width: 0; }
+.side.lit { border-color: var(--track); background: var(--track-soft); }
+.side.ghost { border-style: dashed; color: var(--muted); place-content: center; text-align: center; min-height: 120px; }
+.side h4 { margin: 0; font-family: var(--f-display); font-size: 15px; }
+.side .tag { font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.side .row { font-family: var(--f-mono); font-size: 12px; display: flex; justify-content: space-between; gap: 8px; border-top: 1px solid var(--line); padding-top: 4px; }
+.side .row span:first-child { color: var(--muted); }
+.side.bsd h4 { color: var(--track); }
+.side.mach h4 { color: var(--accent); }
+.link-col { display: grid; place-items: center; font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.link-col .bar { writing-mode: vertical-rl; transform: rotate(180deg); letter-spacing: .1em; padding: 6px 2px; border-left: 2px solid var(--track); border-right: 2px solid var(--track); }
+@media (max-width: 560px) { .link-col .bar { writing-mode: horizontal-tb; transform: none; border: none; border-top: 2px solid var(--track); border-bottom: 2px solid var(--track); padding: 4px 0; width: 100%; text-align: center; } }
+.phase { font-family: var(--f-mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); display: flex; align-items: center; gap: 10px; padding-block: 6px 2px; }
+.phase::before, .phase::after { content: ""; height: 1px; background: var(--muted); flex: 1; opacity: .5; }
+.phase.lit { color: var(--track); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'macos',
+  crumbs: 'macos › bsd katmanı › modül 13',
+  eyebrow: 'Modül 13 · macOS / iOS · BSD katmanı',
+  titleHTML: 'XNU\'da her sürecin iki kimliği var',
+  lede: 'Linux\'ta bir süreç tek bir nesnedir. XNU\'da ise her süreç çifttir: altta bir Mach task\'ı (bellek + thread + port\'lar), üstte bir BSD proc yapısı (PID, kullanıcı, sinyaller, dosyalar). Bu modül bu ikili kimliği ve macOS\'un neden fork yerine posix_spawn önerdiğini gösterir.',
+  meta: ['~15 dk', 'ön koşul: fork (Linux Modül 1), Mach port (Modül 2)', 'bağlam: XNU'],
+  intuition: {
+    paras: [
+      'XNU melez (hybrid) bir çekirdektir: alt katı Mach, üst katı BSD. Mach dünyasında çalışan birim <strong>task</strong>\'tır — belleğin, thread\'lerin ve port haklarının (port rights) sahibi. Ama POSIX programları <code>pid</code>, <code>uid</code>, sinyaller ve dosya tanımlayıcıları bekler; bunları BSD katmanı sağlar. Bu yüzden her sürecin hem bir <code>task</code>\'ı hem de ona bağlı bir <code>proc</code> yapısı (proc struct) vardır: <strong>ikili kimlik (dual identity)</strong>.',
+      'Süreç yaratmada da Unix mirası ile Mach gerçekliği çatışır. Klasik <code>fork()</code> çalışır ama Mach port\'ları ve thread\'ler fork sonrası güvenli miras alınmaz; bu yüzden Apple <code>posix_spawn</code>\'ı önerir: tek çağrıda yeni task + proc yaratıp Mach-O\'yu yükler, araya kırılgan bir "yarı kopya" durumu sokmaz. macOS\'ta pek çok şey (kabuk dahil) artık <code>posix_spawn</code> kullanır.'
+    ],
+    ideas: [
+      { b: 'task + proc', span: 'Mach task alt kimlik (bellek, thread, port); BSD proc üst kimlik (PID, UID, sinyal, fd). İkisi birbirine bağlıdır.' },
+      { b: 'posix_spawn', span: 'fork+exec\'in tek-adımlık, Mach-güvenli hâli. macOS\'un tercih ettiği süreç yaratma yolu.' },
+      { b: 'POSIX, Mach üstünde', span: 'read/open/kill/ptrace hep BSD katmanında; ama altta Mach task\'ının kaynaklarını kullanırlar.' }
+    ]
+  },
+  lab: {
+    intro: 'Bir programın <code>posix_spawn</code> ile doğuşunu izle. Her adımda yeni sürecin Mach tarafı (task) ve BSD tarafı (proc) birlikte kurulur. İkisinin tek bir sürecin iki yüzü olduğuna dikkat et.',
+    codeLabel: 'spawn.c (temsilî)', cmd: './spawn /bin/ls',
+    foot: 'PID ve değerler temsilîdir; gerçek değerler sürüme/çalıştırmaya göre değişir.',
+    code: [
+      { t: '<span class="t">pid_t</span> pid;' },
+      { t: '<span class="f">posix_spawn</span>(&amp;pid, <span class="s">"/bin/ls"</span>,' },
+      { t: '            <span class="k">NULL</span>, <span class="k">NULL</span>, argv, environ);' },
+      { t: '' },
+      { t: '<span class="cm">// çekirdek: tek çağrıda</span>' },
+      { t: '<span class="cm">//   1) yeni Mach task + ana thread</span>' },
+      { t: '<span class="cm">//   2) ona bağlı BSD proc (PID)</span>' },
+      { t: '<span class="cm">//   3) Mach-O yüklenir, thread başlar</span>' },
+      { t: '' },
+      { t: '<span class="f">waitpid</span>(pid, &amp;st, <span class="n">0</span>);  <span class="cm">// BSD tarafı</span>' }
+    ],
+    steps: [
+      { pc: 1, title: 'Ebeveyn süreç', term: ['ebeveyn: pid=400'],
+        text: 'Başta tek bir süreç var: ebeveyn. Onun da iki yüzü var — bir Mach task\'ı (bellek, thread, port\'lar) ve ona bağlı bir BSD proc\'u (PID 400, UID, açık dosyalar). Henüz çocuk yok.',
+        phase: 'Başlangıç',
+        bsd: { pid: '400', uid: '501', state: 'çalışıyor', fds: '0,1,2' }, bsdLit: false,
+        mach: { task: '0x1a00', threads: '1', ports: 'bootstrap, task_self' }, machLit: false,
+        child: null },
+      { pc: [1, 2, 3], title: 'posix_spawn çağrılır', term: ['posix_spawn("/bin/ls")'],
+        text: '<code>posix_spawn</code> tek bir çağrıdır. Klasik fork+exec\'in iki adımını (önce kopya, sonra dönüşüm) birleştirir; araya Mach port\'larının yarı-kopyalandığı kırılgan bir durum sokmaz. Çekirdek şimdi yeni süreci kuracak.',
+        phase: 'Çağrı',
+        bsd: { pid: '400', uid: '501', state: 'çekirdekte (spawn)', fds: '0,1,2' }, bsdLit: false,
+        mach: { task: '0x1a00', threads: '1', ports: '…' }, machLit: false,
+        child: { stage: 'kuruluyor' } },
+      { pc: 6, title: 'Önce Mach task', term: ['task_create → 0x2b10'],
+        text: 'Çekirdek yeni süreci ALTTAN kurar: önce yeni bir Mach task (0x2b10) ve bir ana thread yaratılır. Yeni task\'ın kendi boş adres uzayı ve temel port\'ları olur. Bu, sürecin Mach yüzüdür — henüz PID\'i bile yok.',
+        phase: 'Mach tarafı',
+        bsd: { pid: '400', uid: '501', state: 'çalışıyor', fds: '0,1,2' }, bsdLit: false,
+        mach: { task: '0x1a00', threads: '1', ports: 'task_self' }, machLit: false,
+        child: { task: '0x2b10', threads: '1 (askıda)', ports: 'yeni', proc: null, litMach: true } },
+      { pc: 7, title: 'Sonra BSD proc', term: ['yeni proc: pid=412, ppid=400'],
+        text: 'Mach task\'ın üstüne bir BSD proc yapısı takılır: artık sürecin bir PID\'i (412), ebeveyni (400), UID\'i ve dosya tablosu var. İşte ikili kimlik tamam — alt Mach task, üst BSD proc, tek bir süreç.',
+        phase: 'BSD tarafı',
+        bsd: { pid: '400', uid: '501', state: 'çalışıyor', fds: '0,1,2' }, bsdLit: false,
+        mach: { task: '0x1a00', threads: '1', ports: 'task_self' }, machLit: false,
+        child: { task: '0x2b10', threads: '1 (askıda)', ports: 'yeni', proc: { pid: '412', ppid: '400', uid: '501' }, litBoth: true } },
+      { pc: 7, title: 'Mach-O yüklenir', term: ['load_machfile: /bin/ls → __TEXT, __DATA eşlendi'],
+        text: 'Çekirdek <code>load_machfile</code> ile /bin/ls\'in Mach-O segmentlerini yeni task\'ın adres uzayına eşler (Mach-O modülündeki yol). dyld başlar, ana thread çalıştırılmaya hazır olur.',
+        phase: 'Yükleme',
+        bsd: { pid: '400', uid: '501', state: 'çalışıyor', fds: '0,1,2' }, bsdLit: false,
+        mach: { task: '0x1a00', threads: '1', ports: 'task_self' }, machLit: false,
+        child: { task: '0x2b10', threads: '1 (ls hazır)', ports: 'yeni', proc: { pid: '412', ppid: '400', uid: '501' }, img: '/bin/ls', litMach: true } },
+      { pc: 9, title: 'Çalışır, ebeveyn bekler', term: ['pid 412: ls çalışıyor', 'ebeveyn: waitpid(412) → BSD'],
+        text: 'Thread başlatılır; ls çalışır. Ebeveyn <code>waitpid(412)</code> ile bekler — bu BSD tarafının işidir (PID, çıkış kodu, SIGCHLD). Sinyaller, ptrace ve proc_info de hep BSD proc üzerinden; Mach task ise belleği ve thread\'leri yönetir. İki yüz, tek süreç.',
+        phase: 'Çalışma',
+        bsd: { pid: '400', uid: '501', state: 'waitpid (bekliyor)', fds: '0,1,2' }, bsdLit: true,
+        mach: { task: '0x1a00', threads: '1', ports: 'task_self' }, machLit: false,
+        child: { task: '0x2b10', threads: '1 (çalışıyor)', ports: 'aktif', proc: { pid: '412', ppid: '400', uid: '501' }, img: '/bin/ls', litBoth: true } }
+    ],
+    render: function (s, stateEl, u) {
+      function sideBSD(p, lit) {
+        return '<div class="side bsd' + (lit ? ' lit' : '') + '"><h4>BSD proc</h4><span class="tag">üst kimlik · POSIX</span>' +
+          '<div class="row"><span>pid</span><span>' + u.esc(p.pid) + '</span></div>' +
+          '<div class="row"><span>uid</span><span>' + u.esc(p.uid) + '</span></div>' +
+          '<div class="row"><span>durum</span><span>' + u.esc(p.state) + '</span></div>' +
+          '<div class="row"><span>fd</span><span>' + u.esc(p.fds) + '</span></div></div>';
+      }
+      function sideMach(m, lit) {
+        return '<div class="side mach' + (lit ? ' lit' : '') + '"><h4>Mach task</h4><span class="tag">alt kimlik · bellek+thread+port</span>' +
+          '<div class="row"><span>task</span><span>' + u.esc(m.task) + '</span></div>' +
+          '<div class="row"><span>thread</span><span>' + u.esc(m.threads) + '</span></div>' +
+          '<div class="row"><span>port</span><span>' + u.esc(m.ports) + '</span></div></div>';
+      }
+      var html = '<p class="lab-label">Ebeveyn süreç (ikili kimlik)</p>' +
+        '<div class="dual">' + sideMach(s.mach, s.machLit) + '<div class="link-col"><span class="bar">tek süreç</span></div>' + sideBSD(s.bsd, s.bsdLit) + '</div>';
+      html += '<div class="phase' + (s.phase ? ' lit' : '') + '">' + u.esc(s.phase || '') + '</div>';
+      html += '<p class="lab-label">Çocuk süreç</p>';
+      if (!s.child) {
+        html += '<div class="side ghost">Henüz çocuk yok.<br>posix_spawn ile doğacak.</div>';
+      } else if (s.child.stage) {
+        html += '<div class="side ghost">Çocuk kuruluyor…<br>önce Mach task, sonra BSD proc.</div>';
+      } else {
+        var c = s.child;
+        var machLit = c.litMach || c.litBoth, bsdLit = c.litBoth;
+        var machObj = { task: c.task, threads: c.threads, ports: c.ports };
+        var right;
+        if (c.proc) right = sideBSD({ pid: c.proc.pid, uid: c.proc.uid, state: 'ppid ' + c.proc.ppid, fds: c.img || '—' }, bsdLit);
+        else right = '<div class="side ghost">BSD proc henüz yok<br>(PID atanmadı)</div>';
+        html += '<div class="dual">' + sideMach(machObj, machLit) + '<div class="link-col"><span class="bar">' + (c.proc ? 'tek süreç' : '…') + '</span></div>' + right + '</div>';
+        if (c.img) html += '<p class="note" style="margin-top:8px">Yüklenen imaj (image): ' + u.esc(c.img) + '</p>';
+      }
+      stateEl.innerHTML = html;
+    }
+  },
+  underHood: {
+    html: '<p class="prose">Süreç yaratma kodu XNU\'nun <code>bsd/kern</code>\'inde başlar ama hemen Mach tarafına iner: önce task, sonra proc, sonra Mach-O yükleme. Kaynak Apple\'ın açık XNU deposunda okunabilir.</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">posix_spawn()</span><span class="where">libc → bsd/kern</span><p>Tek çağrı; fork+exec\'i birleştirir, Mach-güvenli yol.</p></div></li>' +
+      '<li class="boundary"><div>sistem çağrısı · kullanıcı → çekirdek (BSD)</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://github.com/apple-oss-distributions/xnu" target="_blank" rel="noopener">posix_spawn / fork1()</a><span class="where">bsd/kern/kern_exec.c</span><p>Yeni süreç kabuğunu hazırlar; task yaratımını tetikler.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">task_create_internal()</span><span class="where">osfmk/kern/task.c</span><p>Mach tarafı: yeni task, adres uzayı, ana thread, temel port\'lar.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">load_machfile()</span><span class="where">bsd/kern/mach_loader.c</span><p>Mach-O segmentlerini yeni task\'a eşler; dyld\'i kurar (Mach-O modülü).</p></div></li>' +
+      '</ol>' +
+      '<div class="tbl-wrap" style="margin-top:14px"><table class="bugs"><thead><tr><th>İşlev</th><th>Hangi kimlik</th><th>Ne yönetir</th></tr></thead><tbody>' +
+      '<tr><td>bellek, thread, port</td><td><b>Mach task</b></td><td>adres uzayı, zamanlanan thread\'ler, IPC hakları</td></tr>' +
+      '<tr><td>pid, uid, sinyal, fd</td><td><b>BSD proc</b></td><td>POSIX kimliği, dosya tablosu, sinyaller, ptrace</td></tr>' +
+      '<tr><td>fork / posix_spawn</td><td>her ikisi</td><td>posix_spawn tercih edilir: Mach kaynak mirası sorunlarını atlar</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px">Neden fork değil? Bir Mach task\'ının port hakları ve ek thread\'leri fork sonrası tutarlı miras alınmaz; çatallanan çocuk yalnızca çağıran thread\'i taşır ve port durumu belirsizleşir. <code>posix_spawn</code> bu kırılgan ara durumu hiç yaratmaz — bu yüzden macOS\'un varsayılan yoludur.</p>'
+  },
+  deepDive: {
+    heading: "Derinlemesine: BSD katmanı ve dual identity",
+    html: `<p class="lead">XNU'nun BSD katmanı, Mach'ın soğuk capability dünyasının üstüne tanıdık bir POSIX yüzü giydirir. Ama bu yüzün ardında her process aslında iki kimliğe sahiptir: üstte bir BSD proc struct, altta bir Mach task. Bu ikiliği görmeden macOS'ta "neden fork değil posix_spawn?" gibi soruların yanıtı anlaşılmaz. Bu bölüm Apple man sayfalarına ve Levin'in OS Internals serisine dayanır.</p>
+
+<h3>1. İki kimlik: proc struct ve Mach task</h3>
+<p>macOS'ta bir process tek bir yapı değildir. BSD katmanı POSIX dünyasının beklediği <code>proc</code> struct'ı sağlar; altta ise gerçek kaynakları tutan bir Mach <code>task</code> vardır. İkisi birbirine bağlıdır (<code>proc</code> içinden <code>task_t</code>'ye ulaşılır) ve biri olmadan diğeri yaşayamaz.</p>
+<div class="deflist">
+<div><dt>BSD proc struct</dt><dd>POSIX yüzü: PID, PPID, uid/gid, file descriptor table, signal state, process group ve session. <code>ps</code>, <code>ptrace</code> ve çoğu POSIX API bu kimliği görür.</dd></div>
+<div><dt>Mach task</dt><dd>Gerçek kaynaklar: address space (<code>vm_map</code>), thread'ler, port name space ve tüm IPC. Scheduling bile thread düzeyinde Mach tarafında yapılır — BSD process scheduling yapmaz.</dd></div>
+</div>
+<p>Bu yüzden bir process'i "öldürmek" hem <code>proc</code>'u hem task'ı yıkar; bir Mach port sızıntısı veya thread sorunu POSIX araçlarına görünmezken Mach API'leriyle (<code>task_info</code>) ortaya çıkar.</p>
+
+<h3>2. Process creation: neden fork değil posix_spawn?</h3>
+<p>BSD katmanı klasik <code>fork</code>/<code>vfork</code>'u sunar, ama Apple kendi platformunda neredeyse her yerde <code>posix_spawn</code>'ı tercih eder. Nedenini anlamak için fork'un macOS'ta ne kadar tehlikeli olduğunu görmek gerekir.</p>
+<div class="manpage src-apple"><div class="ref">posix_spawn · DESCRIPTION</div><p class="orig">The posix_spawn() function creates a new process from the executable file specified by path.</p><p>posix_spawn(), belirtilen <code>path</code>'teki executable dosyadan yeni bir process yaratır — yani fork ve exec'i tek bir atomik adımda yapar; arada "ebeveynin kopyası" ara durumu hiç oluşmaz.</p></div>
+<p>macOS'ta <code>fork</code> yalnızca çağıran thread'i kopyalar; ama bir process'in Mach port rights'ı, dispatch queue'ları, çalışan diğer thread'leri ve pek çok kaynağı child'a tutarlı biçimde miras geçmez. Dahası, fork ile exec arasında yalnızca async-signal-safe fonksiyonlar çağrılabilir — oysa <code>malloc</code> ya da Objective-C runtime gibi şeyler güvenli değildir ve child'da kilitlenmeye (deadlock) yol açabilir. posix_spawn bu tehlikeli pencereyi tümüyle ortadan kaldırır.</p>
+<div class="manpage src-apple"><div class="ref">posix_spawn · ERRORS</div><p class="orig">Additionally, they may fail for any of the reasons listed in fork(2) or exec(3).</p><p>Man sayfasının kendisi posix_spawn'ı kavramsal olarak fork + exec birleşimi olarak tanımlar: bu yüzden her iki çağrının da hatalarını döndürebilir. Apple'ın <code>posix_spawn</code>'a eklediği bayraklar (örn. <code>POSIX_SPAWN_SETEXEC</code>) ile davranış ince ayarlanır.</p></div>
+
+<h3>3. Mach-O yükleme: exec yolunun sonu</h3>
+<p>exec veya posix_spawn'ın sonunda kernel, hedef programı belleğe yerleştirmelidir. Bu iş BSD'nin exec yolundan (<code>execve</code> → image activator) Mach'ın <code>load_machfile</code>'ına iner: Mach-O segment'leri address space'e map edilir, <code>LC_LOAD_DYLINKER</code> ile dyld başlar ve kontrol entry point'e geçer. Böylece BSD "programı çalıştır" der, ama gerçek yükleme Mach ve dyld tarafında olur (bkz. Mach-O ve dyld modülleri).</p>
+
+<h3>4. BSD signals ve Mach exceptions</h3>
+<p>BSD, tanıdık POSIX signal'lerini (<code>SIGSEGV</code>, <code>SIGTERM</code>, <code>SIGCHLD</code>...) sunar; ama bunların altında Mach exception mekanizması yatar. Bir donanım hatası (örn. geçersiz bellek erişimi) önce bir <strong>Mach exception</strong> olarak ilgili exception port'a gönderilir. Bu exception bir handler tarafından yakalanmazsa, BSD katmanı onu bir POSIX signal'e çevirir ve process'e teslim eder.</p>
+<p>Bu katmanlı yapı neden önemli? Çünkü bir debugger (lldb) process'in <strong>exception port</strong>'unu ele geçirerek hatayı POSIX signal'e dönüşmeden önce yakalar. Bu yüzden macOS'ta gerçek debugging, BSD <code>ptrace</code>'ten çok Mach exception port'ları ve task port üzerine kuruludur.</p>
+
+<h3>5. Process inceleme ve yetki</h3>
+<div class="deflist">
+<div><dt>proc_info</dt><dd>Process hakkında bilgi sorgulayan syscall; <code>ps</code>, <code>lsof</code>, Activity Monitor bunu kullanır. Belirli process'in file descriptor'larını, bölgelerini, thread'lerini verir.</dd></div>
+<div><dt>ptrace</dt><dd>macOS'ta sınırlıdır; <code>PT_DENY_ATTACH</code> ile uygulamalar debugger'ı reddedebilir (anti-debug). Ciddi debugging task port + Mach exception ile yapılır.</dd></div>
+<div><dt>kauth</dt><dd>Kernel authorization — dosya ve process erişim kararlarına kancalar koyan KPI; MACF (Mandatory Access Control) politikalarının bir atası.</dd></div>
+<div><dt>pthread workqueue</dt><dd>BSD/pthread katmanının kernel destekli thread havuzu; GCD (dispatch) bunun üstüne kuruludur (bkz. GCD modülü).</dd></div>
+</div>
+<p>Özetle BSD katmanı "Unix gibi görünür", ama her POSIX kavramının altında bir Mach karşılığı vardır: proc ↔ task, POSIX signal ↔ Mach exception, fork ↔ posix_spawn. İkisini birlikte okumak macOS internals'ın anahtarıdır (Linux fork modülü ve Mach port modülüyle karşılaştır).</p>`
+  },
+  tryIt: {
+    items: [
+      { h3: '1. İkili kimliği gör (macOS)', p: 'ps BSD tarafını (PID, UID) gösterir; bir sürecin Mach task portuna ise task_for_pid ile (yetki/izin gerektirir) ulaşılır. İkisi aynı sürecin iki yüzüdür.',
+        shells: [{ label: 'terminal (macOS · temsilî)', copy: 'ps -o pid,ppid,uid,comm -p 412', pre: '<span class="c">$</span> ps -o pid,ppid,uid,comm -p 412\n  PID  PPID   UID COMM\n  412   400   501 ls\n<span class="c"># BSD proc görünür; alttaki Mach task çekirdekte, lsmp/task_for_pid ile incelenir</span>' }] },
+      { h3: '2. posix_spawn vs fork (macOS)', p: 'Kabuk ve pek çok araç artık posix_spawn kullanır. dtruss/sc_usage ile hangi çağrının geçtiğini (fork mu spawn mı) görebilirsin.',
+        shells: [{ label: 'terminal (macOS · temsilî)', copy: 'sudo dtruss -n ls 2>&1 | grep -E "posix_spawn|fork"', pre: '<span class="c">$</span> sudo dtruss -f -t posix_spawn ls\n<span class="c"># posix_spawn(...) = 0  →  tek adımda yeni task+proc</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'XNU\'da bir sürecin "ikili kimliği" ne demektir?', opts: ['İki PID\'i olması', 'Hem bir Mach task\'ı hem bir BSD proc yapısı olması', 'İki kullanıcıya ait olması'], answer: 'Hem bir Mach task\'ı hem bir BSD proc yapısı olması',
+        ok: 'Doğru. Alt kimlik Mach task (bellek, thread, port); üst kimlik BSD proc (PID, UID, sinyal, fd). Tek sürecin iki yüzü.', no: 'İpucu: biri Mach tarafı, biri POSIX tarafı. Tek süreç, iki yapı.' },
+      { q: 'macOS neden fork yerine posix_spawn\'ı önerir?', opts: ['Daha eski olduğu için', 'Mach port/thread mirası fork sonrası güvensiz olduğu için', 'fork macOS\'ta çalışmaz'], answer: 'Mach port/thread mirası fork sonrası güvensiz olduğu için',
+        ok: 'Doğru. fork çalışır ama Mach port hakları ve ek thread\'ler tutarlı miras alınmaz; posix_spawn bu kırılgan ara durumu hiç yaratmaz.', no: 'İpucu: fork çalışır ama Mach tarafında bir şey güvenli kopyalanmaz. Ne?' },
+      { q: 'Bir sürecin sinyalleri ve PID\'i hangi kimlik üzerinden yönetilir?', opts: ['Mach task', 'BSD proc', 'IOKit'], answer: 'BSD proc',
+        ok: 'Doğru. PID, UID, sinyaller, ptrace ve dosya tanımlayıcıları BSD proc\'un işidir; Mach task belleği ve thread\'leri yönetir.', no: 'İpucu: sinyaller ve PID POSIX kavramları. Hangi katman POSIX?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · macOS Modül 14', title: 'IOKit ve DriverKit', desc: 'XNU\'nun C++ sürücü çatısı: I/O Registry, sürücü eşleştirme ve user client.', href: 'macos-iokit.html' },
+  sources: [
+    { href: 'https://newosxbook.com/TOC2-2.html', text: 'Levin — OS Internals Cilt II', note: 'Bölüm 13: The BSD Layer' },
+    { href: 'https://github.com/apple-oss-distributions/xnu', text: 'XNU kaynağı', note: 'bsd/kern/kern_exec.c, mach_loader.c' },
+    { href: 'https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/posix_spawn.2.html', text: 'man 2 posix_spawn' },
+    { href: 'https://man7.org/linux/man-pages/man2/fork.2.html', text: 'man 2 fork', note: 'karşılaştırma için' }
+  ],
+  pageTitle: 'XNU BSD Katmanı'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

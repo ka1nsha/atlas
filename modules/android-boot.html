@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Android Açılışı</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'android',
+  crumbs: 'android › açılış › modül 3',
+  eyebrow: 'Modül 3 · Android · Açılış süreci',
+  titleHTML: 'Güç tuşundan ana ekrana: Android <code>açılışı</code>',
+  lede: 'Güç tuşuna bastığın an ile ana ekranın gelmesi arasında bir zincir çalışır: Boot ROM, bootloader, çekirdek, init ve onun .rc betikleri, sonra Zygote ve system_server. Bu modülde zinciri aşama aşama izleyecek, init.rc\'nin ne yaptığını görecek ve her halkayı bir sonrakine nasıl devrettiğini anlayacaksın.',
+  meta: ['~14 dk', 'ön koşul: Linux açılışı, Zygote', 'bağlam: AOSP'],
+  intuition: {
+    paras: [
+      'Açılış (boot), güvenin (trust) ve sorumluluğun el değiştirdiği bir zincirdir. Her halka bir sonrakini yükler, doğrular ve ona kontrolü devreder. En altta donanımın içine gömülü, değiştirilemez <strong>Boot ROM</strong> vardır; en üstte senin gördüğün ana ekran.',
+      'Zincirin kalbi <strong>init</strong> sürecidir: Linux\'ta olduğu gibi PID 1\'dir ama Android\'de kendi betik dili vardır. <code>init.rc</code> dosyaları hangi servislerin ne zaman, hangi tetikleyiciyle (trigger) başlayacağını ve sistem özelliklerinin (property) nasıl kurulacağını anlatır. Zygote ve system_server de bu betiklerle başlatılır.'
+    ],
+    ideas: [
+      { b: 'Güven zinciri', span: 'Boot ROM → bootloader → çekirdek → init. Her halka bir sonrakini doğrulayıp kontrolü devreder (doğrulanmış açılış / verified boot).' },
+      { b: 'init, PID 1', span: 'Çekirdekten sonra ilk kullanıcı-alanı süreci. .rc betiklerini okur, property servisini kurar, tüm daemon\'ların atasıdır.' },
+      { b: 'Betikle başlatma', span: 'init.rc\'deki "on <tetikleyici>" blokları ve "service" tanımları Zygote dahil her şeyi sırayla ayağa kaldırır.' }
+    ]
+  },
+  lab: {
+    intro: 'Açılış zincirini aşağıdan yukarıya izle. Her adımda o anki halka vurgulanır; solda o aşamada çalışan tipik iş, sağda zincirin o ana kadarki durumu görünür. En sonunda ana ekranı çizen system_server ayakta olur.',
+    codeLabel: 'açılış zinciri', cmd: 'power on → boot',
+    foot: 'PID, property ve çıktı değerleri temsilîdir; cihaza ve sürüme göre değişir.',
+    code: [
+      { t: '<span class="cm">// Android açılış zinciri (boot chain)</span>' },
+      { t: '1) Boot ROM        <span class="cm">// SoC içine gömülü, değişmez</span>' },
+      { t: '2) Bootloader      <span class="cm">// aboot/LK; kilit durumu, verified boot</span>' },
+      { t: '3) Çekirdek        <span class="cm">// kernel + initramfs</span>' },
+      { t: '4) init (PID 1)    <span class="cm">// ilk kullanıcı-alanı süreci</span>' },
+      { t: '5) init.rc         <span class="cm">// property servisi + service blokları</span>' },
+      { t: '6) Zygote + system_server  <span class="cm">// framework ayağa kalkar</span>' }
+    ],
+    steps: [
+      { pc: 2, title: 'Boot ROM', hi: 'rom', term: ['[güç açık] SoC Boot ROM çalışıyor'],
+        text: 'Güç geldiğinde SoC (System-on-Chip) içine fabrikada gömülmüş, değiştirilemez <strong>Boot ROM</strong> kodu çalışır. Tek görevi: bir sonraki aşamayı (bootloader) depolamadan yükleyip imzasını doğrulamak. Bu, <strong>güven zincirinin (chain of trust)</strong> köküdür — donanımsal güven kökü (hardware root of trust).' },
+      { pc: 3, title: 'Bootloader', hi: 'boot', term: ['bootloader: kilit durumu LOCKED', 'boot.img doğrulandı → çekirdek yükleniyor'],
+        text: 'Bootloader (Qualcomm\'da aboot, genel olarak LK — Little Kernel) donanımı başlatır ve <code>boot.img</code> içindeki çekirdeği belleğe yükler. <strong>Doğrulanmış açılış (Android Verified Boot, AVB)</strong> burada devreye girer: imza geçerli değilse cihaz uyarı verir veya durur. Bootloader kilidi (OEM unlock) açıksa bu doğrulama gevşer — rooting\'in başladığı yer burasıdır.' },
+      { pc: 4, title: 'Çekirdek ve initramfs', hi: 'kernel', term: ['$ uname -r', '6.18.44-fc-v139', 'initramfs → first-stage init'],
+        text: 'Çekirdek (kernel) açılır: bellek yönetimi, zamanlayıcı ve sürücüler kurulur. Küçük bir <strong>initramfs</strong> (başlangıç RAM diski) ilk aşama init\'i içerir; temel bölümleri (partition) bağlar (mount) ve asıl init\'e geçer. Çekirdek satırı bu konteynerdeki gerçek Linux çekirdeğidir.' },
+      { pc: 5, title: 'init — PID 1', hi: 'init', term: ['$ ps -p 1 -o pid,comm', '  PID COMMAND', '    1 init'],
+        text: '<strong>init</strong>, çekirdekten sonra başlatılan ilk kullanıcı-alanı (user space) sürecidir ve <code>PID 1</code>\'dir — tıpkı Linux\'taki gibi, ama Android\'in kendi init\'i. Tüm diğer süreçlerin atasıdır. Görevi: <code>.rc</code> betiklerini ayrıştırmak, özellik (property) servisini başlatmak ve servisleri sırayla ayağa kaldırmak.' },
+      { pc: 6, title: 'init.rc: property ve servisler', hi: 'rc', term: ['init: property servisi başladı', 'init: on boot → servicemanager, hwservicemanager', 'init: class_start main'],
+        text: '<strong>init.rc</strong> (ve <code>/vendor</code>, <code>/system</code> altındaki parçaları) bir betik dilinde yazılıdır: <code>on &lt;tetikleyici&gt;</code> blokları (örn. <code>on boot</code>, <code>on property:sys.boot_completed=1</code>) ve <code>service</code> tanımları. init önce <strong>property servisini</strong> kurar (sistem genelindeki anahtar-değer ayarları), sonra servicemanager\'ı (Binder isim sunucusu) ve diğer temel daemon\'ları başlatır.' },
+      { pc: 6, title: 'Zygote ve system_server', hi: 'zygote', term: ['init: service zygote → pid 620', 'zygote: preload tamam', 'system_server → ActivityManager, PackageManager, WindowManager', 'sys.boot_completed = 1'],
+        text: 'init, <code>app_process</code> aracılığıyla <strong>Zygote</strong>\'u başlatır (bkz. Modül 4). Zygote framework\'ü önceden yükleyip <strong>system_server</strong>\'ı fork eder; ActivityManager, PackageManager, WindowManager gibi sistem servisleri ayağa kalkar. Son olarak <code>sys.boot_completed=1</code> özelliği set edilir, Launcher başlatılır ve ana ekran gelir.' }
+    ],
+    render: function (s, stateEl, u) {
+      var chain = [
+        { id: 'zygote', name: 'Zygote + system_server', ex: 'framework servisleri, ana ekran' },
+        { id: 'rc', name: 'init.rc betikleri', ex: 'property servisi, service blokları' },
+        { id: 'init', name: 'init — PID 1', ex: 'ilk kullanıcı-alanı süreci' },
+        { id: 'kernel', name: 'Çekirdek + initramfs', ex: 'sürücüler, bölüm bağlama' },
+        { id: 'boot', name: 'Bootloader (LK/aboot)', ex: 'verified boot, kilit durumu' },
+        { id: 'rom', name: 'Boot ROM', ex: 'donanımsal güven kökü (değişmez)' }
+      ];
+      // o ana kadar ulaşılmış halkalar (alttan yukarı) vurgulansın; aktif olan en parlak
+      var order = ['rom', 'boot', 'kernel', 'init', 'rc', 'zygote'];
+      var reached = order.slice(0, order.indexOf(s.hi) + 1);
+      var rows = chain.map(function (c) {
+        var active = c.id === s.hi;
+        var done = reached.indexOf(c.id) >= 0 && !active;
+        var cls = 'box' + (active ? ' hi' : (done ? ' good' : ''));
+        return '<div class="' + cls + '" style="grid-template-columns:1fr;gap:2px">' +
+          '<b>' + u.esc(c.name) + '</b><span>' + u.esc(c.ex) + '</span></div>';
+      }).join('');
+      stateEl.innerHTML =
+        '<p class="lab-label">Güven zinciri (chain of trust) — yukarıdan aşağıya</p>' +
+        '<div class="boxgrid">' + rows + '</div>' +
+        '<p class="note" style="margin-top:10px">En parlak kutu o anki halka; altındaki yeşiller tamamlanmış aşamalar. Her halka bir üsttekine kontrolü devreder.</p>';
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: güçten system_server'a",
+    html: `<p class="lead">Bir Android cihazının açılışı, güç düğmesinden ana ekrana kadar birbirine güvenen bir dizi aşamadır: her aşama bir sonrakini doğrular ve başlatır. Bu zincirin omurgası Boot ROM → bootloader → kernel → init'tir; init de Android'e özgü .rc dili, property service ve zygote ile sistemi ayağa kaldırır.</p>
+
+<h3>1. Boot ROM ve bootloader</h3>
+<p>İlk kod, SoC'nin içine kalıcı olarak gömülü, değiştirilemez Boot ROM'dur; o da vendor'a ait bootloader'ı yükler. Bootloader donanıma özgüdür ve kernel'i çalıştırmadan önce bütünlüğü doğrulamakla yükümlüdür — Verified Boot'un ilk halkası burada başlar.</p>
+<div class="manpage src-aosp"><div class="ref">aosp · bootloader</div><p class="orig">A bootloader is a vendor-proprietary image responsible for bringing up the kernel on a device.</p><p>Bootloader vendor'a aittir, mainline AOSP'nin parçası değildir; bu yüzden her SoC üreticisinin kendi bootloader'ı olur. Görevi kernel'i belleğe getirip ona kontrolü devretmektir.</p></div>
+<div class="manpage src-aosp"><div class="ref">aosp · verified boot</div><p class="orig">The bootloader also verifies the integrity of the boot and recovery partitions before moving execution to the kernel.</p><p>Her aşama bir sonrakini imzayla doğrular (chain of trust). boot, dtbo, init_boot ve recovery partition'ları kontrol edilir; A/B kullanılıyorsa aktif slot seçilir. Doğrulama başarısızsa cihaz uyarı verir veya açılmaz.</p></div>
+<p>Bootloader kilitli (locked) durumda yalnızca imzalı image'ları çalıştırır; <code>fastboot flashing unlock</code> ile açmak kullanıcı verisini siler ve güven durumunu düşürür. Bu, rooting ve custom ROM'un giriş kapısıdır (Modül 19).</p>
+
+<h3>2. Kernel ve initramfs</h3>
+<p>Bootloader kernel'i yükler. Kernel sıkıştırılmış, kendini açan bir binary'dir; ramdisk'ler + bootconfig ise initramfs'i oluşturur.</p>
+<div class="manpage src-aosp"><div class="ref">aosp · kernel load</div><p class="orig">Load the kernel into memory as a self-executable compressed binary.</p><p>Kernel belleğe sıkıştırılmış olarak yüklenir ve kendini açar. initramfs, kök dosya sistemi mount edilmeden önceki erken userspace ortamını sağlar — asıl partition'ları bağlayacak araçlar buradadır.</p></div>
+<p>Kernel command line dört kaynaktan birleşir: bootloader parametreleri, device tree'nin <code>chosen/bootargs</code> düğümü, defconfig'in <code>CONFIG_CMDLINE</code>'ı ve <code>boot.img</code> komut satırı. Android 12'den itibaren <code>androidboot.*</code> parametreleri bootconfig ile taşınabilir.</p>
+
+<h3>3. init: first stage ve second stage</h3>
+<p>Kernel, kullanıcı alanındaki ilk process olan init'i PID 1 olarak çalıştırır. init iki aşamada koşar:</p>
+<div class="deflist">
+<div><dt>first stage init</dt><dd>Ramdisk içinde çalışır; temel dosya sistemlerini (/dev, /proc, /sys) mount eder, SELinux politikasını yükler ve ikinci aşamaya geçiş için asıl system/vendor partition'larını hazırlar.</dd></div>
+<div><dt>SELinux yükleme</dt><dd>Politika henüz bellekte değilken bir an için permissive olunur; politika yüklenip <code>setcon</code> ile init kendi domain'ine geçtikten sonra enforcing moda geçilir.</dd></div>
+<div><dt>second stage init</dt><dd>Asıl init; <code>/system/etc/init</code> ve <code>/vendor/etc/init</code> altındaki <code>.rc</code> dosyalarını ayrıştırır ve servisleri başlatır.</dd></div>
+</div>
+
+<h3>4. .rc dili: action, trigger, service</h3>
+<p>init'in davranışı <code>.rc</code> dosyalarıyla tanımlanır. Bu, Android'e özgü basit bir deklaratif dildir; iki temel yapısı vardır: belirli bir trigger'da çalışan command dizileri (action) ve arka planda yönetilen process'ler (service).</p>
+<div class="deflist">
+<div><dt>on early-init</dt><dd>En erken action grubu; SELinux ve temel kernel ayarları için.</dd></div>
+<div><dt>on init</dt><dd>Dosya sistemi ve dizinlerin kurulması; property tabanlı trigger'lardan önce.</dd></div>
+<div><dt>on boot / on property:...</dt><dd>Donanım hazır olunca veya bir property belirli bir değere gelince tetiklenen action'lar.</dd></div>
+<div><dt>service</dt><dd>Uzun ömürlü bir process tanımı: binary yolu, kullanıcı/grup (UID/GID), SELinux domain, oneshot/restart davranışı. servicemanager, zygote ve surfaceflinger birer service'tir.</dd></div>
+</div>
+<p>init ayrıca servisleri izler: bir service ölürse <code>restart</code> politikasına göre yeniden başlatır; <code>critical</code> işaretli bir service tekrar tekrar ölerse cihazı recovery'e düşürür.</p>
+
+<h3>5. Property service: sistemin paylaşılan durumu</h3>
+<p>Property service, init tarafından yönetilen anahtar-değer deposudur; tüm sistemin paylaştığı küçük bir yapılandırma ve durum alanıdır. Değerler paylaşımlı bellekte tutulur, <code>getprop</code>/<code>setprop</code> ile okunup yazılır ve her yazma SELinux ile denetlenir — hangi process'in hangi property'yi değiştirebileceği politikayla sınırlıdır.</p>
+<div class="deflist">
+<div><dt>ro.*</dt><dd>Read-only; bir kez (çoğunlukla açılışta) ayarlanır, sonra değişmez. Örn. <code>ro.build.version.sdk</code>.</dd></div>
+<div><dt>persist.*</dt><dd>Yeniden başlatmalar arasında kalıcıdır; <code>/data</code> altında saklanır.</dd></div>
+<div><dt>sys.* / ctl.*</dt><dd>Çalışma zamanı durumu ve servis kontrolü; <code>ctl.start</code>/<code>ctl.stop</code> ile init'e service başlatma/durdurma komutu verilir.</dd></div>
+</div>
+
+<h3>6. Başlatma sırası ve sistemin doğuşu</h3>
+<p>second stage init, trigger'lar ilerledikçe temel daemon'ları başlatır: servicemanager (Binder'ın isim sunucusu) önce gelmelidir, çünkü sonraki her şey Binder üzerinden konuşur. Ardından zygote başlar (Modül 4) ve zygote system_server'ı fork eder — ActivityManager, PackageManager gibi onlarca sistem servisi system_server içinde yaşar. system_server hazır olunca launcher başlatılır ve kullanıcı ana ekranı görür. Bu zincirin tamamı, bootloader'da başlayan Verified Boot güvenine dayanır: güven kökünden (hardware root of trust) ana ekrana kadar her halka bir öncekini doğrular.</p>
+<p>AOSP kaynağı init için <a href="https://cs.android.com/android/platform/superproject/main/+/main:system/core/init/README.md" target="_blank" rel="noopener">system/core/init/README.md</a>, bootloader için <a href="https://source.android.com/docs/core/architecture/bootloader" target="_blank" rel="noopener">source.android.com/docs/core/architecture/bootloader</a> altındadır.</p>`
+  },
+  underHood: {
+    heading: 'Kaputun altında: init ne yapıyor?',
+    html: '<p class="prose">init, PID 1 olarak başlar; önce özellik (property) altyapısını kurar, sonra <code>.rc</code> dosyalarını ayrıştırıp tetikleyicilere (trigger) göre servisleri başlatır. AOSP kaynağı <code>system/core/init</code> altındadır.</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://cs.android.com/android/platform/superproject/main/+/main:system/core/init/main.cpp" target="_blank" rel="noopener">init main()</a><span class="where">system/core/init</span><p>İki aşamalı başlar: first-stage (bölümleri bağlar) → SELinux kurulumu → second-stage init.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">property_init()</span><span class="where">system/core/init</span><p>Özellik (property) servisini kurar: sistem genelindeki <code>ro.*</code>, <code>sys.*</code>, <code>persist.*</code> anahtar-değer ayarları.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">.rc ayrıştırma (Parser)</span><span class="where">init.rc, *.rc</span><p><code>on &lt;tetikleyici&gt;</code> blokları ve <code>service</code> tanımları okunur; eylemler (action) kuyruğa alınır.</p></div></li>' +
+      '<li class="boundary"><div>tetikleyiciler sırayla işlenir · early-init → init → late-init → boot</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">servicemanager + zygote</span><span class="where">class_start</span><p>Binder isim sunucusu, ardından <code>app_process</code> ile Zygote; Zygote system_server\'ı fork eder.</p></div></li>' +
+      '</ol>' +
+      '<p class="prose" style="margin-top:14px">Örnek bir <code>.rc</code> service bloğu: bir servisin adı, çalıştırılacağı ikili, hangi kullanıcı/grup altında ve hangi sınıfta (class) başlayacağı tanımlanır. init bu tanımı okuyup süreci <code>fork + exec</code> ile başlatır ve ölürse (politikasına göre) yeniden ayağa kaldırır.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. init.rc service bloğuna bak', p: 'Bir servis tanımının anatomisi: ad, ikili yol, kullanıcı/grup, sınıf. init bunu okuyup süreci başlatır (temsilî).',
+        shells: [{ label: 'init.rc (temsilî)', copy: 'service zygote /system/bin/app_process64 -Xzygote /system/bin --zygote --start-system-server\n    class main\n    user root\n    group root readproc\n    socket zygote stream 660 root system\n    onrestart restart audioserver', pre: '<span class="y">service</span> zygote /system/bin/app_process64 -Xzygote ...\n    <span class="y">class</span> main\n    <span class="y">user</span> root\n    <span class="y">socket</span> zygote stream 660 root system\n    <span class="y">onrestart</span> restart audioserver\n<span class="c"># ad · ikili · sınıf · kullanıcı · soket · yeniden başlat politikası</span>' }] },
+      { h3: '2. init\'in PID 1 olduğunu doğrula', p: 'Android cihazda (ve her Unix\'te) init/süreç ağacının kökü PID 1\'dir. adb ile bak (temsilî çıktı).',
+        shells: [{ label: 'adb (temsilî)', copy: 'adb shell ps -p 1 -o pid,ppid,name', pre: '<span class="c">$</span> adb shell ps -p 1 -o pid,ppid,name\n  PID  PPID NAME\n    1     0 <span class="y">init</span>\n<span class="c"># PPID 0 = çekirdek; init\'in ebeveyni yoktur</span>' }] },
+      { h3: '3. Servislerin durumunu gör', p: 'init, başlattığı her servisin durumunu bir property\'de tutar: running / stopped / restarting (temsilî).',
+        shells: [{ label: 'adb (temsilî)', copy: 'adb shell getprop | grep init.svc', pre: '<span class="c">$</span> adb shell getprop | grep init.svc\n[init.svc.zygote]: [running]\n[init.svc.servicemanager]: [running]\n[init.svc.surfaceflinger]: [running]' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Android açılış zincirinde "güven kökü (root of trust)" nerededir?', opts: ['init içinde', 'SoC\'ye gömülü Boot ROM\'da', 'Çekirdekte'], answer: 'SoC\'ye gömülü Boot ROM\'da',
+        ok: 'Doğru. Boot ROM donanıma gömülü ve değiştirilemez olduğu için güven zinciri ondan başlar; her sonraki halkayı doğrular.', no: 'İpucu: değiştirilemez, donanıma gömülü, zincirin en altındaki halka hangisi?' },
+      { q: 'init sürecinin PID\'si kaçtır?', opts: ['0', '1', 'değişken'], answer: '1',
+        ok: 'Doğru. init, çekirdekten sonra başlatılan ilk kullanıcı-alanı sürecidir ve her zaman PID 1\'dir; tüm süreçlerin atasıdır.', no: 'İpucu: çekirdekten sonraki ilk süreç, Unix\'te hep aynı PID\'yi alır.' },
+      { q: 'init.rc\'deki "on boot" gibi yapılar ne işe yarar?', opts: ['Eylemleri bir tetikleyiciye (trigger) bağlar', 'C kodu derler', 'Çekirdeği günceller'], answer: 'Eylemleri bir tetikleyiciye (trigger) bağlar',
+        ok: 'Doğru. init.rc tetikleyici-tabanlıdır: on boot, on property:... gibi bloklar, o olay gerçekleştiğinde çalışacak eylemleri ve servisleri tanımlar.', no: 'İpucu: "on <bir şey>" bir olay gerçekleştiğinde çalışır; bu bir ... tanımıdır.' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Android Modül 4', title: 'init ve Zygote', desc: 'init\'in başlattığı Zygote her uygulamayı nasıl fork ile doğurur? Copy-on-write\'ın Android hali.', href: 'android-zygote.html' },
+  sources: [
+    { href: 'https://newandroidbook.com/TOC.html', text: 'Levin — Android Internals', note: 'Cilt I, Bölüm 7' },
+    { href: 'https://source.android.com/docs/core/architecture/bootloader', text: 'AOSP — Bootloader ve açılış' },
+    { href: 'https://cs.android.com/android/platform/superproject/main/+/main:system/core/init/README.md', text: 'AOSP — init dili (README)', note: '.rc sözdizimi' },
+    { href: 'https://source.android.com/docs/security/features/verifiedboot', text: 'AOSP — Android Verified Boot' }
+  ],
+  pageTitle: 'Android Açılışı'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

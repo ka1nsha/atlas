@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Tersine Mühendislik</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'offensive',
+  crumbs: 'ofansif › tersine mühendislik › modül 12',
+  eyebrow: 'Ofansif izlek · Modül 12 · Tersine mühendislik',
+  titleHTML: 'Derlenmişi geri okumak: <code>tersine mühendislik</code>',
+  lede: 'Kaynak kodu olmayan bir ikiliyi (binary) nasıl anlarsın? Bu modülde küçük bir programı önce statik (çalıştırmadan), sonra dinamik (çalışırken) analiz edecek; makine kodundan okunur mantığa ve çalışma-anı davranışına ineceksin. Hepsi kendi derlediğin ikili üzerinde.',
+  meta: ['~20 dk', 'ön koşul: assembly temeli, C', 'bağlam: Linux ELF / x86-64'],
+  ethic: '<b>İlke.</b> Tersine mühendislik meşru bir beceridir: bug analizi, kötü amaçlı yazılım (malware) çözümlemesi, birlikte çalışabilirlik ve kendi yazılımını denetleme. Bu modüldeki tüm çalışma <b>kendi derlediğin bir ikili</b> üzerinde yapılır; başkasının yazılımını izinsiz çözmeyi savunmaz.',
+  intuition: {
+    paras: [
+      'Bir derleyici (compiler) kaynak kodu makine koduna çevirir ve bu tek yönlü bir işlem gibi görünür. Ama makine kodu da bir dildir; onu geri okuyabilirsin. Tersine mühendislik, çalıştırılabilir dosyayı insan tarafından anlaşılır hale getirme sanatıdır.',
+      'İki temel yaklaşım vardır. <strong>Statik analiz (static analysis)</strong> ikiliyi çalıştırmadan inceler: baytları assembly\'e çeviren sökücü (disassembler), onu C benzeri bir forma yükselten geri derleyici (decompiler), ve metin/sembol çıkaran araçlar. <strong>Dinamik analiz (dynamic analysis)</strong> ise programı bir hata ayıklayıcıda (debugger) çalıştırıp register\'ları ve belleği canlı izler. İkisi birbirini tamamlar.'
+    ],
+    ideas: [
+      { b: 'Statik: fotoğraf', span: 'Program çalışmadan, tüm kod yolları görünür ama hangisinin gerçekte çalışacağı belirsiz. Sökme (disassembly) ve geri derleme (decompilation) buradadır.' },
+      { b: 'Dinamik: film', span: 'Program çalışırken yalnızca gidilen yol görünür, ama gerçek değerlerle. Kesme noktası (breakpoint) ile durdurup belleğe bakarsın.' },
+      { b: 'Semboller konuşur', span: 'İsimler, metinler (strings) ve semboller ilk ipuçlarıdır. Çıkarılmış (stripped) bir ikilide bunlar silinmiştir; iş zorlaşır.' }
+    ]
+  },
+  lab: {
+    intro: 'Elimizde kaynağı olmayan (varsayalım) bir <code>re_demo</code> ikilisi var; bir lisans anahtarı kontrol ediyor. Onu adım adım analiz edeceğiz: metinlerden fonksiyon sökümüne, oradan geri derlemeye ve son olarak hata ayıklayıcıda canlı izlemeye.',
+    codeLabel: 'analiz hattı', cmd: 'file re_demo',
+    foot: 'Tüm çıktılar bu modül için gerçek bir derlemeden alınmıştır (gcc -g -O0, x86-64). Adresler derlemeye göre değişir.',
+    code: [
+      { t: '<span class="cm">// hedef: re_demo (kaynak yok varsayalım)</span>' },
+      { t: '<span class="cm">// bir lisans anahtarı doğruluyor</span>' },
+      { t: '' },
+      { t: '<span class="cm">1)</span> strings re_demo      <span class="cm"># metin ipuçları</span>' },
+      { t: '<span class="cm">2)</span> nm re_demo           <span class="cm"># semboller/fonksiyonlar</span>' },
+      { t: '<span class="cm">3)</span> objdump -d re_demo   <span class="cm"># sökme (disassembly)</span>' },
+      { t: '<span class="cm">4)</span> <span class="cm"># decompiler → C benzeri</span>' },
+      { t: '<span class="cm">5)</span> gdb re_demo          <span class="cm"># dinamik: breakpoint</span>' }
+    ],
+    steps: [
+      { pc: [1, 2], title: 'Hedefi tanı', stage: 'bina', tool: 'file',
+        text: 'Önce ikilinin ne olduğunu öğren: mimari (x86-64), ELF türü, dinamik mi statik mi, çıkarılmış (stripped) mı. Bu, hangi araçları kullanacağını belirler.',
+        term: ['$ file re_demo', 're_demo: ELF 64-bit LSB pie executable, x86-64,', '  dynamically linked, not stripped'] },
+      { pc: 4, title: 'Metinler: ilk ipuçları', stage: 'strings', tool: 'strings',
+        text: 'strings ikilideki okunur metin dizilerini döker. Bir lisans kontrolünde gömülü anahtarın kendisi burada görünebilir — en ucuz ve çoğu zaman en verimli ilk adım.',
+        term: ['$ strings re_demo | grep -iE "atlas|anahtar"', 'ATLAS-2026', 'kullanim: ./re_demo <anahtar>', 'gecerli anahtar', 'gecersiz anahtar'] },
+      { pc: 5, title: 'Semboller: harita', stage: 'nm', tool: 'nm',
+        text: 'nm sembol tablosunu listeler. "T" işaretli girdiler metin (text) bölümündeki fonksiyonlardır. check_license adı, mantığın nerede olduğunu doğrudan söyler.',
+        term: ['$ nm re_demo | grep " T "', '0000000000001169 T check_license', '0000000000001199 T main'] },
+      { pc: 6, title: 'Sökme (disassembly)', stage: 'objdump', tool: 'objdump',
+        text: 'objdump -d makine kodunu assembly\'e çevirir. check_license içinde bir strcmp çağrısı ve ardından sete (eşitse 1) görüyoruz: fonksiyon, girdiyi sabit bir metinle karşılaştırıp bool döndürüyor. Henüz çalıştırmadık.',
+        term: ['$ objdump -d re_demo', '<check_license>:', '  endbr64', '  ...', '  lea  0xe80(%rip),%rdx   # "ATLAS-2026"', '  mov  %rdx,%rsi', '  call strcmp@plt', '  test %eax,%eax', '  sete %al             # eşitse 1'] },
+      { pc: 7, title: 'Geri derleme (decompilation)', stage: 'decompile', tool: 'Ghidra / IDA',
+        text: 'Ghidra, IDA veya radare2 gibi bir geri derleyici (decompiler) assembly\'i C benzeri bir forma yükseltir. Mantık artık bir bakışta okunur: fonksiyon girdiyi "ATLAS-2026" ile karşılaştırıyor.',
+        term: ['// Ghidra decompiler çıktısı (temsilî)', 'int check_license(char *key) {', '  return strcmp(key, "ATLAS-2026") == 0;', '}'] },
+      { pc: 8, title: 'Dinamik: canlı izleme', stage: 'gdb', tool: 'gdb',
+        text: 'gdb ile programı çalıştırıp check_license\'a bir kesme noktası (breakpoint) koyarız. Program orada durur; argümanı ve register\'ları gerçek değerlerle görürüz. Statik analizin "ne olabilir"i, burada "ne oluyor"a döner.',
+        term: ['$ gdb -q ./re_demo', '(gdb) break check_license', '(gdb) run ATLAS-2026', 'Breakpoint 1, check_license (key=0x7fff…a9b8 "ATLAS-2026")', '(gdb) x/s $rdi', '0x7fff…a9b8:  "ATLAS-2026"'] }
+    ],
+    render: function (s, stateEl, u) {
+      var stages = [
+        { k: 'bina', n: 'Hedef', d: 'ELF / mimari' },
+        { k: 'strings', n: 'Metinler', d: 'strings' },
+        { k: 'nm', n: 'Semboller', d: 'nm' },
+        { k: 'objdump', n: 'Sökme', d: 'objdump -d' },
+        { k: 'decompile', n: 'Geri derleme', d: 'Ghidra/IDA' },
+        { k: 'gdb', n: 'Dinamik', d: 'gdb' }
+      ];
+      var kind = (s.stage === 'gdb') ? 'dinamik (çalışırken)' : (s.stage === 'bina' ? 'hazırlık' : 'statik (çalıştırmadan)');
+      var boxes = stages.map(function (st) {
+        var on = st.k === s.stage;
+        var cls = 'box' + (on ? (s.stage === 'gdb' ? ' good' : ' hi') : '');
+        return '<div class="' + cls + '"><b>' + u.esc(st.n) + '</b><span class="mono">' + u.esc(st.d) + '</span></div>';
+      }).join('');
+      stateEl.innerHTML =
+        '<p class="lab-label">Analiz hattı</p><div class="boxgrid"><div class="boxrow">' + boxes + '</div></div>' +
+        '<div class="read-out"><p class="lab-label" style="margin-bottom:6px">Şu an kullanılan araç</p>' +
+        '<div class="verdict ' + (s.stage === 'gdb' ? 'safe' : 'breach') + '"><span class="dot"></span><span>' + u.esc(s.tool) + ' · ' + kind + '</span></div></div>';
+    }
+  },
+  deepDive: {
+    heading: 'Derinlemesine: derlenmişi geri okumanın yöntemi',
+    html: `<p class="lead">Tersine mühendislik (reverse engineering), kaynağı elinde olmayan bir ikiliyi (binary) insan tarafından anlaşılır hâle getirme disiplinidir: makine kodundan assembly'e, oradan okunur mantığa ve çalışma-anı davranışına inmek. Bu bölüm araçların kendi resmî belgelerine dayanır; tüm çalışma kendi derlediğin ya da analiz etme iznin olan bir ikili üzerinde yapılır. Amaç kırma tarifi değil, kapalı bir bileşeni denetleyebilme becerisidir.</p>
+
+<h3>1. İki temel mod: static vs dynamic analysis</h3>
+<p>Her tersine mühendislik oturumu iki moddan birine ya da ikisine birden dayanır. İkisi aynı ikiliye farklı pencerelerden bakar ve birbirini doğrular: statik "ne olabilir"i, dinamik "ne oluyor"u gösterir.</p>
+<div class="deflist">
+<div><dt>Static analysis</dt><dd>İkiliyi <strong>çalıştırmadan</strong> incelemek. Tüm kod yolları (code paths) görünür ama hangisinin gerçekte yürüyeceği belirsizdir — bir fotoğraf gibi. Disassembly, decompilation, symbol ve string çıkarımı bu moddadır. Zararlı yazılım (malware) analizinde tercih edilir: şüpheli kodu çalıştırmadan okursun.</dd></div>
+<div><dt>Dynamic analysis</dt><dd>Programı bir debugger ya da instrumentation aracıyla <strong>çalıştırırken</strong> izlemek. Yalnızca gidilen yol görünür ama register ve bellek gerçek değerlerle okunur — bir film gibi. Breakpoint, single-step, bellek inceleme ve çağrı izleme (tracing) buradadır.</dd></div>
+</div>
+<p>Pratikte önce statik analizle harita çıkarılır (fonksiyonlar, string'ler, ilgi çeken dallar), sonra dinamik analizle o haritadaki hipotez gerçek değerlerle sınanır.</p>
+
+<h3>2. Disassembler ve decompiler: makine kodunu yükseltmek</h3>
+<p>Statik analizin iki seviyesi vardır. Bir <strong>disassembler</strong> ham baytları işlemci komutlarına (assembly) çevirir; bir <strong>decompiler</strong> bir adım daha gider ve assembly'i C benzeri, okunur bir sözde-koda yükseltir. NSA'nın açık kaynak yaptığı Ghidra bu alanın en bilinen ücretsiz aracıdır ve tam bir SRE (software reverse engineering) çatısıdır.</p>
+<div class="manpage src-docs"><div class="ref">Ghidra · README</div><p class="orig">Ghidra is a software reverse engineering (SRE) framework developed by NSA's Research Directorate for NSA's cybersecurity mission.</p><p>Ghidra, NSA Araştırma Direktörlüğü'nün kendi siber güvenlik görevi için geliştirdiği ve sonradan açık kaynak yaptığı bir software reverse engineering çatısıdır. İçinde disassembler, decompiler, script motoru ve çapraz referans (cross-reference) görünümleri bir arada gelir; aynı ikiliye hem assembly hem C benzeri pencereden bakmanı sağlar.</p></div>
+<p>radare2/rizin ve ticari IDA Pro aynı işi farklı arayüzlerle yapar. Bir decompiler çıktısı her zaman <em>temsilîdir</em>: derleyicinin ürettiği assembly'den geri üretilmiş bir tahmindir, orijinal kaynak kod değil. Değişken adları, yorumlar ve tip bilgisi çoğu zaman kaybolmuştur; analist bunları bağlamdan yeniden kurar.</p>
+
+<h3>3. Dinamik analiz: debugger ve instrumentation</h3>
+<p>Dinamik tarafın klasik aracı debugger'dır. GNU projesinin gdb'si, bir programın içinde çalışırken ne olup bittiğini görmeni sağlar — standart man/manual tanımı bu amacı tek cümlede özetler.</p>
+<div class="manpage src-docs"><div class="ref">GNU gdb · manual</div><p class="orig">GDB, the GNU Project debugger, allows you to see what is going on 'inside' another program while it executes -- or what another program was doing at the moment it crashed.</p><p>gdb, başka bir programın yürürken "içinde" ne olduğunu — ya da çöktüğü (crash) anda ne yapmakta olduğunu — görmeni sağlar. Pratikte bu, bir fonksiyona breakpoint koyup programı orada durdurmak, argümanları ve register'ları (ör. <code>$rdi</code>) gerçek değerleriyle okumak demektir. Lab'daki <code>check_license</code> örneğinde statik tahmini canlı gözlemle doğrulamak tam olarak budur.</p></div>
+<p>Debugger'ın ötesinde, çalışan bir sürece kod enjekte ederek davranışını izleyen <strong>dynamic instrumentation</strong> araçları vardır. Frida bu alanın en yaygınıdır ve kendini doğrudan geliştiriciler ile tersine mühendisler için tanımlar.</p>
+<div class="manpage src-docs"><div class="ref">Frida · tagline</div><p class="orig">Dynamic instrumentation toolkit for developers, reverse-engineers, and security researchers.</p><p>Frida, geliştiriciler, reverse-engineer'lar ve güvenlik araştırmacıları için bir dynamic instrumentation araç takımıdır. Çalışan bir uygulamaya küçük script'ler enjekte edip fonksiyon çağrılarını yakalamanı (hook), argümanları ve dönüş değerlerini okumanı/değiştirmeni sağlar. Kaynak kod gerektirmez; bu yüzden kapalı kaynak bir uygulamanın gerçek çalışma-anı davranışını gözlemlemekte güçlüdür.</p></div>
+
+<h3>4. Bir bug'ı ikilide bulmak: semboller, string'ler, patch diffing</h3>
+<p>Analist bir ikiliye körlemesine dalmaz; en ucuz ipuçlarından başlar. <code>strings</code> gömülü metinleri (anahtar, URL, hata mesajı) saniyeler içinde döker; <code>nm</code>/<code>readelf</code> sembol tablosundan fonksiyon haritasını çıkarır. ELF ve Mach-O modüllerinde gördüğün dosya yapısı tam da bu araçların okuduğu haritadır.</p>
+<div class="deflist">
+<div><dt>Symbol &amp; string keşfi</dt><dd>İsimler ve metinler ilk yön levhasıdır: <code>check_license</code> gibi bir sembol mantığın nerede olduğunu doğrudan söyler. <strong>Stripped</strong> (çıkarılmış) bir ikilide semboller silinmiştir; iş desen ve çapraz referansa kalır.</dd></div>
+<div><dt>Patch diffing</dt><dd>Bir yama (patch) yayımlandığında, yama öncesi ve sonrası ikilileri karşılaştırmak düzeltilen fonksiyonu — dolayısıyla kapatılan açığın yerini — ortaya çıkarır. Savunmada hızlı değerlendirme için; saldırıda "n-day" tespiti için kullanılan iki ucu keskin bir tekniktir.</dd></div>
+</div>
+
+<h3>5. Anti-RE ve etik çerçeve</h3>
+<p>Yazılımlar tersine mühendisliği zorlaştırmak için <strong>obfuscation</strong> (kodu okunmaz kılma), <strong>anti-debug</strong> (debugger varlığını tespit edip davranış değiştirme), string şifreleme ve sanallaştırma gibi teknikler kullanır. Bunlar maliyeti artırır ama mutlak koruma sağlamaz: yeterli zamanla statik ve dinamik analiz birbirini tamamlayarak obfuscation'ı çözer, anti-debug kontrolleri ise çalışma-anında atlatılabilir. Güvenlik mühendisliğinin değişmez ilkesidir — gizlilikle güvenlik (security through obscurity) tek başına savunma değildir.</p>
+<p>Tersine mühendislik meşru ve çoğu yerde yasal bir beceridir: birlikte çalışabilirlik (interoperability), malware analizi, bug avı ve kendi yazılımını denetleme. Yine de yasal sınır ülkeye ve lisansa göre değişir. İlke nettir: analizini yalnızca <strong>kendi ikililerinde ya da açık izinli (yetkili) hedeflerde</strong> uygula; başkasının yazılımını izinsiz çözmek ya da koruma kırmak bu modülün kapsamı dışındadır.</p>`
+  },
+  underHood: {
+    heading: 'Araç kutusu: hangi araç ne verir?',
+    html: '<p class="prose">Tersine mühendislik tek bir araçla değil, bir araç kutusuyla yapılır. Hepsi aynı ikiliye farklı pencerelerden bakar; usta analist bunları birbirini doğrulamak için birlikte kullanır.</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Araç</th><th>Statik / Dinamik</th><th>Ne verir</th></tr></thead><tbody>' +
+      '<tr><td><code>file</code></td><td>Statik</td><td>Dosya türü, mimari, stripped/PIE bilgisi</td></tr>' +
+      '<tr><td><code>strings</code></td><td>Statik</td><td>Gömülü metinler — ilk ve en ucuz ipuçları</td></tr>' +
+      '<tr><td><code>nm</code> / <code>readelf</code></td><td>Statik</td><td>Semboller, bölümler (sections), ELF yapısı</td></tr>' +
+      '<tr><td><code>objdump -d</code></td><td>Statik</td><td>Sökme (disassembly): makine kodu → assembly</td></tr>' +
+      '<tr><td>Ghidra / IDA / radare2</td><td>Statik</td><td>Geri derleme (decompilation): → C benzeri; grafik, çapraz referans</td></tr>' +
+      '<tr><td><code>gdb</code> / lldb</td><td>Dinamik</td><td>Breakpoint, register/bellek inceleme, adım adım yürütme</td></tr>' +
+      '<tr><td><code>ltrace</code> / <code>strace</code></td><td>Dinamik</td><td>Kütüphane ve sistem çağrısı izleme</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px">ELF ve Mach-O modüllerinde gördüğün dosya yapısı, bu araçların okuduğu haritadır: semboller sembol tablosundan, metinler veri bölümlerinden, kod <code>.text</code>/<code>__TEXT</code>\'ten gelir. Çıkarılmış (stripped) bir ikilide semboller silinmiştir; o zaman analist desenlerden ve çapraz referanslardan ilerler.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Kendi hedefini derle ve sök (disassemble)', p: 'Kaynağı olan bir programı derleyip sanki kaynağı yokmuş gibi analiz et. check_license fonksiyonunu objdump ile sök.',
+        shells: [{ label: 'terminal', copy: 'gcc -g -O0 -o re_demo re_demo.c && objdump -d re_demo | grep -A15 "<check_license>:"', pre: '<span class="c">$</span> gcc -g -O0 -o re_demo re_demo.c\n<span class="c">$</span> objdump -d re_demo | grep -A15 "&lt;check_license&gt;:"\n<span class="y">0000000000001169 &lt;check_license&gt;:</span>\n  116d:  push   %rbp\n  ...\n  118a:  call   1070 &lt;strcmp@plt&gt;\n  1191:  sete   %al             <span class="c"># eşitse 1</span>' }] },
+      { h3: '2. strings + nm ile keşif', p: 'Çalıştırmadan, yalnızca metin ve sembollere bakarak programın ne yaptığını tahmin et. Çoğu zaman bir anahtar ya da ipucu doğrudan görünür.',
+        shells: [{ label: 'terminal', copy: 'strings re_demo | grep -iE "atlas|anahtar"; nm re_demo | grep " T "', pre: '<span class="c">$</span> strings re_demo | grep -iE "atlas|anahtar"\n<span class="hi">ATLAS-2026</span>\nkullanim: ./re_demo &lt;anahtar&gt;\n<span class="c">$</span> nm re_demo | grep " T "\n0000000000001169 T <span class="g">check_license</span>\n0000000000001199 T main' }] },
+      { h3: '3. gdb ile canlı izle', p: 'Fonksiyona breakpoint koy, çalıştır, argümanı gerçek değeriyle gör. Statik tahmini dinamik gözlemle doğrula.',
+        shells: [{ label: 'terminal', copy: 'gdb -q -ex "break check_license" -ex "run ATLAS-2026" -ex "info args" ./re_demo', pre: '<span class="c">$</span> gdb -q ./re_demo\n<span class="c">(gdb)</span> break check_license\n<span class="c">(gdb)</span> run ATLAS-2026\n<span class="g">Breakpoint 1, check_license (key=0x7fff…a9b8 "ATLAS-2026")</span>\n<span class="c">(gdb)</span> x/s $rdi\n0x7fff…a9b8:  "ATLAS-2026"' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Statik analiz ile dinamik analiz arasındaki temel fark nedir?', opts: ['Statik daha hızlıdır', 'Statik çalıştırmadan, dinamik çalışırken inceler', 'Dinamik yalnızca kaynak kodla çalışır'], answer: 'Statik çalıştırmadan, dinamik çalışırken inceler',
+        ok: 'Doğru. Statik tüm kod yollarını çalıştırmadan gösterir (fotoğraf); dinamik yalnızca gidilen yolu ama gerçek değerlerle gösterir (film).', no: 'İpucu: biri programı çalıştırır, diğeri çalıştırmaz.' },
+      { q: 'Bir sökücü (disassembler) ile geri derleyici (decompiler) arasındaki fark nedir?', opts: ['Aynı şeydir', 'Sökücü assembly, decompiler C benzeri üretir', 'Decompiler programı çalıştırır'], answer: 'Sökücü assembly, decompiler C benzeri üretir',
+        ok: 'Doğru. objdump makine kodunu assembly\'e çevirir; Ghidra/IDA bir adım ileri gidip okunur C benzeri bir form üretir.', no: 'İpucu: hangisi daha üst seviye, insana daha yakın çıktı verir?' },
+      { q: 'Bir ikilide analize başlamak için en ucuz ilk adım genelde hangisidir?', opts: ['gdb ile breakpoint', 'strings ile metinlere bakmak', 'Tüm fonksiyonları decompile etmek'], answer: 'strings ile metinlere bakmak',
+        ok: 'Doğru. strings saniyeler sürer ve gömülü anahtar, URL, hata mesajı gibi ipuçlarını çoğu zaman doğrudan verir.', no: 'İpucu: en az emekle en çok bilgi veren, çalıştırmadan yapılan adım hangisi?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Ofansif izlek tamamlandı', title: 'Katalog ve diğer izlekler', desc: 'Ofansif izleğin temel modülleri tamam. Ana sayfadan Linux, Android ve macOS/iOS izleklerine dönebilir, zincirleri birlikte okuyabilirsin.', href: '../index.html' },
+  sources: [
+    { href: 'https://ghidra-sre.org/', text: 'Ghidra', note: 'NSA, ücretsiz decompiler' },
+    { href: 'https://rada.re/n/', text: 'radare2 / rizin', note: 'açık kaynak RE çatısı' },
+    { href: 'https://github.com/pwndbg/pwndbg', text: 'pwndbg', note: 'gdb için exploit/RE eklentisi' },
+    { href: 'https://sourceware.org/gdb/current/onlinedocs/gdb/', text: 'gdb el kitabı' },
+    { href: 'https://pwn.college/', text: 'pwn.college', note: 'uygulamalı RE ve pwn dersleri' }
+  ],
+  pageTitle: 'Tersine Mühendislik'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

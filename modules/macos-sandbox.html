@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Sandbox (Seatbelt)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: sandbox karar akışı */
+.sb-flow { display: grid; gap: 8px; }
+.scomp { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 9px 12px; display: grid; gap: 3px; min-width: 0; opacity: .5; transition: opacity .2s, border-color .2s, background .2s; }
+.scomp.lit { opacity: 1; border-color: var(--track); background: var(--track-soft); }
+.scomp .sh { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.scomp .sh b { font-family: var(--f-display); font-size: 14.5px; }
+.scomp .sh .mono { font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.saarrow { text-align: center; color: var(--muted); font-size: 12px; line-height: 1; }
+.sverdict { border-radius: var(--r); padding: 10px 12px; font-family: var(--f-mono); font-size: 13px; display: flex; gap: 8px; align-items: center; margin-top: 2px; }
+.sverdict .d { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.sverdict.ok { background: var(--ok-soft); color: var(--ok); } .sverdict.ok .d { background: var(--ok); }
+.sverdict.bad { background: var(--bad-soft); color: var(--bad); } .sverdict.bad .d { background: var(--bad); }
+.sverdict.wait { background: var(--sunk); color: var(--muted); } .sverdict.wait .d { background: var(--muted); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'macos',
+  crumbs: 'macos › sandbox › modül 17',
+  eyebrow: 'Modül 17 · macOS / iOS · Güvenlik',
+  titleHTML: 'Sandbox (<code>Seatbelt</code>): sürecin kafesini kim çizer?',
+  lede: 'Kod imzalama bir ikilinin KİM olduğunu doğrular; sandbox ise o ikili çalışırken NEYE erişebileceğini kısıtlar. macOS ve iOS\'ta bu kafes, profil tabanlı bir politikayla çizilir ve her dosya, ağ ve IPC işleminde çekirdekte zorlanır.',
+  meta: ['~16 dk', 'ön koşul: MAC, syscall', 'bağlam: XNU, Seatbelt'],
+  ethic: '<b>Not.</b> Bu modül sandbox\'ın savunma tasarımını anlatır. Sandbox kaçışının saldırgan tarafı ayrı bir ofansif modülde (confused deputy) kavramsal olarak ele alınır; burada odak, <b>kafesin nasıl çizilip zorlandığıdır</b>.',
+  intuition: {
+    paras: [
+      'Bir uygulama ele geçirilse bile verebileceği zararı sınırlamak isteriz. Kum havuzu (sandbox), bir sürecin erişebileceği kaynakları — hangi dosyalar, hangi syscall\'lar, hangi ağ adresleri, hangi IPC servisleri — önceden tanımlı bir politikayla daraltır. En az ayrıcalık (least privilege) ilkesinin çalışma-anı uygulamasıdır.',
+      'macOS/iOS sandbox\'ı (eski adıyla Seatbelt) profil tabanlıdır: izin kuralları bir profil dilinde (SBPL, Scheme benzeri) yazılır, derlenir ve sürece bağlanır. Zorlama çekirdekte olur: sandbox bir çekirdek uzantısıdır (kext) ve MACF (Mandatory Access Control Framework) kancalarına takılır. Her kısıtlı işlemde çekirdek profili sorgular. iOS\'ta her uygulama ayrıca kendi konteynerinde (container) yaşar; başka uygulamanın verisini göremez.'
+    ],
+    ideas: [
+      { b: 'Profil = kafes', span: 'İzinler bir profil dilinde (SBPL) yazılıp derlenir ve sürece bağlanır. Profilde olmayan reddedilir.' },
+      { b: 'Çekirdekte zorlama', span: 'Sandbox bir kext olarak MACF kancalarına takılır; kısıtlı her işlemde çekirdek profili sorgular.' },
+      { b: 'Konteyner izolasyonu', span: 'iOS\'ta her uygulama kendi container\'ında; dosya ve veri alanı diğerlerinden yalıtılmıştır.' }
+    ]
+  },
+  lab: {
+    intro: 'Kum havuzundaki bir uygulamanın bir dosya açma denemesini çekirdekte adım adım izleyelim. Her adımda ilgili bileşen aydınlanır ve o anki karar (bekliyor / izin / ret) altta görünür.',
+    codeLabel: 'sandbox karar akışı', cmd: 'open("/Users/.../gizli.txt")',
+    foot: 'Profil parçaları ve log satırları temsilîdir; gerçek davranış sürüme ve profile göre değişir.',
+    code: [
+      { t: '<span class="cm">// uygulama başlarken profil bağlandı</span>' },
+      { t: 'sandbox_profile = compile("container.sb")' },
+      { t: '' },
+      { t: '<span class="cm">// uygulama bir işlem deniyor</span>' },
+      { t: 'open("/Users/deniz/gizli.txt", O_RDONLY)' },
+      { t: '' },
+      { t: '<span class="cm">// çekirdek: MACF kancası → sandbox kext</span>' },
+      { t: 'mac_vnode_check_open() → sandbox_check()' },
+      { t: '  profil: (allow file-read* (subpath "~/Library"))' },
+      { t: 'karar: eşleşme yok → DENY (EPERM)' }
+    ],
+    steps: [
+      { pc: [1, 2], title: 'Profil bağlanır', term: ['sandbox: container profili derlendi ve bağlandı'],
+        text: 'Uygulama başlarken sandbox profili (bir dizi izin kuralı) derlenir ve sürece bağlanır. Bu noktadan sonra süreç, profilin çizdiği kafesin içindedir: profilde açıkça izin verilmeyen her şey varsayılan olarak reddedilir (deny by default).',
+        lit: ['app'], verdict: { cls: 'wait', txt: 'profil bağlı; süreç kafeste' } },
+      { pc: [4, 5], title: 'Kısıtlı işlem denenir', term: ['uygulama: open("/Users/deniz/gizli.txt")'],
+        text: 'Uygulama container\'ı dışındaki bir dosyayı açmaya çalışır. Bu bir syscall\'dır (<code>open</code>); normalde doğrudan VFS\'e giderdi, ama sandbox\'lı bir süreçte çekirdek önce politikayı sorgulamak zorundadır.',
+        lit: ['app', 'op'], verdict: { cls: 'wait', txt: 'işlem denendi; politika sorgulanıyor…' } },
+      { pc: 7, title: 'MACF kancası devreye girer', term: ['çekirdek: mac_vnode_check_open hook'],
+        text: 'Çekirdekteki ilgili yol (burada dosya açma), MACF (Mandatory Access Control Framework) kancasını çağırır. MACF, kayıtlı politika modüllerine "bu işleme izin var mı?" diye sorar. Sandbox kext bu modüllerden biridir.',
+        lit: ['app', 'op', 'macf'], verdict: { cls: 'wait', txt: 'MACF politika modüllerine soruyor…' } },
+      { pc: [8, 9], title: 'Sandbox kext profili değerlendirir', term: ['sandbox: profil kuralları değerlendiriliyor', 'profil: file-read* yalnızca ~/Library altında'],
+        text: 'Sandbox kext, sürece bağlı derlenmiş profili istenen işleme karşı değerlendirir. Profil "dosya okumaya yalnızca <code>~/Library</code> alt ağacında izin ver" diyorsa ve istenen yol <code>~/gizli.txt</code> ise, eşleşme yoktur. Karmaşık/pahalı kararlar (ör. kullanıcı onayı gereken) kullanıcı-alanındaki <code>sandboxd</code>\'ye devredilebilir.',
+        lit: ['app', 'op', 'macf', 'sbk'], verdict: { cls: 'wait', txt: 'kurallar eşleşmiyor; karar veriliyor…' } },
+      { pc: 9, title: 'Ret: EPERM', term: ['sandbox: DENY file-read-data /Users/deniz/gizli.txt', 'open: -1 (EPERM)'],
+        text: 'Profilde izin bulunmadığı için sandbox işlemi reddeder; syscall <code>EPERM</code> ile döner. Uygulama o dosyayı açamaz — ele geçirilmiş olsa bile container dışına uzanamaz. Varsayılan ret (deny by default) sayesinde, profil yazarının aklına gelmeyen yollar bile kapalıdır.',
+        lit: ['app', 'op', 'macf', 'sbk'], verdict: { cls: 'bad', txt: 'eşleşme yok → DENY (EPERM)' } },
+      { pc: 8, title: 'İzinli durum', term: ['uygulama: open("~/Library/Prefs/app.plist")', 'sandbox: ALLOW file-read-data', 'open: 4 (fd)'],
+        text: 'Karşılaştırma için: uygulama izinli bir yolu (<code>~/Library</code> altındaki kendi dosyasını) açarsa profil eşleşir, sandbox ALLOW der ve işlem normal şekilde sürer (bir fd döner). Sandbox her işlemi engellemez; yalnızca profilin çizdiği sınırı zorlar.',
+        lit: ['app', 'op', 'macf', 'sbk'], verdict: { cls: 'ok', txt: 'kural eşleşti → ALLOW (fd döndü)' } }
+    ],
+    render: function (s, stateEl, u) {
+      var all = [
+        { id: 'app', b: 'Uygulama (sandbox içinde)', mono: 'kullanıcı-alanı' },
+        { id: 'op', b: 'open() syscall', mono: 'kısıtlı işlem' },
+        { id: 'macf', b: 'MACF kancası', mono: 'çekirdek' },
+        { id: 'sbk', b: 'Sandbox kext (profil + sandboxd)', mono: 'politika' }
+      ];
+      var html = '<p class="lab-label">Sandbox karar akışı</p><div class="sb-flow">';
+      all.forEach(function (c, i) {
+        var lit = s.lit && s.lit.indexOf(c.id) >= 0;
+        html += '<div class="scomp' + (lit ? ' lit' : '') + '"><div class="sh"><b>' + c.b + '</b><span class="mono">' + c.mono + '</span></div></div>';
+        if (i < all.length - 1) html += '<div class="saarrow">▼</div>';
+      });
+      html += '</div>';
+      html += '<div class="sverdict ' + s.verdict.cls + '"><span class="d"></span><span>' + u.esc(s.verdict.txt) + '</span></div>';
+      stateEl.innerHTML = html;
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: profil nasıl yazılır, nasıl zorlanır?",
+    html: '<p class="lead">Sandbox "uygulamayı kapat" kadar basit değildir: her uygulamaya, yapması gereken işe göre biçilmiş bir profile verilir ve bu profil çekirdekte, işlem işlem zorlanır. Profil dilinden MACF kancalarına, container izolasyonundan sandboxd\'ye kadar ayrıntılar, kafesin ne kadar sağlam olduğunu belirler. Bu bölüm Apple belgelerine ve Levin\'in OS Internals serisine dayanır.</p>' +
+
+      '<h3>1. Profil ve SBPL</h3>' +
+      '<p>Bir sandbox profile, sürecin neye izinli olduğunu tanımlayan kurallar kümesidir. Kurallar <strong>SBPL</strong> (Sandbox Profile Language) adlı, Scheme (TinyScheme) benzeri bir dilde yazılır ve çalışmadan önce bir bytecode\'a derlenir; çekirdek bu derlenmiş biçimi değerlendirir. Tipik bir profil <code>(deny default)</code> ile başlar — yani <strong>deny by default</strong> — sonra yalnızca gereken işlemleri tek tek açar: <code>(allow file-read* (subpath "..."))</code>, <code>(allow mach-lookup (global-name "..."))</code> gibi. Profilde açıkça izin verilmeyen her şey reddedilir; bu, profil yazarının aklına gelmeyen yolların da kapalı kalmasını sağlar.</p>' +
+      '<div class="manpage src-apple"><div class="ref">sandbox-exec · DESCRIPTION</div><p class="orig">The sandbox-exec command enters a sandbox using a profile specified by the -f, -n, or -p option.</p><p>Bir süreç, verilen bir profile ile başlatılır. SBPL kaynağı (<code>-f</code> dosya, <code>-p</code> satır içi) veya yerleşik bir profil (<code>-n</code>) seçilir; o andan sonra süreç o kafesin içindedir. Not: <code>sandbox-exec</code> artık deprecated\'tir (geliştiriciler App Sandbox\'ı benimsemeli), ama kavramı net gösterir.</p></div>' +
+
+      '<h3>2. Çekirdekte zorlama: MACF ve Sandbox.kext</h3>' +
+      '<p>Profil bir dosyada değil, çekirdekte zorlanır. Sandbox bir kernel extension\'dır (<code>Sandbox.kext</code>) ve XNU\'nun <strong>MACF</strong> (Mandatory Access Control Framework) politika motoruna bir policy module olarak kaydolur. MACF, dosya (<code>mac_vnode_check_*</code>), ağ (<code>mac_socket_check_*</code>), IPC (Mach port / XPC), süreç ve syscall yollarına kancalar yerleştirir. Kısıtlı bir işlem bu kancalardan birine uğradığında çekirdek, sürece bağlı derlenmiş profili istenen işleme karşı değerlendirir ve allow/deny kararı verir. Uygulama kendi kodunda çalıştığı için kafesini kendisi gevşetemez — zorlama uygulamanın erişemediği bir katmandadır.</p>' +
+      '<div class="deflist">' +
+      '<div><dt>SBPL</dt><dd>Profilin yazıldığı dil; derlenip bytecode olarak çekirdeğe yüklenir.</dd></div>' +
+      '<div><dt>MACF</dt><dd>XNU\'da policy module\'lerin takıldığı çerçeve; her kısıtlı işlemde kancaları çağrılır.</dd></div>' +
+      '<div><dt>Sandbox.kext</dt><dd>MACF\'e kaydolan policy module; profili işleme karşı değerlendirir.</dd></div>' +
+      '<div><dt>mac_syscall</dt><dd>Profil yükleme/sorgulama için kullanıcı-alanı ile çekirdek arasındaki arayüz.</dd></div>' +
+      '<div><dt>sandboxd</dt><dd>Pahalı veya etkileşimli kararları (ör. kullanıcı izni) işleyen kullanıcı-alanı daemon.</dd></div>' +
+      '</div>' +
+
+      '<h3>3. App Sandbox ve entitlement</h3>' +
+      '<p>Modern macOS\'ta geliştiriciler profili elle yazmaz; <strong>App Sandbox</strong>\'ı etkinleştirir ve ihtiyaç duyduğu yetkileri <strong>entitlement</strong>\'larla (uygulama imzasına gömülü anahtar/değer hakları) talep eder: <code>com.apple.security.network.client</code>, <code>com.apple.security.files.user-selected.read-write</code> gibi. Sistem bu entitlement\'lardan sürece uygun bir profil türetir. Entitlement\'lar kod imzasının parçası olduğu için AMFI tarafından doğrulanır — yani bir uygulama sahip olmadığı bir yetkiyi sonradan kendine ekleyemez.</p>' +
+      '<div class="manpage src-apple"><div class="ref">App Sandbox</div><p class="orig">Restrict access to system resources and user data in macOS apps to contain damage if an app becomes compromised.</p><p>App Sandbox\'ın amacı tam da budur: bir uygulama ele geçirilse bile verebileceği zararı, erişebildiği kaynakları ve kullanıcı verisini önceden daraltarak sınırlamak. Bu, en az ayrıcalık (least privilege) ilkesinin uygulama paketine gömülü hali.</p></div>' +
+
+      '<h3>4. iOS container izolasyonu</h3>' +
+      '<p>iOS\'ta her uygulama, App Store\'dan gelen her şey gibi, sıkı bir varsayılan profille ve kendi <strong>container</strong>\'ında çalışır: uygulamanın dosya alanı (<code>Documents</code>, <code>Library</code>…) diğer uygulamalardan yalıtılmıştır ve uygulama bu dizinin dışını göremez. Paylaşım yalnızca denetimli arayüzlerle (ör. share sheet, app groups, belgelenmiş IPC) olur. macOS\'ta App Sandbox opt-in iken (özellikle App Store dışı uygulamalar sandbox\'sız olabilir), iOS\'ta sandbox zorunludur — bu, iki platformun saldırı yüzeyi arasındaki temel farklardan biridir.</p>' +
+
+      '<h3>5. Diğer katmanlarla ilişki ve saldırgan bakışı</h3>' +
+      '<p>Sandbox tek başına durmaz; macOS/iOS güvenliği katmanlıdır. <strong>AMFI</strong> çalıştırılan <em>kodun</em> imzalı olmasını zorlar (kim?); <strong>sandbox</strong> o kodun <em>erişimini</em> kısıtlar (neye?); <strong>SIP</strong> ise root dahil kimsenin sistem dosyalarına dokunmamasını sağlar (nereye?). Android tarafında aynı işi UID ayrımı + SELinux (MAC) + seccomp birlikte yapar — "politikayı çekirdekte zorla" fikri ortaktır.</p>' +
+      '<p>Saldırgan açısından sandbox, aşılması gereken bir duvardır. Doğrudan delmek yerine tipik yol, <strong>profilde zaten izinli bir IPC servisini</strong> (bir XPC/Mach servisi) kötüye kullanmaktır: sandbox\'lı süreç, daha ayrıcalıklı bir servise kendi adına iş yaptırır (confused deputy). Bu yüzden asıl saldırı yüzeyi, profilin izin verdiği her arayüzdür ve savunma, o servislerin caller\'ı titizlikle doğrulamasıdır. Bu mekanizma ofansif izlekteki <strong>sandbox kaçışı</strong> modülünde kavramsal olarak ele alınır; burada odak, kafesin nasıl çizilip zorlandığıdır.</p>',
+  },
+  underHood: {
+    html: '<p class="prose">Sandbox, AMFI gibi, çekirdeğin MACF (Mandatory Access Control Framework) politika motoruna kaydolan bir çekirdek uzantısıdır (kext). Kancalar dosya, ağ, IPC (Mach port / XPC), süreç ve syscall yollarına yerleştirilmiştir; her kısıtlı işlemde profil değerlendirilir. Profiller <code>mac_syscall</code> üzerinden yüklenir/sorgulanır.</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">open() / connect() / IPC</span><span class="where">bsd/kern</span><p>Kısıtlı bir işlem; VFS/ağ/IPC yolunda MACF kancasına uğrar.</p></div></li>' +
+      '<li class="boundary"><div>MACF politika kancası · çekirdek</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">Sandbox.kext</span><span class="where">mac policy modülü</span><p>Sürece bağlı derlenmiş profili istenen işleme karşı değerlendirir (allow/deny).</p></div></li>' +
+      '<li class="boundary"><div>gerekirse upcall · çekirdek → kullanıcı-alanı</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://newosxbook.com/toc3.html" target="_blank" rel="noopener">sandboxd</a><span class="where">kullanıcı-alanı daemon</span><p>Pahalı veya etkileşimli kararları (ör. kullanıcı izni) işler.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">karar</span><span class="where">Sandbox.kext</span><p>İzin varsa işlem sürer; yoksa EPERM/engel ve çoğu zaman bir ihlal günlüğü.</p></div></li>' +
+      '</ol>' +
+      '<p class="prose" style="margin-top:14px">Diğer katmanlarla ilişki: AMFI çalıştırılan <em>kodun</em> imzalı olmasını zorlar; sandbox o kodun <em>erişimini</em> kısıtlar; SIP ise sistem dosyalarını korur. Android tarafında benzer işi UID ayrımı + SELinux + seccomp birlikte yapar — çekirdekte zorlanan politika fikri aynıdır. Saldırgan açısından bakış (profilde izinli bir IPC servisini "kafası karışık vekil" olarak kullanıp sınırı aşma) ofansif sandbox kaçışı modülünde kavramsal olarak işlenir.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Bir komutu profille çalıştır (macOS)', p: 'sandbox-exec, bir süreci verilen profille başlatır; profilde olmayan işlem reddedilir. (Araç eski/kısıtlı olsa da kavramı gösterir.)',
+        shells: [{ label: 'terminal (macOS · temsilî)', copy: 'sandbox-exec -p \'(version 1)(deny default)(allow process*)\' /bin/ls /', pre: '<span class="c">$</span> sandbox-exec -p \'(version 1)(deny default)\' /bin/cat ~/gizli.txt\n<span class="hi">cat: ~/gizli.txt: Operation not permitted</span>   <span class="c"># sandbox DENY</span>' }] },
+      { h3: '2. Bir uygulamanın container\'ına bak (macOS)', p: 'Sandbox\'lı uygulamalar verilerini kendi container\'larında tutar; başka uygulama oraya erişemez.',
+        shells: [{ label: 'terminal (macOS · temsilî)', copy: 'ls ~/Library/Containers/', pre: '<span class="c">$</span> ls ~/Library/Containers/\ncom.apple.Safari\ncom.apple.Notes\n<span class="c"># her uygulama kendi container\'ında</span>' }] },
+      { h3: '3. Sandbox ihlalini günlükte gör (macOS)', p: 'Bir işlem reddedildiğinde çekirdek bir ihlal (violation) kaydı üretir.',
+        shells: [{ label: 'terminal (macOS · temsilî)', copy: 'log stream --predicate \'sender == "Sandbox"\'', pre: '<span class="c">$</span> log stream --predicate \'sender == "Sandbox"\'\n<span class="c"># Sandbox: deny(1) file-read-data /Users/deniz/gizli.txt</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Sandbox profilinde açıkça yer almayan bir işleme ne olur?', opts: ['İzin verilir', 'Varsayılan olarak reddedilir (deny by default)', 'Kullanıcıya sorulur'], answer: 'Varsayılan olarak reddedilir (deny by default)',
+        ok: 'Doğru. Sağlam sandbox profilleri "varsayılan ret" üzerine kuruludur; yalnızca açıkça izin verilen işlemler geçer, bu yüzden profil yazarının aklına gelmeyen yollar da kapalıdır.', no: 'İpucu: en az ayrıcalık ilkesi — profilde olmayan ne olur?' },
+      { q: 'Sandbox kuralları fiilen nerede zorlanır?', opts: ['Uygulamanın kendi kodunda', 'Çekirdekte, MACF kancaları üzerinden', 'Derleyicide'], answer: 'Çekirdekte, MACF kancaları üzerinden',
+        ok: 'Doğru. Sandbox bir kext olarak MACF\'e kaydolur; kısıtlı her işlemde çekirdek profili sorgular. Uygulama kendi kafesini gevşetemez.', no: 'İpucu: uygulama kendi sınırını kaldıramamalı — zorlama nerede olmalı?' },
+      { q: 'AMFI ile sandbox arasındaki fark nedir?', opts: ['İkisi aynı şeydir', 'AMFI kodun imzalı olmasını, sandbox erişimini kısıtlar', 'Sandbox imzayı, AMFI dosyaları doğrular'], answer: 'AMFI kodun imzalı olmasını, sandbox erişimini kısıtlar',
+        ok: 'Doğru. AMFI "bu kod çalışabilir mi?" (imza), sandbox "bu kod neye erişebilir?" (profil) sorusunu yanıtlar. Katmanlı savunmanın iki ayrı halkası.', no: 'İpucu: biri KİM olduğunu (imza), diğeri NEYE erişebileceğini sorar.' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · macOS Modül 18', title: 'SIP ve TCC', desc: 'Sistem bütünlüğü koruması ve gizlilik izinleri: root bile neden her şeye dokunamaz?' },
+  sources: [
+    { href: 'https://newosxbook.com/toc3.html', text: 'Levin — OS Internals Cilt III', note: 'Bölüm 8, Sandbox' },
+    { href: 'https://support.apple.com/guide/security/welcome/web', text: 'Apple Platform Security', note: 'app sandbox' },
+    { href: 'https://github.com/apple-oss-distributions/xnu', text: 'XNU kaynağı', note: 'MACF / mac policy' }
+  ],
+  pageTitle: 'Sandbox (Seatbelt)'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

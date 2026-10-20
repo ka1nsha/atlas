@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Sanal Bellek ve Sayfa Tabloları</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: adres bit alanları ve yürüyüş */
+.vabits { display: flex; flex-wrap: wrap; gap: 6px; }
+.vaf { border: 1.5px solid var(--line); border-radius: 8px; padding: 6px 9px; display: grid; gap: 2px; min-width: 0; background: var(--surface); }
+.vaf .lbl { font-family: var(--f-mono); font-size: 10px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.vaf .bits { font-family: var(--f-mono); font-size: 12px; color: var(--fg); }
+.vaf .idx { font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.vaf.on { border-color: var(--track); background: var(--track-soft); }
+.vaf.on .lbl, .vaf.on .idx { color: var(--track); }
+.walk { display: grid; gap: 6px; margin-top: 4px; }
+.wlvl { display: grid; grid-template-columns: auto 1fr; gap: 10px; align-items: center; border: 1.5px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--surface); min-width: 0; opacity: .5; }
+.wlvl .wk { font-family: var(--f-mono); font-size: 12px; font-weight: 700; color: var(--muted); white-space: nowrap; }
+.wlvl .wd { font-size: 13px; min-width: 0; } .wlvl .wd .mono { font-family: var(--f-mono); font-size: 12px; color: var(--muted); }
+.wlvl.done { opacity: 1; border-color: var(--line); }
+.wlvl.on { opacity: 1; border-color: var(--track); background: var(--track-soft); }
+.wlvl.on .wk { color: var(--track); }
+.wlvl.fault { opacity: 1; border-color: var(--bad); background: var(--bad-soft); } .wlvl.fault .wk { color: var(--bad); }
+.wlvl.tlb { opacity: 1; border-color: var(--ok); background: var(--ok-soft); } .wlvl.tlb .wk { color: var(--ok); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var VA = '0x5555_5555_4abc';
+var FIELDS = [
+  { key: 'pml4', lbl: 'PML4 [47:39]', bits: '010101010', idx: '170' },
+  { key: 'pdpt', lbl: 'PDPT [38:30]', bits: '101010101', idx: '341' },
+  { key: 'pd',   lbl: 'PD [29:21]',   bits: '010101010', idx: '170' },
+  { key: 'pt',   lbl: 'PT [20:12]',   bits: '101010100', idx: '340' },
+  { key: 'off',  lbl: 'ofset [11:0]', bits: '101010111100', idx: '0xabc' }
+];
+var WALK = [
+  { key: 'cr3',  label: 'CR3', detail: 'CPU yazmacı; o anki sürecin PML4 tablosunun fiziksel taban adresini tutar.' },
+  { key: 'pml4', label: 'PML4', detail: 'PML4[170] girişi → PDPT tablosunun adresi.' },
+  { key: 'pdpt', label: 'PDPT', detail: 'PDPT[341] girişi → PD (page directory) tablosunun adresi.' },
+  { key: 'pd',   label: 'PD', detail: 'PD[170] girişi → PT (page table) tablosunun adresi.' },
+  { key: 'pt',   label: 'PT', detail: 'PT[340] girişi → fiziksel çerçevenin (frame) numarası + izinler.' },
+  { key: 'frame',label: 'Çerçeve', detail: 'Fiziksel çerçeve tabanı + ofset (0xabc) = fiziksel adres.' }
+];
+
+var MODULE = {
+  track: 'linux',
+  crumbs: 'linux › sanal bellek › modül 4',
+  eyebrow: 'Modül 4 · Linux · Bellek yönetimi',
+  titleHTML: 'Sanal adres fiziksel adrese nasıl çevrilir?',
+  lede: 'Her sürecin kendi sanal adres uzayı (virtual address space) vardır; gördüğü adresler gerçek RAM adresleri değildir. Bu modülde bir sanal adresin, dört seviyeli sayfa tablosu (page table) yürüyüşüyle fiziksel adrese nasıl çevrildiğini adım adım izleyeceksin.',
+  meta: ['~18 dk', 'ön koşul: ikili/onaltılık sayılar', 'mimari: x86-64'],
+  intuition: {
+    paras: [
+      'Program bir adrese (ör. <code>0x5555…4abc</code>) eriştiğinde bu bir <strong>sanal adres (virtual address)</strong>tır. Donanımdaki bellek yönetim birimi (MMU), bu adresi çalışma anında gerçek bir fiziksel adrese çevirir. Böylece her süreç, sanki tüm belleğe tek başına sahipmiş gibi davranır; birbirlerinin belleğini göremezler.',
+      'Çeviri (translation), bir ağaç yapısı olan sayfa tablolarıyla yapılır. x86-64\'te adresin üst bitleri dört tablo seviyesinde (PML4 → PDPT → PD → PT) indeks olarak kullanılır; en alttaki giriş bir <strong>fiziksel çerçeveye (frame)</strong> işaret eder. Adresin alt 12 biti ise o çerçeve içindeki ofsettir.'
+    ],
+    ideas: [
+      { b: 'Her sürece ayrı uzay', span: 'Aynı sanal adres iki süreçte farklı fiziksel belleğe eşlenir. Yalıtım (isolation) buradan gelir.' },
+      { b: 'Dört seviyeli ağaç', span: '48-bit adres 9+9+9+9 bit indeks ve 12 bit ofset olarak bölünür. Tablolar seyrek, yani yalnızca kullanılan kısımlar var olur.' },
+      { b: 'TLB hızlandırır', span: 'Her erişimde dört tablo okumak pahalıdır; MMU son çevirileri TLB (translation lookaside buffer) önbelleğinde tutar.' }
+    ]
+  },
+  lab: {
+    intro: 'Örnek bir sanal adresi (<code>0x5555…4abc</code>) alıp bitlere ayırıyoruz, sonra MMU\'nun dört seviyeli yürüyüşünü (walk) izliyoruz. Sağda hem adresin bit alanlarını hem de o an hangi tablonun okunduğunu gör.',
+    codeLabel: 'çeviri (kavramsal)', cmd: 'MMU: 0x5555…4abc → ?',
+    foot: 'Adres ve indeks değerleri bu örnek içindir; gerçek değerler süreçten sürece değişir.',
+    code: [
+      { t: '<span class="cm">// sanal adres (virtual address), 48-bit anlamlı</span>' },
+      { t: 'va  = <span class="n">0x555555554abc</span>;' },
+      { t: 'i4  = (va &gt;&gt; <span class="n">39</span>) &amp; <span class="n">0x1ff</span>;  <span class="cm">// PML4 = 170</span>' },
+      { t: 'i3  = (va &gt;&gt; <span class="n">30</span>) &amp; <span class="n">0x1ff</span>;  <span class="cm">// PDPT = 341</span>' },
+      { t: 'i2  = (va &gt;&gt; <span class="n">21</span>) &amp; <span class="n">0x1ff</span>;  <span class="cm">// PD   = 170</span>' },
+      { t: 'i1  = (va &gt;&gt; <span class="n">12</span>) &amp; <span class="n">0x1ff</span>;  <span class="cm">// PT   = 340</span>' },
+      { t: 'off = va &amp; <span class="n">0xfff</span>;          <span class="cm">// ofset = 0xabc</span>' },
+      { t: '<span class="cm">// donanim (MMU) su yuruyusu yapar:</span>' },
+      { t: 'pdpt  = PML4[i4];' },
+      { t: 'pd    = PDPT[i3];' },
+      { t: 'pt    = PD[i2];' },
+      { t: 'frame = PT[i1];' },
+      { t: 'phys  = frame + off;  <span class="cm">// fiziksel adres</span>' }
+    ],
+    steps: [
+      { pc: [2, 7], title: 'Adres bitlere ayrılır', field: null, active: -1,
+        text: '48-bit sanal adres beş parçaya bölünür: dört tane 9-bit indeks (her biri 0–511 arası, bir tablodaki girişi seçer) ve 12-bit ofset (4 KB\'lık sayfa içindeki konum). Sağdaki bit alanlarına bak.' },
+      { pc: 8, title: 'CR3: kök tablo', field: 'pml4', active: 0,
+        text: 'Çeviri CR3 yazmacından başlar: bu yazmaç, o anki sürecin PML4 tablosunun fiziksel taban adresini tutar. Her bağlam değişiminde (context switch) CR3 yeni sürecinkiyle değişir — süreç yalıtımının kalbi budur.' },
+      { pc: 9, title: 'PML4 → PDPT', field: 'pml4', active: 1,
+        text: 'Adresin en üst 9 biti (indeks 170) PML4 tablosunda bir giriş seçer. Bu giriş bir sonraki tablonun (PDPT) fiziksel adresini verir.' },
+      { pc: 10, title: 'PDPT → PD', field: 'pdpt', active: 2,
+        text: 'Sonraki 9 bit (indeks 341) PDPT\'de bir giriş seçer; o da PD (page directory) tablosuna işaret eder.' },
+      { pc: 11, title: 'PD → PT', field: 'pd', active: 3,
+        text: 'Sonraki 9 bit (indeks 170) PD\'de bir giriş seçer; o da en alttaki PT (page table) tablosuna işaret eder. (Bir PD girişi doğrudan 2 MB\'lık büyük sayfaya da işaret edebilir — huge page.)' },
+      { pc: 12, title: 'PT → çerçeve', field: 'pt', active: 4,
+        text: 'Son 9 bit (indeks 340) PT\'de bir giriş seçer. Bu giriş (PTE) fiziksel çerçeve (frame) numarasını ve izin bitlerini (okuma/yazma/çalıştırma, kullanıcı/çekirdek) taşır.' },
+      { pc: 13, title: 'Çerçeve + ofset', field: 'off', active: 5,
+        text: 'Çerçeve tabanına adresin alt 12 biti (ofset 0xabc) eklenir ve fiziksel adres bulunur. Tek bir erişim için dört tablo okundu: bu yüzden TLB var.',
+        term: ['çeviri tamam: 0x5555…4abc → fiziksel çerçeve + 0xabc'] },
+      { pc: 13, title: 'TLB isabeti (hit)', field: 'off', active: 5, tlb: true,
+        text: 'Aynı sayfaya bir sonraki erişimde MMU dört tabloyu yeniden okumaz: çeviriyi TLB önbelleğinde bulur (hit) ve adımları atlar. TLB ıskası (miss) olunca yürüyüş yeniden yapılır.',
+        term: ['TLB hit: yürüyüş atlandı'] },
+      { pc: 12, title: 'Sayfa hatası (page fault)', field: 'pt', active: 4, fault: true,
+        text: 'Ya PT girişi "mevcut değil" (present=0) ise? MMU bir sayfa hatası (page fault, #PF) kesmesi üretir ve çekirdeğe devreder. Çekirdek bunu çözer: sayfa diske takas edilmişse (swap) geri getirir, CoW ise kopyalar, geçersiz erişimse süreci SIGSEGV ile öldürür.',
+        term: ['#PF: present=0 → çekirdek handle_mm_fault\'a girdi'] }
+    ],
+    render: function (s, stateEl, u) {
+      var bits = FIELDS.map(function (f) {
+        return '<div class="vaf' + (s.field === f.key ? ' on' : '') + '"><span class="lbl">' + f.lbl + '</span><span class="bits">' + f.bits + '</span><span class="idx">= ' + f.idx + '</span></div>';
+      }).join('');
+      var walk = WALK.map(function (lvl, i) {
+        var cls = 'wlvl';
+        if (i === s.active) cls += s.fault ? ' fault' : (s.tlb ? ' tlb' : ' on');
+        else if (i < s.active) cls += ' done';
+        return '<div class="' + cls + '"><span class="wk">' + lvl.label + '</span><span class="wd">' + u.esc(lvl.detail) + '</span></div>';
+      }).join('');
+      stateEl.innerHTML =
+        '<p class="lab-label">Sanal adres · ' + VA + '</p><div class="vabits">' + bits + '</div>' +
+        '<p class="lab-label" style="margin-top:16px">Sayfa tablosu yürüyüşü (page-table walk)</p><div class="walk">' + walk + '</div>';
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: sayfa tablosunun içinde ne var?",
+    html: `<p class="lead">Dört seviyeli yürüyüş hikâyenin iskeleti; asıl ayrıntı, her page table entry içindeki bitlerde, TLB'nin davranışında ve page fault'un nasıl çözüldüğünde. Bu bölüm bu katmanı açar.</p>
+
+<h3>1. Neden 48-bit? Canonical address</h3>
+<p>x86-64 donanımı 64-bit yazmaç kullanır ama bugünkü işlemciler adresin yalnızca alt 48 bitini çevirir (yeni nesil 5-seviyeli sayfalamayla 57 bit). Geri kalan üst bitler, 47. bitin kopyası olmak zorundadır; buna <strong>canonical address</strong> denir. Kurala uymayan bir adres (non-canonical) donanım tarafından anında reddedilir. Bu yüzden kullanıcı alanı adresleri <code>0x0000…</code> ile, çekirdek adresleri <code>0xffff…</code> ile başlar: iki uç, 48-bit penceresinin iki yakasıdır.</p>
+
+<h3>2. Page table entry (PTE) içindeki bitler</h3>
+<p>Yürüyüşün son girişi yalnızca bir çerçeve numarası taşımaz; her seviyedeki giriş, fiziksel adresin üst bitleriyle birlikte bir dizi kontrol biti tutar. En kritik olanlar:</p>
+<div class="deflist">
+<div><dt>Present (P)</dt><dd>Sayfa bellekte mi? 0 ise erişim bir page fault üretir. Swap'e alınmış veya henüz hiç ayrılmamış (demand paging) sayfalar present=0'dır.</dd></div>
+<div><dt>Read/Write (R/W)</dt><dd>1 ise yazılabilir, 0 ise salt okunur. copy-on-write tam olarak burada kurulur: paylaşılan sayfa iki tarafta da R/W=0 yapılır.</dd></div>
+<div><dt>User/Supervisor (U/S)</dt><dd>1 ise kullanıcı alanı erişebilir, 0 ise yalnızca çekirdek. Kullanıcı kodunun çekirdek belleğine erişememesi bu bitle zorlanır.</dd></div>
+<div><dt>Accessed (A)</dt><dd>Donanım sayfaya her erişimde 1 yapar. Çekirdek bununla "hangi sayfalar sık kullanılıyor"u ölçer (page reclaim / LRU).</dd></div>
+<div><dt>Dirty (D)</dt><dd>Donanım sayfaya her yazmada 1 yapar. Çekirdek, diske geri yazması (writeback) gereken sayfaları bununla ayırır.</dd></div>
+<div><dt>NX (No-eXecute)</dt><dd>1 ise sayfadaki veri CPU tarafından komut olarak çalıştırılamaz. Veri alanlarında kod çalıştırmayı (shellcode enjeksiyonu) engelleyen donanım korumasının temeli budur.</dd></div>
+</div>
+
+<h3>3. TLB ve TLB shootdown</h3>
+<p>Tek bir çeviri için dört tablo okumak pahalıdır, bu yüzden MMU son çevirileri <strong>TLB</strong> (translation lookaside buffer) içinde önbellekler. Sorun şu: çekirdek bir sayfa tablosu girişini değiştirince (ör. sayfayı serbest bırakınca), diğer CPU çekirdeklerinin TLB'sinde o çevirinin eski kopyası kalmış olabilir. Çekirdek, bu bayat girişleri temizlemek için diğer çekirdeklere bir inter-processor interrupt (IPI) gönderir; bu işleme <strong>TLB shootdown</strong> denir ve çok çekirdekli sistemlerde ölçülebilir bir maliyettir.</p>
+
+<h3>4. Page fault: minor, major ve demand paging</h3>
+<p>present=0 bir sayfaya erişim her zaman bir hata değildir; çoğu zaman planlı bir mekanizmadır. Çekirdek sayfaları ihtiyaç anına kadar gerçekten ayırmaz — buna <strong>demand paging</strong> denir. İki tür page fault vardır:</p>
+<ul>
+<li><strong>Minor fault:</strong> Sayfa aslında bellekte (ör. başka bir süreç zaten yüklemiş, ya da yeni bir zero page) ama bu sürecin sayfa tablosunda henüz eşleme yok. Disk erişimi gerekmez, ucuzdur.</li>
+<li><strong>Major fault:</strong> Sayfa diskte (swap'te veya henüz okunmamış bir dosyada). Çekirdek diskten okumak zorundadır; milisaniyeler sürer, pahalıdır.</li>
+</ul>
+<div class="manpage"><div class="ref">2 mmap · MAP_PRIVATE</div><p class="orig">Create a private copy-on-write mapping. Updates to the mapping are not visible to other processes mapping the same file.</p><p><code>mmap(MAP_PRIVATE)</code> bir dosyayı copy-on-write olarak eşler: okuma paylaşılır, ilk yazma o sayfayı özel bir kopyaya çevirir. Program yükleyici bir çalıştırılabiliri ve kütüphaneleri tam olarak böyle eşler — bu yüzden yüzlerce süreç aynı <code>libc</code> kodunu tek bir fiziksel kopyada paylaşır.</p></div>
+<div class="manpage"><div class="ref">2 mmap · ERRORS</div><p class="orig">ENOMEM: No memory is available.
+EINVAL: We don't like addr, length, or offset (e.g., they are too large, or not aligned on a page boundary).</p><p>Eşlemeler sayfa sınırına (4 KB) hizalı olmak zorundadır; hizasız bir <code>addr</code> veya <code>length</code> EINVAL verir. Geçersiz bir adrese erişim ise çeviride present=0 bulur ve man sayfasının dediği gibi "subsequent references to these pages will generate SIGSEGV" — yani süreç öldürülür.</p></div>
+
+<h3>5. Huge pages: tabloyu kısaltmak</h3>
+<p>4 KB'lık sayfalar, büyük bellek kullanan programlarda çok sayıda PTE ve sık TLB ıskası demektir. Çözüm <strong>huge page</strong>: bir PD girişi doğrudan 2 MB'lık, bir PDPT girişi ise 1 GB'lık bir çerçeveye işaret edebilir; alttaki tablo seviyeleri atlanır. Daha az tablo, daha az TLB girişi, daha hızlı çeviri — veritabanları ve sanal makineler bunu sıkça kullanır. Bedeli iç parçalanmadır (internal fragmentation): yarım dolu bir 2 MB sayfa 2 MB yer tutar.</p>
+
+<h3>6. /proc/pid/maps ile kendi uzayını okumak</h3>
+<p>Bir sürecin sanal adres uzayının haritası <code>/proc/pid/maps</code> dosyasındadır; her satır bir bölge (virtual memory area, VMA) anlatır.</p>
+<div class="manpage"><div class="ref">5 proc_pid_maps · perms</div><p class="orig">r = read, w = write, x = execute, s = shared, p = private (copy on write)</p><p>Her satırdaki izin alanı bir bölgenin karakterini gösterir: <code>r-xp</code> = okunur, çalıştırılır, özel (tipik olarak kod); <code>rw-p</code> = okunur, yazılır, özel (veri ve heap). Buradaki <code>p</code>, man sayfasının dediği gibi doğrudan copy-on-write anlamına gelir — yani PTE'deki R/W=0 kurgusunun kullanıcıya görünen yüzü.</p></div>
+<p>inode alanının 0 olması, bölgenin bir dosyaya değil anonim belleğe (heap, stack, BSS) karşılık geldiğini söyler. <code>/proc/pid/pagemap</code> ise bir adım öteye gider ve her sanal sayfanın hangi fiziksel çerçeveye (page frame number, PFN) düştüğünü verir — çeviriyi gerçek sayılarla görmek için.</p>
+
+<h3>7. Overcommit: söz vermek, tutmamak</h3>
+<p>Demand paging'in doğal sonucu: çekirdek, aslında var olandan daha çok bellek "sözü" verebilir, çünkü çoğu süreç ayırdığı belleğin hepsine dokunmaz. Buna <strong>overcommit</strong> denir (<code>/proc/sys/vm/overcommit_memory</code> ile ayarlanır). Riski şudur: tüm süreçler aynı anda sözlerini bozup belleğe dokunursa fiziksel bellek tükenir ve çekirdek <strong>OOM killer</strong>'ı devreye sokup bir süreci öldürmek zorunda kalır.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">Yürüyüşün tamamını donanım (MMU) yapar; çekirdek yalnızca tabloları kurar ve bir giriş eksik olduğunda devreye girer. İş akışı şöyle:</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">MMU + TLB</span><span class="where">donanım</span><p>Her bellek erişiminde çeviriyi yapar; başarısız olursa sayfa hatası (page fault) kesmesi üretir.</p></div></li>' +
+      '<li class="boundary"><div>kesme sınırı · donanım → çekirdek</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/handle_mm_fault" target="_blank" rel="noopener">handle_mm_fault()</a><span class="where">mm/memory.c</span><p>Sayfa hatasının giriş noktası; hatalı adresin geçerli bir VMA\'ya düşüp düşmediğine bakar.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/__handle_mm_fault" target="_blank" rel="noopener">__handle_mm_fault()</a><span class="where">mm/memory.c</span><p>Sayfa tablosu seviyelerini gezer/oluşturur ve uygun işleyiciye yönlendirir.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/do_anonymous_page" target="_blank" rel="noopener">do_anonymous_page() / do_wp_page()</a><span class="where">mm/memory.c</span><p>Yeni bir sayfa ayırıp PTE\'yi kurar (anonim bellek) ya da copy-on-write kopyalamasını yapar.</p></div></li>' +
+      '</ol>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Sayfa boyutunu öğren', p: 'Ofsetin neden 12 bit olduğunu burada görürsün: 2¹² = 4096 bayt = bir sayfa.',
+        shells: [{ label: 'terminal', copy: 'getconf PAGESIZE', pre: '<span class="c">$</span> getconf PAGESIZE\n4096' }] },
+      { h3: '2. Kendi adres uzayına bak', p: 'Her satır bir bölge (VMA): adres aralığı, izinler (r-xp, rw-p) ve eşlendiği dosya. Kod salt okunur-çalıştırılır, veri okunur-yazılır.',
+        shells: [{ label: 'terminal · gerçek çıktı', copy: 'cat /proc/self/maps', pre: '<span class="c">$</span> cat /proc/self/maps\n55c0ebea8000-55c0ebecb000 <span class="y">r-xp</span> ... /usr/bin/grep\n55c0ebed2000-55c0ebed3000 <span class="g">rw-p</span> ... /usr/bin/grep\n55c0ee18c000-55c0ee1ad000 rw-p ... <span class="g">[heap]</span>\n7f1f87828000-7f1f879b1000 <span class="y">r-xp</span> ... /usr/lib/.../libc.so.6' }] },
+      { h3: '3. Sanal → fiziksel eşlemeyi oku', p: '/proc/self/pagemap, her sanal sayfanın hangi fiziksel çerçeveye (PFN) düştüğünü gösterir (kök yetkisi gerekir). Çeviriyi gerçek sayılarla görmek için.',
+        shells: [{ label: 'terminal', copy: 'sudo cat /proc/self/pagemap | xxd | head', pre: '<span class="c">$</span> sudo ./pagemap_tool $$   <span class="c"># VA → PFN eşlemesini basar</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Sanal adresin alt 12 biti neyi gösterir?', opts: ['PML4 indeksi', 'Sayfa içindeki ofset', 'Fiziksel çerçeve numarası'], answer: 'Sayfa içindeki ofset',
+        ok: 'Doğru. 12 bit = 4096 bayt = bir sayfa. Alt 12 bit çeviride değişmez; sayfa içindeki konumdur.', no: 'İpucu: 2¹² kaç eder? Sayfa boyutu neydi?' },
+      { q: 'x86-64\'te tek bir çeviri için kaç tablo okunur (TLB ıskası durumunda)?', opts: ['1', '2', '4'], answer: '4',
+        ok: 'Doğru. PML4 → PDPT → PD → PT: dört seviye. Bu yüzden MMU sonuçları TLB\'de önbellekler.', no: 'Tekrar dene. PML4 → PDPT → PD → PT.' },
+      { q: 'Bağlam değişiminde (context switch) süreç yalıtımını sağlayan nedir?', opts: ['CR3 yeni PML4\'ü gösterir', 'TLB temizlenmez', 'Fiziksel adresler aynıdır'], answer: 'CR3 yeni PML4\'ü gösterir',
+        ok: 'Doğru. CR3 yeni sürecin sayfa tablosunu gösterince aynı sanal adresler artık farklı fiziksel belleğe çevrilir; süreçler birbirini göremez.', no: 'İpucu: çevirinin kökü hangi yazmaçtı?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Linux Modül 5', title: 'brk, mmap ve malloc', desc: 'Heap nasıl büyür? malloc bu sayfaları çekirdekten nasıl ister ve chunk\'lara nasıl böler?' },
+  sources: [
+    { href: 'https://pages.cs.wisc.edu/~remzi/OSTEP/vm-paging.pdf', text: 'OSTEP: Paging', note: 'ücretsiz' },
+    { href: 'https://0xax.gitbooks.io/linux-insides/content/MM/', text: 'linux-insides: Memory management', note: 'kaynak gezintisi' },
+    { href: 'https://elixir.bootlin.com/linux/latest/source/mm/memory.c', text: 'mm/memory.c', note: 'Elixir' },
+    { href: 'https://man7.org/linux/man-pages/man5/proc_pid_maps.5.html', text: 'man proc_pid_maps', note: '/proc/pid/maps' }
+  ],
+  pageTitle: 'Sanal Bellek ve Sayfa Tabloları'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

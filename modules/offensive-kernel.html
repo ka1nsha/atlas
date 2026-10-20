@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Çekirdeğe Geçiş</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: ayrıcalık katmanları + sınır */
+.rings { display: grid; gap: 0; }
+.ring { border: 1.5px solid var(--line); background: var(--surface); padding: 12px 14px; display: grid; gap: 6px; min-width: 0; }
+.ring:first-child { border-radius: var(--r) var(--r) 0 0; }
+.ring:last-child { border-radius: 0 0 var(--r) var(--r); border-top: none; }
+.ring .rl { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.ring .rl b { font-family: var(--f-display); font-size: 15px; }
+.ring .rl .mono { font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.ring.user { border-color: var(--accent); } .ring.user .rl b { color: var(--accent); }
+.ring.kern { border-color: var(--bad); } .ring.kern .rl b { color: var(--bad); }
+.ring.dim { opacity: .5; }
+.ring.cur { box-shadow: inset 0 0 0 2px var(--track); }
+.surf { display: flex; flex-wrap: wrap; gap: 6px; }
+.surf span { font-family: var(--f-mono); font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--sunk); color: var(--muted); }
+.surf span.hot { background: var(--bad-soft); color: var(--bad); font-weight: 700; }
+.boundary-bar { border: 1px dashed var(--warn); background: var(--warn-soft); border-radius: 8px; padding: 7px 10px; margin: 8px 0; font-family: var(--f-mono); font-size: 11.5px; color: var(--warn); font-weight: 700; display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.boundary-bar.open { border-style: solid; }
+.guard-note { margin-top: 12px; border: 1px solid var(--ok); background: var(--ok-soft); border-radius: var(--r); padding: 8px 10px; font-size: 12.5px; }
+.guard-note b { color: var(--ok); font-family: var(--f-mono); font-size: 11px; }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'offensive',
+  crumbs: 'ofansif › çekirdeğe geçiş › modül 8',
+  eyebrow: 'Ofansif izlek · Modül 8 · Çekirdek',
+  titleHTML: 'Kullanıcıdan çekirdeğe: <code>kernel attack surface</code>',
+  lede: 'Kullanıcı alanındaki (user space) bir sömürü (exploit) en fazla o kullanıcının yetkisini verir. Asıl ödül çekirdektedir: çekirdek bir bug tüm sisteme tam ayrıcalık (full privilege) demektir. Bu modül, kullanıcı ile çekirdek arasındaki sınırı, bu sınırdaki saldırı yüzeyini (attack surface) ve onu koruyan mekanizmaları kavramsal olarak gösterir.',
+  meta: ['~20 dk', 'ön koşul: syscall + primitifler', 'bağlam: kavramsal'],
+  ethic: '<b>İlke.</b> Bu modül çekirdek saldırı yüzeyini ve savunmasını kavramsal olarak anlatır; çalışır ya da silahlandırılmış exploit kodu içermez. Tüm deneyler <b>kendi makinende, güvenli ve yalnızca gözlem amaçlı</b> komutlarla yapılır. Amaç, çekirdek saldırılarını anlayarak daha iyi savunmaktır.',
+  intuition: {
+    paras: [
+      'Modern işletim sistemleri belleği ve ayrıcalığı <strong>halkalara (ring)</strong> böler: kullanıcı kodu en dışta (x86\'da ring 3), çekirdek en içte (ring 0) çalışır. Kullanıcı kodu doğrudan donanıma, başka süreçlerin belleğine veya çekirdek yapılarına dokunamaz; her şey çekirdeğin denetiminden geçer.',
+      'Saldırgan için bu sınır hem engel hem fırsattır. Kullanıcı alanında ele geçirilen bir süreç yalnızca kendi yetkisine sahiptir; ama çekirdekte bir hata bulunursa, saldırgan sınırı aşıp <strong>yerel ayrıcalık yükseltme (local privilege escalation, LPE)</strong> ile tüm sistemin denetimini alabilir. Bu yüzden çekirdeğin kullanıcıya açtığı her kapı — her syscall, her <code>ioctl</code> — birer giriş noktasıdır (entry point).'
+    ],
+    ideas: [
+      { b: 'Çekirdek = tam ayrıcalık', span: 'Kullanıcı bug\'ı o kullanıcıyla sınırlı; çekirdek bug\'ı tüm sisteme ring 0 yetkisi verir. Ödül bu yüzden büyük.' },
+      { b: 'Sınır = doğrulama', span: 'Kullanıcı→çekirdek geçişinde her argüman doğrulanmalı. Eksik doğrulama (örn. copy_from_user hataları) bir çekirdek bug\'ıdır.' },
+      { b: 'Yüzey = giriş noktaları', span: 'syscall, sürücü ioctl, ağ, dosya sistemi ayrıştırma (parsing): kullanıcının çekirdeğe ulaştığı her yol bir saldırı yüzeyidir.' }
+    ]
+  },
+  lab: {
+    intro: 'Aşağıda bir isteğin kullanıcı alanından çekirdeğe yolculuğu ve bu yolun neresinin saldırı yüzeyi olduğu adım adım işleniyor. Sağda ayrıcalık halkalarını (ring), aralarındaki sınırı ve o anda hangi giriş noktasının "sıcak" olduğunu izle.',
+    codeLabel: 'kavramsal akış', cmd: '# kullanıcı → çekirdek',
+    foot: 'Bu akış kavramsaldır; somut bir exploit değildir. Adresler/değerler temsilîdir.',
+    code: [
+      { t: '<span class="cm">// kullanıcı alanı (ring 3)</span>' },
+      { t: 'fd  = <span class="f">open</span>(<span class="s">"/dev/surucu"</span>, O_RDWR);   <span class="cm">// sürücüye kapı</span>' },
+      { t: 'ret = <span class="f">ioctl</span>(fd, CMD, &amp;arg);      <span class="cm">// sınırı geç</span>', danger: true },
+      { t: '<span class="cm">// --- kullanıcı/çekirdek sınırı ---</span>' },
+      { t: '<span class="cm">// çekirdek (ring 0)</span>' },
+      { t: '<span class="f">copy_from_user</span>(&amp;k, arg, len); <span class="cm">// doğrulama burada</span>', danger: true },
+      { t: 'k.buf[k.index] = x;            <span class="cm">// index doğrulanmazsa: bug</span>', danger: true },
+      { t: '<span class="cm">// -> çekirdek belleğinde kontrollü yazma = LPE yolu</span>' }
+    ],
+    steps: [
+      { pc: 1, title: 'İki ayrıcalık dünyası', term: ['[*] kullanıcı: ring 3', '[*] çekirdek: ring 0'],
+        text: 'Sistem iki ayrıcalık seviyesine bölünür: kullanıcı kodu ring 3\'te kısıtlı çalışır, çekirdek ring 0\'da her şeye erişir. Aralarındaki sınır, tüm güvenlik modelinin temel güven sınırıdır (trust boundary).',
+        cur: 'user', bopen: false,
+        user: ['süreç belleği'], kern: [],
+        guard: { n: 'Ayrıcalık halkaları (privilege rings)', t: 'Donanım, ring 3 kodunun çekirdek belleğine veya ayrıcalıklı komutlara doğrudan erişimini engeller. Her geçiş çekirdeğin kontrolündeki kapılardan olur.' },
+        verdict: 'Saldırgan konumu: kullanıcı (ring 3), sınırlı' },
+      { pc: 2, title: 'Giriş noktaları (entry points)', term: ['syscall · ioctl · soket · dosya ayrıştırma'],
+        text: 'Kullanıcının çekirdeğe ulaştığı her yol bir giriş noktasıdır: ~370 syscall, sürücülerin <code>ioctl</code> arayüzleri, ağ paketi işleme, dosya sistemi ayrıştırma (parsing). Saldırı yüzeyi (attack surface) bu kapıların toplamıdır; en geniş ve en az denetlenen kapı en caziptir.',
+        cur: 'user', bopen: false,
+        user: ['süreç belleği'], kern: ['syscall', 'ioctl', 'ağ', 'dosya sistemi'], hot: ['ioctl'],
+        guard: { n: 'Seccomp-BPF · yüzey daraltma', t: 'Bir sürece izin verilen syscall\'ları kısıtlayarak saldırı yüzeyini küçültür (ör. tarayıcı sandbox\'ları). Erişilemeyen kapı, saldırılamayan kapıdır.' },
+        verdict: 'Yetenek: açık giriş noktaları haritalandı' },
+      { pc: [3, 6], title: 'Sınırda doğrulama', term: ['[>] ioctl(fd, CMD, &arg)', '[k] copy_from_user(&k, arg, len)'],
+        text: 'İstek sınırı geçerken çekirdek, kullanıcıdan gelen her şeyi güvenilmez kabul etmelidir: işaretçileri <code>copy_from_user</code> ile kopyalamalı, uzunlukları ve indeksleri doğrulamalı. Bu doğrulamanın atlanması ya da yanlış yapılması bir çekirdek bug\'ının ta kendisidir.',
+        cur: 'bound', bopen: true,
+        user: ['süreç belleği'], kern: ['syscall', 'ioctl', 'ağ', 'dosya sistemi'], hot: ['ioctl'],
+        guard: { n: 'Doğrulama + copy_from_user/to_user', t: 'Çekirdek, kullanıcı işaretçilerini asla doğrudan kullanmaz; denetimli yardımcılarla kopyalar ve sınırları kontrol eder. Doğru doğrulama, bug\'ın oluşmasını baştan engeller.' },
+        verdict: 'Kritik an: güvenilmez girdi sınırı geçiyor' },
+      { pc: 7, title: 'Çekirdekte bir bug', term: ['[!] k.index doğrulanmadı', '[!] çekirdek belleğinde kontrollü yazma'],
+        text: 'Diyelim ki bir indeks veya uzunluk doğrulanmadı. Artık kullanıcı girdisi çekirdek belleğinde sınır dışı (out-of-bounds) bir yazmaya yol açar. Önceki modüldeki primitif merdiveni burada da işler — ama bu kez hedef çekirdeğin kendisidir.',
+        cur: 'kern', bopen: true,
+        user: ['süreç belleği'], kern: ['çekirdek yığını/heap', 'görev yapıları (task)', 'kimlik bilgileri (cred)'], hot: ['kimlik bilgileri (cred)'],
+        guard: { n: 'KASLR · yığın bekçileri', t: 'Çekirdek adreslerini rastgeleleştirir (KASLR) ve yapıları korur; saldırganı önce bir çekirdek bilgi sızıntısına (info leak) zorlar, tıpkı kullanıcı alanındaki ASLR gibi.' },
+        verdict: 'Yetenek: çekirdek belleğinde kontrollü etki' },
+      { pc: 7, title: 'Ayrıcalık yükseltme (LPE)', term: ['[+] cred yapısı değiştirildi: uid=0', '[*] ring 0 denetimi (kavramsal)'],
+        text: 'Çekirdek belleğindeki yazmayı, sürecin kimlik bilgilerine (<code>struct cred</code>) yönelterek uid=0 (root) yapmak klasik bir hedeftir. Saldırgan artık ring 0 ayrıcalığındadır: tüm sistem onundur. Kullanıcıdan çekirdeğe geçiş tamamlandı.',
+        cur: 'kern', bopen: true,
+        user: ['süreç belleği (artık root)'], kern: ['çekirdek yığını/heap', 'görev yapıları (task)', 'kimlik bilgileri (cred)'], hot: ['kimlik bilgileri (cred)'],
+        guard: { n: 'SMEP · SMAP · PAN · KCFI', t: 'SMEP/PAN çekirdeğin kullanıcı belleğini çalıştırmasını/okumasını engeller; KCFI çekirdekte kontrol akışını doğrular. Bu katmanlar LPE zincirinin her halkasını ayrı ayrı pahalılaştırır.' },
+        verdict: 'Yetenek: tam sistem ayrıcalığı (kavramsal)' }
+    ],
+    render: function (s, stateEl, u) {
+      function surf(list, hot) {
+        if (!list || !list.length) return '<span style="color:var(--muted)">—</span>';
+        return list.map(function (x) {
+          var isHot = (hot || []).indexOf(x) >= 0;
+          return '<span class="' + (isHot ? 'hot' : '') + '">' + u.esc(x) + '</span>';
+        }).join('');
+      }
+      var userRing = '<div class="ring user' + (s.cur === 'user' ? ' cur' : '') + (s.cur === 'kern' ? ' dim' : '') + '">' +
+        '<div class="rl"><b>Kullanıcı alanı (user space)</b><span class="mono">ring 3</span></div>' +
+        '<div class="surf">' + surf(s.user) + '</div></div>';
+      var bar = '<div class="boundary-bar' + (s.bopen ? ' open' : '') + '"><span>⟷ kullanıcı / çekirdek sınırı (trust boundary)</span><span>' + (s.bopen ? 'GEÇİLİYOR' : 'kapalı') + '</span></div>';
+      var kernRing = '<div class="ring kern' + (s.cur === 'kern' ? ' cur' : '') + (s.cur === 'user' ? ' dim' : '') + '">' +
+        '<div class="rl"><b>Çekirdek (kernel)</b><span class="mono">ring 0</span></div>' +
+        '<div class="surf">' + surf(s.kern, s.hot) + '</div></div>';
+      stateEl.innerHTML =
+        '<p class="lab-label">Ayrıcalık halkaları ve saldırı yüzeyi</p>' +
+        '<div class="rings">' + userRing + '</div>' + bar + '<div class="rings">' + kernRing + '</div>' +
+        '<div class="read-out"><div class="verdict breach"><span class="dot"></span><span>' + u.esc(s.verdict) + '</span></div></div>' +
+        '<div class="guard-note"><b>BU AŞAMAYI SAVUNAN KORUMA · ' + u.esc(s.guard.n) + '</b><br>' + u.esc(s.guard.t) + '</div>';
+    }
+  },
+  deepDive: {
+    heading: 'Derinlemesine: çekirdek saldırı yüzeyi',
+    html: `<p class="lead">Çekirdek, tüm sistemin tek güven köküdür (trust anchor): belleği, süreçleri ve donanımı o yönetir ve ring 0'da her şeye erişir. Bu yüzden çekirdekteki tek bir bug, kullanıcı alanındaki bir bug'dan niteliksel olarak farklıdır — sonucu o kullanıcı değil, <strong>tüm sistemdir</strong>. Bu bölüm, saldırı yüzeyini (attack surface) bir saldırgan gibi haritalar; ama amaç onu <em>küçültmek</em> ve <em>sertleştirmek</em>, yani savunmaktır. Alıntılar doğrudan Linux çekirdeğinin kendi güvenlik belgelerinden (Kernel Self-Protection) gelir.</p>
+
+<h3>1. Neden sınır her şeydir: user space → kernel</h3>
+<p>Donanım, kodu ayrıcalık halkalarına (privilege ring) böler: kullanıcı kodu ring 3'te kısıtlı, çekirdek ring 0'da tam yetkili çalışır. Kullanıcı bir süreci ele geçirse bile yalnızca o sürecin yetkisine sahiptir; asıl ödül, bu sınırı aşıp çekirdeğe geçmektir (local privilege escalation, LPE). Sınırın kritikliği, çekirdeğin bir bug sonrası ne kadar çabuk tümüyle ele geçirilebildiğinden gelir — bu yüzden çekirdek, kendi belleğini kullanıcıdan katı biçimde ayırmak zorundadır.</p>
+<div class="manpage src-docs"><div class="ref">docs · The Linux Kernel · Kernel Self-Protection</div><p class="orig">The kernel must also never access userspace memory without explicit expectation to do so.</p><p>Kural tersten okunduğunda saldırı yüzeyini tanımlar: çekirdek kullanıcı belleğine yalnızca <em>açıkça beklediği</em> yerlerde (ör. copy_from_user) dokunmalıdır. Bu beklenen temas noktalarının dışındaki her erişim bir bug'dır; SMAP/PAN gibi donanım korumaları da tam bu kuralı zorunlu kılarak saldırıları çekirdek belleğiyle sınırlı tutar.</p></div>
+
+<h3>2. Saldırı yüzeyinin bileşenleri: her kapı bir giriş noktası</h3>
+<p>Kullanıcının çekirdeğe ulaştığı her yol bir <strong>entry point</strong>'tir ve bunların toplamı saldırı yüzeyidir. Bir saldırgan en geniş ve en az denetlenen kapıyı arar; bir savunmacı ise erişilebilir kapı sayısını azaltmaya çalışır.</p>
+<div class="deflist">
+<div><dt>syscall interface</dt><dd>Çekirdeğin kullanıcıya açtığı ~370 sistem çağrısı. Her çağrının argümanları ve işaretçileri güvenilmezdir; doğrulama hataları en temel yüzeydir.</dd></div>
+<div><dt>ioctl / driver</dt><dd><code>/dev/*</code> aygıtlarına açılan sürücü komutları. 3rd-party ve aygıta özel sürücüler, çekirdeğin en az denetlenen, en değişken kod tabanıdır — bu yüzden çoğu zaman en zayıf halkadır.</dd></div>
+<div><dt>network stack</dt><dd>Uzaktan gelen paketleri ayrıştıran (parsing) kod. Tek fark: tetik için yerel erişim bile gerekmeyebilir.</dd></div>
+<div><dt>filesystem parsers</dt><dd>Bozuk/kötü niyetli bir imajı mount ederken çalışan ayrıştırıcılar. Güvenilmez bir imaj, karmaşık bir ayrıştırma koduna doğrudan saldırgan verisi besler.</dd></div>
+<div><dt>IPC / shared interfaces</dt><dd>Süreçler arası ve kullanıcı-çekirdek paylaşımlı arayüzler; sınırda dönüşüm/doğrulama yapılan her yer.</dd></div>
+</div>
+<p>Çekirdeğin kendi belgeleri, bu kapı sayısını azaltmayı açık bir savunma hedefi sayar:</p>
+<div class="manpage src-docs"><div class="ref">docs · The Linux Kernel · Kernel Self-Protection</div><p class="orig">This limits the breadth of kernel code that can be reached</p><p>Fikir doğrudan: ulaşılabilen çekirdek kodunun genişliğini sınırlamak, bir bug'ı saldırıya çevirmeyi zorlaştırır. Erişilemeyen kod, pratikte saldırılamayan koddur — bu yüzden "attack surface reduction" bir lüks değil, temel bir savunma ilkesidir.</p></div>
+
+<h3>3. Sınırda doğrulama: copy_from_user ve güvenilmez girdi</h3>
+<p>İstek sınırı geçerken çekirdek, kullanıcıdan gelen <em>her şeyi</em> güvenilmez kabul etmek zorundadır. Kullanıcı işaretçileri asla doğrudan dereference edilmez; <code>copy_from_user</code> / <code>copy_to_user</code> gibi denetimli yardımcılarla kopyalanır, uzunluklar ve indeksler sınır kontrolünden geçirilir. Bu doğrulamanın atlanması ya da yanlış yapılması (ör. doğrulanmamış bir index ile out-of-bounds write) bir çekirdek bug'ının ta kendisidir — ve önceki modüldeki primitif merdiveni burada da işler, yalnızca hedef çekirdeğin kendisidir (<code>struct cred</code>, görev yapıları, fonksiyon işaretçileri).</p>
+
+<h3>4. Yüzey daraltma: seccomp ve least privilege</h3>
+<p>Saldırı yüzeyini küçültmenin en etkili yollarından biri, bir sürecin yapabileceği syscall kümesini daraltmaktır. <strong>seccomp</strong> filtreleri tam da bunu yapar: tarayıcılar ve konteyner çalışma zamanları, ele geçirilse bile bir sürecin dokunabileceği çekirdek kodunu en aza indirir (least privilege / assume breach).</p>
+<div class="manpage src-docs"><div class="ref">docs · The Linux Kernel · seccomp filter</div><p class="orig">The resulting set reduces the total kernel surface exposed to the application.</p><p>Bir sürece yalnızca ihtiyaç duyduğu syscall'lara izin vermek, geri kalan tüm çekirdek giriş noktalarını o süreç için kapatır. Çekirdek belgeleri bunun tek başına bir sandbox olmadığını, bir <em>yapı taşı</em> olduğunu vurgular — yani derinlemesine savunmanın (defense in depth) bir katmanıdır, tek savunma değil.</p></div>
+
+<h3>5. Sömürüyü kırmak: writable belleği kilitlemek ve katmanlı savunma</h3>
+<p>Saldırgan sınırı aşıp çekirdek belleğinde kontrollü bir etki elde etse bile, modern çekirdek bunu tam sistem devralmaya çevirmeyi ayrıca zorlaştırır. Temel fikir, çekirdeğin değiştirilebilir (writable) yüzeyini daraltmaktır: kod ve kritik tabloları salt okunur yapmak, kullanıcı belleğini çekirdekten erişilemez kılmak (SMEP/SMAP/PAN) ve kontrol akışını doğrulamak (KCFI).</p>
+<div class="manpage src-docs"><div class="ref">docs · The Linux Kernel · Kernel Self-Protection</div><p class="orig">When all of kernel memory is writable, it becomes trivial for attacks to redirect execution flow.</p><p>Belge sorunu çıplak biçimde koyar: çekirdek belleğinin tamamı yazılabilirse, yürütme akışını saptırmak <em>önemsiz</em> hâle gelir. Çözüm, bellek izinlerini kilitlemek — yazılabilir sayfaların çalıştırılamaması (W^X), kod bölgelerinin değiştirilememesi. Bu, kullanıcı alanındaki RELRO/NX'in çekirdek karşılığıdır.</p></div>
+<p>Bu korumalar birbirinin yerine değil, <strong>üst üste</strong> anlam taşır: KASLR saldırganı önce bir çekirdek info leak'e zorlar (tıpkı user space'teki ASLR gibi); SMEP eski "çekirdeği kullanıcı koduna atlatma" hilesini kapatıp saldırganı tümüyle çekirdek içinde kalan çok daha zor zincirlere (çekirdek ROP) iter; KCFI o zinciri de doğrular. Çekirdeğin kendi hedefi, bu korumaların istisna değil kural olmasıdır:</p>
+<div class="manpage src-docs"><div class="ref">docs · The Linux Kernel · Kernel Self-Protection</div><p class="orig">The goals for successful self-protection systems would be that they are effective, on by default</p><p>Bir savunma ancak <em>varsayılan olarak açık</em> ve etkili olduğunda gerçek koruma sağlar — kullanıcının elle açması gereken bir koruma, çoğu sistemde kapalı kalır. Saldırı yüzeyini anlamanın savunmacı için anlamı budur: her giriş noktasının karşısına, varsayılan açık bir koruma koyabilmek.</p></div>`
+  },
+  underHood: {
+    heading: 'Kaputun altında: çekirdek saldırı yüzeyi',
+    html: '<p class="prose">Çekirdek, kullanıcıya birçok kapı açar; her kapı bir giriş noktası (entry point) ve dolayısıyla bir saldırı yüzeyidir. Her yüzeyi daraltan ya da sertleştiren bir koruma vardır:</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Giriş noktası</th><th>Örnek</th><th>Onu zorlaştıran koruma</th></tr></thead><tbody>' +
+      '<tr><td><b>Sistem çağrıları (syscalls)</b></td><td>Argüman/işaretçi doğrulama hataları</td><td>Seccomp-BPF, copy_from_user denetimi</td></tr>' +
+      '<tr><td><b>Sürücü ioctl</b></td><td><code>/dev/*</code> üzerinden özel komutlar</td><td>İzinler, yüzey daraltma, fuzzing</td></tr>' +
+      '<tr><td><b>Ağ yığını (network stack)</b></td><td>Paket ayrıştırma (parsing) hataları</td><td>Girdi doğrulama, ayrıcalık ayrımı</td></tr>' +
+      '<tr><td><b>Dosya sistemi ayrıştırma</b></td><td>Bozuk imaj mount etme</td><td>Güvenilmez imajları reddetme</td></tr>' +
+      '<tr><td><b>Çekirdek belleği</b></td><td>OOB/UAF ile cred yapısına yazma</td><td>KASLR, SMEP/SMAP/PAN, KCFI</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px"><strong>SMEP</strong> (Supervisor Mode Execution Prevention) çekirdeğin kullanıcı alanındaki kodu çalıştırmasını, <strong>SMAP</strong>/<strong>PAN</strong> ise kullanıcı belleğini gelişigüzel okumasını engeller. Bunlar olmadan klasik bir hile, çekirdeği kullanıcı alanındaki saldırgan koduna atlatmaktı; bu korumalar o kolay yolu kapattı ve saldırganı tümüyle çekirdek içinde kalan, çok daha zor zincirlere (ör. ROP) itti. Bu yüzden çekirdek sömürüsü, kullanıcı alanına göre hem daha değerli hem çok daha zordur.</p>'
+  },
+  pipeline: { intro: 'Çekirdek sömürüsü de aynı genel boru hattını (exploitation pipeline) izler; yalnızca hedef çekirdektir ve korumalar (KASLR, SMEP/SMAP/PAN, KCFI) çekirdek bağlamının karşılıklarıdır.' },
+  tryIt: {
+    items: [
+      { h3: '1. Sürücü giriş noktalarını listele', p: '<code>/dev</code> altındaki karakter aygıtları (character devices), sürücülerin kullanıcıya açtığı kapılardır; her biri bir <code>ioctl</code> saldırı yüzeyidir. Gözlem amaçlı, güvenli.',
+        shells: [{ label: 'terminal', copy: 'ls -l /dev | grep "^c" | head', pre: '<span class="c">$</span> ls -l /dev | grep "^c" | head\ncrw-------  10, 235  autofs\ncrw-rw-rw-   1,   7  full\ncrw-------  10, 229  fuse\ncrw-rw-rw-   1,  11  kmsg\n<span class="c"># her satır bir sürücü = bir ioctl giriş noktası</span>' }] },
+      { h3: '2. KASLR adres gizlemeyi gör', p: 'Yetkisiz bir kullanıcı çekirdek sembol adreslerini okuyamaz; <code>kptr_restrict</code> açıkken <code>/proc/kallsyms</code> adresleri sıfırlı görünür. Bu, çekirdek bilgi sızıntısını (info leak) neden gerekli kıldığını gösterir.',
+        shells: [{ label: 'terminal', copy: 'cat /proc/sys/kernel/kptr_restrict; head -2 /proc/kallsyms', pre: '<span class="c">$</span> cat /proc/sys/kernel/kptr_restrict\n1\n<span class="c"># kptr_restrict=1 → yetkisiz kullanıcıya:</span>\n<span class="c">$</span> head -2 /proc/kallsyms\n<span class="y">0000000000000000</span> T _stext\n<span class="y">0000000000000000</span> T _text   <span class="c"># adresler gizli (KASLR)</span>' }] },
+      { h3: '3. Saldırı yüzeyinin boyutu', p: 'x86-64\'te tanımlı syscall sayısı, çekirdeğin en temel giriş noktası kümesidir. Her biri kullanıcıdan çekirdeğe bir geçiş, yani denetlenmesi gereken bir sınır.',
+        shells: [{ label: 'terminal', copy: 'grep -c "#define __NR_" /usr/include/x86_64-linux-gnu/asm/unistd_64.h', pre: '<span class="c">$</span> grep -c "#define __NR_" .../asm/unistd_64.h\n373   <span class="c"># ~373 syscall giriş noktası</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Kullanıcı alanı sömürüsüne kıyasla çekirdek sömürüsü neden daha değerlidir?', opts: ['Daha kolaydır', 'Tam sistem ayrıcalığı (ring 0) verir', 'Daha az kod gerektirir'], answer: 'Tam sistem ayrıcalığı (ring 0) verir',
+        ok: 'Doğru. Kullanıcı bug\'ı o kullanıcıyla sınırlıyken, çekirdek bug\'ı ring 0 — yani tüm sistemin denetimini — verir. Bu yüzden hem daha değerli hem daha zordur.', no: 'İpucu: çekirdek hangi ayrıcalık halkasında çalışır ve neye erişir?' },
+      { q: 'Çekirdek, kullanıcıdan gelen bir işaretçiyi nasıl güvenli kullanır?', opts: ['Doğrudan dereference eder', 'copy_from_user ile kopyalayıp doğrular', 'Hiç kullanmaz'], answer: 'copy_from_user ile kopyalayıp doğrular',
+        ok: 'Doğru. Kullanıcı işaretçileri güvenilmezdir; çekirdek onları denetimli yardımcılarla kopyalar ve sınır/indeks doğrulaması yapar. Bunun atlanması bir bug\'dır.', no: 'İpucu: kullanıcı girdisi güvenilmezdir; çekirdek onu doğrudan mı kullanmalı?' },
+      { q: 'SMEP ve SMAP/PAN hangi klasik çekirdek sömürü hilesini kapatır?', opts: ['Çekirdeği kullanıcı alanındaki koda/belleğe atlatmak', 'Diski doldurmak', 'Çok iş parçacığı açmak'], answer: 'Çekirdeği kullanıcı alanındaki koda/belleğe atlatmak',
+        ok: 'Doğru. SMEP kullanıcı kodunu çalıştırmayı, SMAP/PAN kullanıcı belleğini okumayı çekirdeğe yasaklar; saldırganı tümüyle çekirdek içinde kalan zorlu zincirlere (ROP) iter.', no: 'İpucu: eskiden çekirdek, kullanıcı alanındaki saldırgan koduna atlardı. Bunu ne engeller?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Ofansif Modül 9', title: 'Jailbreak anatomisi', desc: 'Bir jailbreak\'in aşamaları: bootstrap → çekirdek exploit → kalıcılık. Kamuya açık zincirlerin yapısı.' },
+  sources: [
+    { href: 'https://github.com/xairy/linux-kernel-exploitation', text: 'xairy/linux-kernel-exploitation', note: 'çekirdek saldırı yüzeyi ve teknikler' },
+    { href: 'https://a13xp0p0v.github.io/', text: 'a13xp0p0v (Alexander Popov)', note: 'çekirdek savunmaları ve CVE analizleri' },
+    { href: 'https://projectzero.google/', text: 'Project Zero', note: 'çekirdek zafiyet araştırması' },
+    { href: 'https://lwn.net/Kernel/', text: 'LWN Kernel', note: 'çekirdek güvenlik haberleri' }
+  ],
+  pageTitle: 'Çekirdeğe Geçiş'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

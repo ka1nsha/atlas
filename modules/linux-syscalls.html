@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Sistem Çağrıları</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: mod göstergesi ve dispatch oku */
+.mode-box { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 10px 12px; display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.mode-box.kernel { border-color: var(--track); background: var(--track-soft); }
+.mode-box .ml { font-family: var(--f-mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.mode-box .mv { font-family: var(--f-display); font-weight: 800; font-size: 16px; }
+.mode-box.kernel .mv { color: var(--track); }
+.reg b { font-family: var(--f-mono); font-size: 13px; } .reg span { font-family: var(--f-mono); font-size: 11.5px; color: var(--muted); }
+.reg.hi b { color: var(--track); }
+.dispatch { border: 1px dashed var(--track); border-radius: var(--r); background: var(--track-soft); padding: 8px 10px; font-family: var(--f-mono); font-size: 12px; color: var(--track); overflow-wrap: anywhere; }
+.retbox { border-top: 1px solid var(--line); margin-top: 2px; padding-top: 10px; display: flex; justify-content: space-between; gap: 8px; font-family: var(--f-mono); font-size: 13px; }
+.retbox b { color: var(--ok); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'linux',
+  crumbs: 'linux › sistem çağrıları › modül 3',
+  eyebrow: 'Modül 3 · Linux · Çekirdek arayüzü',
+  titleHTML: 'Sistem çağrıları: <code>syscall</code> ile çekirdeğe geçiş',
+  lede: 'Bir program dosyaya yazmak, bellek istemek veya süreç yaratmak istediğinde bunu kendisi yapamaz; çekirdekten ister. Bu istek bir sistem çağrısıdır (system call). Bu modülde bir write() çağrısının register\'lardan çekirdeğe ve geri olan yolculuğunu izleyecek ve ham bir syscall\'ı kendi makinende çalıştıracaksın.',
+  meta: ['~15 dk', 'ön koşul: temel C, register kavramı', 'mimari: x86-64'],
+  intuition: {
+    paras: [
+      'Kullanıcı alanı (user space) ve çekirdek alanı (kernel space) iki ayrı ayrıcalık seviyesidir. CPU normalde programları kısıtlı bir modda (x86\'da ring 3) çalıştırır; donanıma, diske, başka süreçlerin belleğine doğrudan dokunamazlar. Bu işler yalnızca çekirdeğin çalıştığı ayrıcalıklı modda (ring 0) yapılabilir.',
+      'Sistem çağrısı bu iki dünya arasındaki kapıdır. Program argümanları önceden belirlenmiş register\'lara koyar, <code>syscall</code> komutunu çalıştırır ve CPU denetimli bir biçimde çekirdeğe geçer. Çekirdek işi yapar, sonucu bir register\'a koyar ve geri döner. <code>printf</code>, <code>malloc</code>, <code>fopen</code> — hepsinin altında eninde sonunda bir sistem çağrısı vardır.'
+    ],
+    ideas: [
+      { b: 'Register sözleşmesi', span: 'x86-64\'te: rax = çağrı numarası, sırayla rdi, rsi, rdx, r10, r8, r9 = argümanlar. Dönüş değeri yine rax\'te.' },
+      { b: 'Tek komut', span: '`syscall` komutu ayrıcalık seviyesini değiştirir (ring 3 → ring 0) ve önceden belirlenmiş çekirdek giriş noktasına atlar.' },
+      { b: 'Numaralı tablo', span: 'Çekirdek, çağrı numarasını bir dizinde (sys_call_table) arar ve ilgili fonksiyona yönlendirir. write = 1, read = 0, execve = 59.' }
+    ]
+  },
+  lab: {
+    intro: 'Aşağıda <code>write(1, buf, 18)</code> çağrısı ham assembly ile yapılıyor; libc sarmalayıcısı (wrapper) atlanmış, her adım açıkta. Sağda register\'ları, CPU modunu ve çekirdekteki dağıtımı (dispatch) izle.',
+    codeLabel: 'write.s (ham syscall)', cmd: './rawsys',
+    foot: 'Değerler bu çalıştırmanın gerçek sonucudur (aşağıda "Kendin dene" ile doğrulayabilirsin). ← → tuşlarıyla da ilerleyebilirsin.',
+    code: [
+      { t: '<span class="cm">; write(1, buf, 18) — ham syscall</span>' },
+      { t: '    <span class="f">mov</span>  $<span class="n">1</span>,  %<span class="t">rax</span>    <span class="cm">; çağrı no: write = 1</span>' },
+      { t: '    <span class="f">mov</span>  $<span class="n">1</span>,  %<span class="t">rdi</span>    <span class="cm">; fd = 1 (stdout)</span>' },
+      { t: '    <span class="f">mov</span>  buf, %<span class="t">rsi</span>    <span class="cm">; tampon adresi (buffer)</span>' },
+      { t: '    <span class="f">mov</span>  $<span class="n">18</span>, %<span class="t">rdx</span>    <span class="cm">; uzunluk (length)</span>' },
+      { t: '    <span class="k">syscall</span>              <span class="cm">; çekirdeğe geç</span>' },
+      { t: '    <span class="cm">; dönüşte %rax = yazılan bayt</span>' }
+    ],
+    steps: [
+      { pc: [2, 3, 4, 5], title: 'Argümanlar register\'lara', term: [],
+        text: 'Çağrı numarası ve argümanlar register sözleşmesine (calling convention) göre yerleştirilir: rax=1 (write), rdi=1 (fd/stdout), rsi=tampon adresi, rdx=18 (uzunluk). Henüz kullanıcı modundayız (ring 3).',
+        mode: 'user', regs: { rax: '1 (write)', rdi: '1 (stdout)', rsi: 'buf →', rdx: '18' }, hi: ['rax', 'rdi', 'rsi', 'rdx'] },
+      { pc: 6, title: 'syscall komutu', term: [],
+        text: '<code>syscall</code> komutu çalışır. CPU bir sonraki komutun adresini rcx\'e, bayrak register\'ını r11\'e saklar; sonra MSR\'lerde tanımlı çekirdek giriş noktasına dalar. Bu, kontrollü tek kapıdır: program istediği yere değil, yalnızca çekirdeğin belirlediği adrese sıçrayabilir.',
+        mode: 'user', regs: { rax: '1 (write)', rdi: '1 (stdout)', rsi: 'buf →', rdx: '18' }, hi: [], note: 'rcx ← dönüş adresi, r11 ← bayraklar (flags) saklandı.' },
+      { pc: 6, title: 'Çekirdek moduna geçiş', term: [],
+        text: 'CPU ayrıcalık seviyesini ring 3 → ring 0\'a yükseltir ve <code>entry_SYSCALL_64</code>\'e girer. Kullanıcı yığınından (user stack) çekirdek yığınına (kernel stack) geçilir, kullanıcının register\'ları saklanır. Artık çekirdek adına çalışıyoruz.',
+        mode: 'kernel', regs: { rax: '1 (write)', rdi: '1 (stdout)', rsi: 'buf →', rdx: '18' }, hi: [], note: 'Giriş noktası donanım tarafından sabittir; atlanacak yer seçilemez.' },
+      { pc: 6, title: 'Tabloda arama (dispatch)', term: [],
+        text: 'Çekirdek rax\'teki numarayı sınırlar içinde mi diye kontrol eder, sonra <code>sys_call_table[1]</code>\'i çağırır. Bu dizi, her numarayı ilgili çekirdek fonksiyonuna eşler. 1 numara <code>__x64_sys_write</code>\'a gider.',
+        mode: 'kernel', regs: { rax: '1 (write)', rdi: '1 (stdout)', rsi: 'buf →', rdx: '18' }, hi: ['rax'],
+        dispatch: 'sys_call_table[1] → __x64_sys_write' },
+      { pc: 6, title: 'İş yapılır', term: ['merhaba, cekirdek'],
+        text: '<code>__x64_sys_write</code> çalışır: tampondaki 18 bayt, fd 1\'in (stdout) bağlı olduğu yere yazılır. Terminalde "merhaba, cekirdek" belirir. Çekirdek sonucu — yazılan bayt sayısını — rax\'e koyar.',
+        mode: 'kernel', regs: { rax: '→ 18', rdi: '1 (stdout)', rsi: 'buf →', rdx: '18' }, hi: ['rax'],
+        dispatch: 'sys_call_table[1] → __x64_sys_write', ret: '18 bayt yazıldı' },
+      { pc: 7, title: 'Kullanıcıya dönüş', term: ['merhaba, cekirdek', 'write(1, "merhaba, cekirdek\\n", 18) = 18'],
+        text: '<code>sysret</code> ile ayrıcalık seviyesi ring 0 → ring 3\'e iner, saklanan register\'lar geri yüklenir ve program <code>syscall</code>\'dan sonraki komuttan devam eder. Program rax\'i okur: 18. Tüm bu yolculuk, tek bir <code>write()</code> satırının arkasında saniyenin milyonda biri sürer.',
+        mode: 'user', regs: { rax: '18 (dönüş)', rdi: '1', rsi: 'buf →', rdx: '18' }, hi: ['rax'], ret: 'rax = 18 okundu' }
+    ],
+    render: function (s, stateEl, u) {
+      var kernel = s.mode === 'kernel';
+      var regOrder = [['rax', 'çağrı no / dönüş'], ['rdi', '1. arg'], ['rsi', '2. arg'], ['rdx', '3. arg']];
+      var regs = regOrder.map(function (r) {
+        var k = r[0], hi = s.hi && s.hi.indexOf(k) >= 0;
+        return '<div class="box reg' + (hi ? ' hi' : '') + '"><b>%' + k + '</b><span>' + u.esc(s.regs[k]) + '</span><span style="font-size:10.5px">' + r[1] + '</span></div>';
+      }).join('');
+      stateEl.innerHTML =
+        '<p class="lab-label">CPU modu (ayrıcalık seviyesi)</p>' +
+        '<div class="mode-box ' + (kernel ? 'kernel' : '') + '"><span class="ml">ring / mod</span>' +
+          '<span class="mv">' + (kernel ? 'ring 0 · çekirdek (kernel)' : 'ring 3 · kullanıcı (user)') + '</span></div>' +
+        '<p class="lab-label" style="margin-top:14px">Register\'lar</p><div class="boxrow">' + regs + '</div>' +
+        (s.dispatch ? '<p class="lab-label" style="margin-top:14px">Çekirdek dağıtımı (dispatch)</p><div class="dispatch">' + u.esc(s.dispatch) + '</div>' : '') +
+        (s.note ? '<p class="note" style="margin-top:12px">' + u.esc(s.note) + '</p>' : '') +
+        (s.ret ? '<div class="retbox"><span>sonuç</span><b>' + u.esc(s.ret) + '</b></div>' : '');
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: bir syscall'ın anatomisi",
+    html: `<p class="lead">Bir system call yüzeyde sıradan bir fonksiyon çağrısı gibi görünür, ama altında CPU'nun ayrıcalık seviyesini değiştiren, donanım destekli bir mekanizma yatar. Register sözleşmesinden errno'ya, vDSO'dan ABI kararlılığına kadar ayrıntılar hem performans hem güvenlik için belirleyicidir. Bu bölüm man sayfalarına dayanır.</p>
+
+<h3>1. İki dünya: user space ve kernel space</h3>
+<p>CPU, kodu farklı privilege level'larda (x86-64'te "ring") çalıştırır. Uygulamalar ring 3'te (user mode) koşar: donanıma, fiziksel belleğe, başka process'lerin adres uzayına doğrudan erişemezler. Yalnızca kernel'in çalıştığı ring 0'da (kernel mode) bu işlemler yapılabilir. System call, bu iki dünya arasındaki tek denetimli kapıdır — ve denetimli olması şart, çünkü user space'e güvenilmez.</p>
+<div class="manpage"><div class="ref">2 syscalls · DESCRIPTION</div><p class="orig">The system call is the fundamental interface between an application and the Linux kernel.</p><p>Bir uygulamanın kernel'le konuşabildiği <strong>tek</strong> temel arayüz budur. <code>printf</code>, <code>malloc</code>, <code>fopen</code> gibi her şey eninde sonunda bir veya birden çok system call'a iner.</p></div>
+
+<h3>2. Calling convention: argümanlar register'larda</h3>
+<p>System call'ın argümanları stack'e değil, önceden belirlenmiş register'lara konur. x86-64'te sözleşme şöyledir:</p>
+<div class="deflist">
+<div><dt>%rax</dt><dd>Çağrıdan önce: syscall number. Çağrıdan sonra: return value. Aynı register iki rolü üstlenir.</dd></div>
+<div><dt>%rdi</dt><dd>1. argüman.</dd></div>
+<div><dt>%rsi</dt><dd>2. argüman.</dd></div>
+<div><dt>%rdx</dt><dd>3. argüman.</dd></div>
+<div><dt>%r10</dt><dd>4. argüman. <strong>Dikkat:</strong> sıradan fonksiyon ABI'sinde 4. argüman %rcx'tir; ama <code>syscall</code> komutu dönüş adresini %rcx'e sakladığı için, system call ABI 4. argümanı %r10'a kaydırır.</dd></div>
+<div><dt>%r8</dt><dd>5. argüman.</dd></div>
+<div><dt>%r9</dt><dd>6. argüman.</dd></div>
+</div>
+<div class="manpage"><div class="ref">2 syscall · DESCRIPTION</div><p class="orig">syscall() is a small library function that invokes the system call whose assembly language interface has the specified number with the specified arguments.</p><p>man sayfası her mimari için ayrı bir tablo verir; x86-64 satırı yukarıdaki register'ları listeler. Başka bir mimaride (örn. ARM64) sözleşme tamamen farklıdır — bu yüzden ham syscall kodu taşınabilir değildir.</p></div>
+
+<h3>3. Dönüş değeri ve errno</h3>
+<p>Kernel, sonucu %rax'e koyar. Başarıda bu bir pozitif değer veya 0'dır; hatada ise negatif bir errno kodudur. glibc wrapper'ı bu negatif değeri yakalar, işaretini çevirip global <code>errno</code> değişkenine yazar ve çağırana -1 döndürür.</p>
+<div class="manpage"><div class="ref">2 syscall · RETURN VALUE</div><p class="orig">A -1 return value indicates an error, and an error number is stored in errno.</p><p>Gördüğün <code>-1</code> ve <code>errno</code>, kernel'in değil glibc'nin ürettiği soyutlamadır. Kernel düzeyinde dönen değer doğrudan <code>-EBADF</code>, <code>-EFAULT</code> gibi negatif sayılardır; glibc bunları <code>[-4095, -1]</code> aralığında görüp hata olarak yorumlar. Ham syscall yazarken bu çeviri olmaz: errno'yu kendin kontrol etmen gerekir.</p></div>
+
+<h3>4. vDSO: kernel'e girmeden çalışan syscall'lar</h3>
+<p>Her system call bir mode geçişi gerektirir ve bu geçiş ucuz değildir. <code>gettimeofday</code> veya <code>clock_gettime</code> gibi sık çağrılan, sadece okuma yapan bazı çağrılar için kernel bir hile kullanır: vDSO (virtual Dynamic Shared Object). Kernel, bu fonksiyonların kodunu ve verisini her process'in adres uzayına salt okunur olarak eşler; böylece çağrı ring 0'a hiç geçmeden, sıradan bir fonksiyon çağrısı hızında tamamlanır. <code>ldd</code> ile herhangi bir programda <code>linux-vdso.so.1</code>'i görebilirsin — diskte olmayan, kernel'in enjekte ettiği bir kütüphanedir.</p>
+
+<h3>5. Syscall numaraları ve ABI kararlılığı</h3>
+<p>System call numaraları bir dizinin (sys_call_table) index'leridir ve mimariye özgüdür: x86-64'te write = 1 iken 32-bit x86'da farklıdır. Bu numaralar bir kez atandıktan sonra pratikte <strong>asla değişmez ve yeniden kullanılmaz</strong> — çünkü eski binary'ler ham numaralarla derlenmiş olabilir; numarayı değiştirmek onları bozardı. Bu, kernel'in en katı uyumluluk sözüdür (ABI stability).</p>
+<div class="manpage"><div class="ref">2 syscalls · DESCRIPTION</div><p class="orig">The slot for phys(2) is in use since Linux 2.1.116 for umount(2).</p><p>Terk edilmiş bir çağrının (phys) numara "slot"unun yıllar sonra başka bir çağrıya (umount) verilmesi, numaraların bir tablo index'i olduğunu ve boş yere harcanmadığını gösterir. Numaralar <code>/usr/include/asm/unistd.h</code>'de <code>__NR_write</code> gibi sabitlerle tanımlıdır.</p></div>
+
+<h3>6. seccomp: hangi syscall'lara izin var?</h3>
+<p>System call sınırı aynı zamanda bir güvenlik kapısıdır. seccomp (secure computing mode), bir process'in yapabileceği system call'ları bir BPF filtresiyle kısıtlar: izin verilmeyen bir çağrı denendiğinde process öldürülür veya çağrı reddedilir. Container'lar, tarayıcı sandbox'ları ve systemd servisleri saldırı yüzeyini daraltmak için bunu yoğun kullanır — bir process yalnızca ihtiyaç duyduğu birkaç çağrıya izinliyse, bir açık bulunsa bile kernel'e verebileceği zarar sınırlıdır. Bir process'in seccomp durumunu <code>/proc/&lt;pid&gt;/status</code> dosyasındaki <code>Seccomp:</code> satırından görebilirsin.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">Senin <code>write()</code>\'ın normalde libc sarmalayıcısıdır; o da argümanları register\'lara koyup <code>syscall</code> çağırır. Çekirdek tarafındaki yol şöyle (adlar Elixir\'de kaynak tanımına gider):</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://man7.org/linux/man-pages/man2/write.2.html" target="_blank" rel="noopener">write()</a><span class="where">glibc / libc</span><p>Sarmalayıcı (wrapper): rax=1 koyar, argümanları yerleştirir, <code>syscall</code> komutunu çalıştırır.</p></div></li>' +
+      '<li class="boundary"><div>syscall komutu · ring 3 → ring 0</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">entry_SYSCALL_64</span><span class="where">arch/x86/entry/entry_64.S</span><p>Çekirdek giriş noktası; register\'ları saklar, çekirdek yığınına geçer.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/do_syscall_64" target="_blank" rel="noopener">do_syscall_64()</a><span class="where">arch/x86/entry/common.c</span><p>Numara sınır içinde mi kontrol eder, <code>sys_call_table[nr]</code>\'i çağırır.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/ksys_write" target="_blank" rel="noopener">__x64_sys_write → ksys_write()</a><span class="where">fs/read_write.c</span><p>Asıl iş: tampondaki baytları ilgili dosya nesnesine yazar, yazılan sayıyı döndürür.</p></div></li>' +
+      '</ol>' +
+      '<p class="prose" style="margin-top:14px">Not: güvenlik açısından bu sınır kritiktir. Çekirdek, kullanıcıdan gelen işaretçilere asla körü körüne güvenmez; <code>copy_from_user</code> / <code>copy_to_user</code> ile sınırları denetler. Bu denetimlerdeki bir hata, doğrudan çekirdek zafiyetine dönüşebilir.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Ham syscall\'ı çalıştır', p: 'libc olmadan, doğrudan register\'lara yazıp <code>syscall</code> çağıran bir write. Çıktının "merhaba, cekirdek" olduğunu gör.',
+        shells: [{ label: 'rawsys.c', copy: '#include <unistd.h>\nint main(void){\n    const char *msg = "merhaba, cekirdek\\n";\n    long ret;\n    __asm__ volatile (\n        "mov $1, %%rax\\n\\t"   /* write */\n        "mov $1, %%rdi\\n\\t"   /* stdout */\n        "mov %1, %%rsi\\n\\t"   /* buf */\n        "mov $18, %%rdx\\n\\t"  /* len */\n        "syscall\\n\\t"\n        "mov %%rax, %0\\n\\t"\n        : "=r"(ret) : "r"(msg)\n        : "rax","rdi","rsi","rdx","rcx","r11","memory");\n    return 0;\n}', pre: '<span class="c">$</span> gcc -O0 -o rawsys rawsys.c &amp;&amp; ./rawsys\nmerhaba, cekirdek' }] },
+      { h3: '2. Tek bir write\'ı izle', p: '<code>strace</code> yaptığın sistem çağrılarını gösterir. rawsys hiç libc write\'ı çağırmadığı halde çekirdeğe giden write\'ı görürsün.',
+        shells: [{ label: 'terminal', copy: 'strace -e trace=write ./rawsys', pre: '<span class="c">$</span> strace -e trace=write ./rawsys\n<span class="g">write(1, "merhaba, cekirdek\\n", 18)</span>     = 18\n+++ exited with 0 +++' }] },
+      { h3: '3. Bir programın tüm çağrılarını say', p: '<code>strace -c</code> hangi sistem çağrısının kaç kez yapıldığını özetler. Basit bir <code>/bin/true</code> bile onlarca çağrı yapar: çalışmak için çekirdeğe ne kadar bağımlı olduğunu gösterir.',
+        shells: [{ label: 'terminal', copy: 'strace -c -f /bin/true', pre: '<span class="c">$</span> strace -c -f /bin/true\n% time     seconds  usecs/call     calls    errors syscall\n------ ----------- ----------- --------- --------- ----------------\n 36.77    0.000282         282         1           execve\n 18.64    0.000143          17         8           mmap\n 13.17    0.000101          33         3           mprotect\n  4.17    0.000032          16         2           openat\n  ...        ...           ...       ...       ...  ...\n100.00    0.000767          26        29         1 total' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'x86-64\'te sistem çağrısı numarası hangi register\'da tutulur?', opts: ['%rdi', '%rax', '%rbx'], answer: '%rax',
+        ok: 'Doğru. rax çağrı numarasını taşır; dönüşte de sonuç yine rax\'te olur. Argümanlar sırayla rdi, rsi, rdx, r10, r8, r9.', no: 'Tekrar dene. İpucu: çağrı numarası ve dönüş değeri aynı register\'ı paylaşır.' },
+      { q: '<code>syscall</code> komutu CPU\'yu hangi moda geçirir?', opts: ['ring 3 (kullanıcı)', 'ring 0 (çekirdek)', 'mod değişmez'], answer: 'ring 0 (çekirdek)',
+        ok: 'Doğru. Ayrıcalık seviyesi ring 3\'ten ring 0\'a yükselir; ancak bu geçiş yalnızca çekirdeğin belirlediği sabit giriş noktasına yapılabilir.', no: 'İpucu: donanıma dokunmak ayrıcalıklı mod ister. Hangisi?' },
+      { q: 'Çekirdek, çağrı numarasını hangi yolla doğru fonksiyona yönlendirir?', opts: ['sys_call_table dizisinde arayarak', 'fonksiyon adını çözerek', 'rastgele'], answer: 'sys_call_table dizisinde arayarak',
+        ok: 'Doğru. Numara bir dizin olarak sys_call_table\'da aranır; 1 → sys_write gibi. Bu yüzden numaralar kararlıdır (ABI).', no: 'İpucu: numara bir dizine (index) karşılık gelir. Hangi yapıda?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Linux Modül 4', title: 'Sanal bellek ve sayfa tabloları', desc: 'Bir sanal adres fiziksel bir çerçeveye nasıl çevrilir? Sayfa tablosu yürüyüşü (page walk) ve TLB.' },
+  sources: [
+    { href: 'https://man7.org/linux/man-pages/man2/syscalls.2.html', text: 'man 2 syscalls', note: 'tüm sistem çağrılarının listesi' },
+    { href: 'https://man7.org/linux/man-pages/man2/syscall.2.html', text: 'man 2 syscall', note: 'mimariye göre register sözleşmesi' },
+    { href: 'https://0xax.gitbooks.io/linux-insides/content/SysCall/', text: 'linux-insides — System calls', note: 'çekirdek kaynak gezintisi' },
+    { href: 'https://elixir.bootlin.com/linux/latest/source/arch/x86/entry/common.c', text: 'arch/x86/entry/common.c', note: 'do_syscall_64, Elixir' }
+  ],
+  pageTitle: 'Sistem Çağrıları'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

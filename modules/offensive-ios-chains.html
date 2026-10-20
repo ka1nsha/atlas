@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Modern iOS Zincirleri</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: vaka kartı (offensive-cases ile aynı dil) */
+.case { border: 1.5px solid var(--track); border-radius: var(--r); background: var(--track-soft); padding: 14px 16px; display: grid; gap: 10px; min-width: 0; }
+.case-h { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.case-h b { font-family: var(--f-display); font-size: 20px; color: var(--track); letter-spacing: -.01em; }
+.case-h .yr { font-family: var(--f-mono); font-size: 12px; color: var(--muted); }
+.case-rows { display: grid; gap: 8px; }
+.case-row { display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 10px; font-size: 13.5px; min-width: 0; }
+@media (max-width: 460px) { .case-row { grid-template-columns: 1fr; gap: 1px; } }
+.case-row .lbl { font-family: var(--f-mono); font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); padding-top: 2px; }
+.case-row .val { min-width: 0; overflow-wrap: anywhere; }
+.case-row.vuln .val { font-weight: 600; }
+.case-row.lesson .val { color: var(--fg); }
+.pattern { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 2px; }
+.pattern .p { font-family: var(--f-mono); font-size: 11px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); background: var(--surface); }
+.pattern .p.on { border-color: var(--track); color: var(--track); background: var(--track-soft); }
+.pattern .sep { color: var(--muted); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'offensive',
+  crumbs: 'ofansif › modern iOS zincirleri › vaka analizi',
+  eyebrow: 'Ofansif izlek · iOS zincirleri · Vaka analizi',
+  titleHTML: 'Modern iOS zincirleri <code>nasıl kuruldu</code>?',
+  lede: 'Bir önceki vaka modülü platform-ötesi dönüm noktalarını ele aldı. Bu modül yalnızca Apple ekosistemine odaklanır ve kamuya açık analizlere (Project Zero, Apple advisory, NVD) dayanarak birkaç ünlü zincirin teknik akışını — hangi bug sınıfı, hangi aşamalar, nasıl birbirine bağlandı — mekanizma düzeyinde inceler. Çalışır exploit, kopyalanabilir PoC, gerçek adres/offset ya da gadget zinciri yoktur.',
+  meta: ['~18 dk', 'ön koşul: jailbreak anatomisi + Mach portları', 'kaynak: kamuya açık analiz'],
+  ethic: '<b>İlke.</b> Bu modül yalnızca <b>kamuya açık</b> güvenlik araştırmalarının (Project Zero, satıcı advisory, NVD) bir özeti ve mimari analizidir. Zincirlerin <b>teknik akışı</b> yüksek seviyede anlatılır — hangi bug sınıfı, hangi aşama, hangi savunma dersi — ama hiçbir çalışır exploit, PoC, bellek adresi, offset ya da gadget <b>içermez</b>. Amaç savunma mühendisliği içindir; ayrıntı için birincil, sorumlu kaynaklara yönlendirilir.',
+  intuition: {
+    paras: [
+      'Modern bir iOS zinciri tek bir bug değildir; bir <strong>zincirdir</strong>. Genellikle bir giriş noktası (çoğu zaman bir ayrıştırıcı / parser), ardından sandbox\'tan çıkış, sonra çekirdeğe (kernel) ulaşma ve en sonunda kalıcılık gelir. Her halka ayrı bir güven sınırını (trust boundary) aşar; bir tanesi bile düşerse zincir kopar.',
+      'Bu zincirleri incelemenin değeri, "nasıl yapılır" öğrenmek değil — o ayrıntı zaten yamalarla ölür. Değerli olan, <strong>her halkanın hangi savunmayı yendiği</strong> ve Apple\'ın buna hangi mimari yanıtı verdiğidir: BlastDoor, PAC, SPTM/TXM, Lockdown Mode. Saldırının anatomisini bilmeyen, bu savunmaların neden var olduğunu da anlayamaz.'
+    ],
+    ideas: [
+      { b: 'Zincir = birçok güven sınırı', span: 'Giriş → sandbox escape → kernel → kalıcılık; her halka ayrı bir sınırı aşar.' },
+      { b: 'Giriş çoğu zaman bir parser', span: 'Medya, görüntü ve font ayrıştırıcıları en sık ilk halkadır — karmaşık ve güvenilmeyen girdi işlerler.' },
+      { b: 'Her halka bir savunma dersi', span: 'BlastDoor, PAC ve Lockdown Mode doğrudan bu zincirlerin halkalarını hedefler.' }
+    ]
+  },
+  deepDive: {
+    heading: 'Derinlemesine: dört Apple zinciri ve teknik akışları',
+    html: `<p class="lead">Aşağıdaki dört vaka yalnızca <strong>kamuya açık</strong> analizlere dayanır. Her biri için teknik akışı mekanizma düzeyinde veririz — hangi bug sınıfı, zincirin hangi aşamasında, nasıl bir sonraki halkaya bağlandı — ama hiçbir çalışır kod, adres ya da gadget yoktur. Alıntılar NVD/Apple advisory ve Project Zero'nun yayımladığı analizdendir.</p>
+
+<h3>1. FORCEDENTRY — JBIG2 integer overflow (CVE-2021-30860, 2021)</h3>
+<p>FORCEDENTRY, Project Zero'nun "gördüğümüz en sofistike exploit'lerden biri" dediği bir <strong>zero-click</strong> iMessage zinciridir. Giriş noktası bir görüntü ayrıştırıcısıdır: <code>.gif</code> uzantılı ama aslında başka formatta olan bir dosya, iMessage'ın <code>IMTranscoderAgent</code> sürecindeki ImageIO yoluna ulaşır — ve bu süreç o dönemde <strong>BlastDoor</strong> sandbox'ının <strong>dışındadır</strong>. Asıl bug, CoreGraphics'in PDF yolunda kullanılan JBIG2 ayrıştırıcısının segment-referans sayımında bir <strong>integer overflow</strong>'dur: taşan sayım, gereğinden küçük bir heap tamponu boyutlandırır ve sonraki yazmalar komşu belleği bozar.</p>
+<div class="manpage src-docs"><div class="ref">NVD · CVE-2021-30860</div><p class="orig">An integer overflow was addressed with improved input validation.</p><p>Resmi kayıt bug sınıfını net verir: <strong>integer overflow</strong>, "iyileştirilmiş girdi doğrulaması" ile giderildi. Apple, bu açığın "vahşi doğada etkin biçimde istismar edilmiş olabileceğine dair bir rapordan haberdar olduğunu" belirtti — yani gerçek bir operasyonda kullanıldı.</p></div>
+<p>Teknik akışın çarpıcı yanı, bundan sonrasıdır: JBIG2'nin bitmap üzerindeki mantıksal işlemleri (AND, OR, XOR, XNOR), tek bir çözme (decompression) geçişi içinde binlerce segment komutuyla zincirlenerek küçük bir <strong>sanal makine</strong> — register'ları, 64-bit toplayıcısı ve karşılaştırıcısı olan bir "mantık devresi" — oluşturur. Saldırgan bu emüle ortamda belleği arar ve sonraki aşamayı kurar; yani bellek güvenliği hatası, kod çalıştırmadan bir hesaplama ortamına dönüştürülmüştür.</p>
+<div class="manpage src-docs"><div class="ref">docs · Project Zero (Beer &amp; Groß, 2021)</div><p class="orig">this weird, emulated environment created out of a single decompression pass through a JBIG2 stream</p><p>Project Zero, saldırganın tek bir JBIG2 çözme geçişinden "tuhaf, emüle bir ortam" kurduğunu anlatır. <strong>Ders:</strong> güvenilmeyen girdiyi işleyen ayrıştırıcılar sıkı izole edilmeli. Apple yanıtı: iMessage eklerini <strong>BlastDoor</strong> içinde ayrıştırmak ve iOS 15'te GIF kod yolunu <code>IMTranscoderAgent</code>'tan kaldırmak.</p></div>
+<div class="deflist">
+<div><dt>Bug sınıfı</dt><dd>Integer overflow (JBIG2 segment-referans sayımı) → heap buffer overflow.</dd></div>
+<div><dt>Zincirdeki yeri</dt><dd>Giriş + RCE: zero-click ulaşım ve ilk kod-eşdeğeri yetenek (emüle makine).</dd></div>
+<div><dt>Yenilen savunma</dt><dd>Ek ayrıştırmanın izolasyonsuzluğu (BlastDoor öncesi süreç).</dd></div>
+<div><dt>Alınan ders</dt><dd>Parser izolasyonu (BlastDoor), bellek-güvenli kodlayıcılar, saldırı yüzeyini kaldırmak.</dd></div>
+</div>
+
+<h3>2. CVE-2020-27950 — çekirdek bellek sızıntısı (info leak)</h3>
+<p>Bu açık, 2020 sonunda vahşi doğada kullanılan üç-bug'lık bir iOS zincirinin bir halkasıydı. Tek başına kod çalıştırmaz; görevi <strong>bilgi sızdırmaktır</strong>. Mach mesajlarının işlenmesindeki bir bellek ilklendirme (memory initialization) hatası nedeniyle, kötü niyetli bir uygulama çekirdek belleğinden veri okuyabiliyordu.</p>
+<div class="manpage src-docs"><div class="ref">NVD · CVE-2020-27950</div><p class="orig">A memory initialization issue was addressed.</p><p>İkinci cümle sonucu söyler: "Kötü niyetli bir uygulama çekirdek belleğini ifşa edebilir" (<em>disclose kernel memory</em>). Bu bir <strong>info leak</strong>'tir — zincirin KASLR'yi yenen halkası.</p></div>
+<p>Teknik akıştaki rolü kritiktir: modern çekirdekte KASLR adresleri rastgeleleştirdiği için, saldırganın bir yere yazmadan önce <strong>nereye</strong> yazacağını öğrenmesi gerekir. Sızan çekirdek belleği bu haritayı verir; sonraki halka (ör. bir type confusion / UAF) bu bilgiyle güvenilir hale gelir. Mach mesaj yapısı için <a href="macos-mach-ports.html">Mach portları</a> modülüne bak.</p>
+<div class="deflist">
+<div><dt>Bug sınıfı</dt><dd>Uninitialized memory → kernel info disclosure.</dd></div>
+<div><dt>Zincirdeki yeri</dt><dd>Keşif: KASLR'yi yenen bilgi sızıntısı; sonraki halkanın ön koşulu.</dd></div>
+<div><dt>Yenilen savunma</dt><dd>KASLR (adres rastgeleleştirme).</dd></div>
+<div><dt>Alınan ders</dt><dd>Belleği kullanmadan önce ilklendir; info-leak yüzeyleri bellek bozulması kadar ciddiye alınmalı.</dd></div>
+</div>
+
+<h3>3. mach_portal — Mach port hakkı yönetimi (2016)</h3>
+<p>mach_portal, iOS 10 döneminde kamuya açık olarak anlatılan bir çekirdek tekniğidir. Çarpıcı yanı, klasik bir bellek taşması <strong>kullanmamasıdır</strong>: temelinde Mach port haklarının (port rights) referans/yaşam döngüsü yönetimindeki bir hata — kavramsal olarak bir <strong>use-after-free / over-release</strong> sınıfı — yatar. Bir port hakkı beklenenden fazla serbest bırakıldığında, saldırgan çekirdek içindeki bir nesnenin kontrolünü ele geçirebilir ve nihayetinde <strong>kernel task port</strong>'a ulaşabilir — ki bu, çekirdek belleğine tam okuma/yazma demektir.</p>
+<p>Teknik akış, <a href="macos-mach-ports.html">Mach portları</a> modülündeki kavramlara dayanır: port'lar çekirdekte sayımla (reference count) yönetilen nesnelerdir; sayımın yanlış düşmesi, hâlâ kullanımda olan bir nesnenin erken yok edilmesine yol açar. <strong>Ders:</strong> IPC nesnelerinin yaşam döngüsünü titizlikle doğrulamak ve kernel task port gibi aşırı güçlü primitifleri korumak. Apple yanıtı: port erişimini sıkılaştırmak ve işaretçi bütünlüğü için <strong>PAC</strong> (bkz. <a href="macos-arm64.html">ARM64</a>).</p>
+<div class="deflist">
+<div><dt>Bug sınıfı</dt><dd>Kaynak yönetimi hatası (Mach port over-release) — UAF sınıfı.</dd></div>
+<div><dt>Zincirdeki yeri</dt><dd>Kernel: port kontrolünden kernel task port'a (tam R/W).</dd></div>
+<div><dt>Yenilen savunma</dt><dd>Çekirdek nesne bütünlüğü (port güveni).</dd></div>
+<div><dt>Alınan ders</dt><dd>IPC yaşam döngüsü doğrulaması; aşırı güçlü primitifleri (task port) korumak; PAC.</dd></div>
+</div>
+
+<h3>4. Pegasus / NSO — operasyonel zincir bağlamı</h3>
+<p>FORCEDENTRY tek başına bir "bug" değil, bir <strong>ürünün</strong> giriş halkasıydı: NSO Group'un Pegasus casus yazılımı. Operasyonel açıdan önemli olan, tam zincirin anatomisidir: <strong>zero-click giriş</strong> (RCE) → <strong>sandbox escape</strong> → <strong>kernel</strong> → <strong>kalıcılık ve veri toplama</strong>. Her halka ayrı bir güven sınırını aşar ve hepsi, kurban hiçbir şeye dokunmadan, arka planda çalışır.</p>
+<div class="manpage src-docs"><div class="ref">docs · Project Zero (2021)</div><p class="orig">In the zero-click scenario no user interaction is required.</p><p>Project Zero'nun vurgusu: zero-click senaryoda <strong>hiçbir kullanıcı etkileşimi gerekmez</strong>. Bu, bu tür zincirleri en tehlikeli sınıf yapar — ne bir bağlantıya tıklanır ne bir dosya açılır. <strong>Ders:</strong> saldırı yüzeyini kaldırmak (ayrıştırıcıları izole/iptal etmek) ve <strong>Lockdown Mode</strong> gibi sıkı modlarla yüksek-riskli kullanıcıların yüzeyini küçültmek.</p></div>
+<p>Pegasus bağlamı, savunmanın yalnızca teknik değil <strong>tehdit modeli</strong> boyutunu da gösterir: devlet-seviyesi, hedefli, ticari casus yazılım. Buna karşı Apple'ın yanıtı katmanlıdır — BlastDoor (giriş), PAC ve SPTM/TXM (kernel bütünlüğü, bkz. <a href="macos-newsec.html">yeni güvenlik bileşenleri</a>), Lockdown Mode (yüzey azaltma) ve tehdit bildirimleri.</p>
+<div class="deflist">
+<div><dt>Bug sınıfı</dt><dd>Zincir: parser integer overflow (giriş) + sonraki aşamalar.</dd></div>
+<div><dt>Zincirdeki yeri</dt><dd>Uçtan uca: giriş → sandbox escape → kernel → kalıcılık.</dd></div>
+<div><dt>Yenilen savunma</dt><dd>Katmanlı — sandbox, KASLR, kod imzalama, kernel bütünlüğü.</dd></div>
+<div><dt>Alınan ders</dt><dd>Zero-click en tehlikelisi; yanıt katmanlı olmalı (BlastDoor + PAC + Lockdown Mode).</dd></div>
+</div>
+
+<h3>5. Ortak desen: halka halka savunma</h3>
+<p>Dört vaka aynı anatomiyi farklı halkalardan gösterir. Bir savunmacı için çıkarım nettir: her halka ayrı ayrı kırılabilir ve her kırılan halka zinciri durdurur — bu yüzden <strong>derinlemesine savunma</strong> (defense in depth) teoride değil, pratikte işe yarar.</p>
+<div class="deflist">
+<div><dt>FORCEDENTRY → parser izolasyonu</dt><dd>Giriş halkasını kır: ayrıştırmayı BlastDoor'a al, riskli kod yolunu kaldır.</dd></div>
+<div><dt>CVE-2020-27950 → info-leak yüzeyi</dt><dd>Keşif halkasını kır: belleği ilklendir, sızıntı yüzeylerini daralt (KASLR'yi koru).</dd></div>
+<div><dt>mach_portal → IPC bütünlüğü</dt><dd>Kernel halkasını kır: port yaşam döngüsünü doğrula, task port'u koru, PAC.</dd></div>
+<div><dt>Pegasus → yüzey azaltma</dt><dd>Tüm zinciri zorlaştır: Lockdown Mode, katmanlı kernel bütünlüğü (SPTM/TXM).</dd></div>
+</div>
+<p>Teknik ayrıntı için her vakanın birincil, sorumlu analizine başvurulmalıdır: Project Zero yazıları, Apple güvenlik advisory'leri ve NVD kayıtları.</p>`
+  },
+  lab: {
+    intro: 'Her adım bir Apple zincirini yüksek seviyede özetler: giriş noktası, bug sınıfı, zincirdeki halka, yenilen savunma ve ders. Alttaki halka göstergesi, her zincirin hangi aşamalara ağırlık verdiğini gösterir — hepsi aynı anatominin örnekleridir.',
+    codeLabel: 'zincir listesi (kamuya açık)', cmd: '# modern iOS zincirleri — teknik akış özeti',
+    foot: 'Yalnızca kamuya açık analiz özeti; çalışır kod, adres ya da offset yoktur. Ayrıntı için kaynaklara bakılmalı.',
+    code: [
+      { t: '<span class="cm">// aynı anatominin farklı halkaları</span>' },
+      { t: 'FORCEDENTRY    <span class="cm">// JBIG2 integer overflow, zero-click</span>', danger: true },
+      { t: 'CVE-2020-27950 <span class="cm">// kernel info leak (KASLR yener)</span>' },
+      { t: 'mach_portal    <span class="cm">// Mach port over-release</span>' },
+      { t: 'Pegasus/NSO    <span class="cm">// uçtan uca operasyonel zincir</span>', danger: true }
+    ],
+    steps: [
+      { i: 0, name: 'FORCEDENTRY', year: '2021', target: 'iOS &lt; 14.8 (iMessage)',
+        entry: 'Zero-click iMessage (sahte .gif → ImageIO)', vuln: 'Integer overflow (JBIG2) → heap overflow', broke: 'Ayrıştırma izolasyonsuzluğu (BlastDoor öncesi)', on: [1,1,0,0],
+        lesson: 'Güvenilmeyen girdiyi işleyen parser sıkı izole edilmeli. Apple yanıtı: BlastDoor sandbox ve iOS 15\'te GIF kod yolunu kaldırmak. Çarpıcı: bug, JBIG2 işlemlerinden küçük bir emüle makine kurmaya çevrildi.',
+        term: ['[FORCEDENTRY · 2021] zero-click → emüle makine'] },
+      { i: 1, name: 'CVE-2020-27950', year: '2020', target: 'iOS (üç-bug zincirinin halkası)',
+        entry: 'Kötü niyetli uygulama', vuln: 'Uninitialized memory → kernel info disclosure', broke: 'KASLR', on: [0,0,0,1],
+        lesson: 'Bir çekirdek bilgi sızıntısı (info leak) KASLR\'yi yener; saldırgan yazmadan önce nereye yazacağını öğrenir. Zincirin keşif halkası budur. Savunma: belleği ilklendir, sızıntı yüzeyini daralt.',
+        term: ['[CVE-2020-27950 · 2020] kernel memory disclosure'] },
+      { i: 2, name: 'mach_portal', year: '2016', target: 'iOS 10',
+        entry: 'Cihazda çalışan kod', vuln: 'Mach port over-release (UAF sınıfı)', broke: 'Çekirdek nesne bütünlüğü (port güveni)', on: [0,0,0,1],
+        lesson: 'Bellek taşması olmadan, yalnızca port hakkı yaşam döngüsü hatasıyla kernel task port\'a (tam R/W) ulaşılabilir. Savunma: IPC yaşam döngüsü doğrulaması, task port koruması, PAC.',
+        term: ['[mach_portal · 2016] port over-release → kernel R/W'] },
+      { i: 3, name: 'Pegasus / NSO', year: '2021', target: 'iOS (hedefli gözetim)',
+        entry: 'Zero-click (FORCEDENTRY girişi)', vuln: 'Zincir: parser overflow + sonraki aşamalar', broke: 'Katmanlı (sandbox→KASLR→kernel)', on: [1,1,1,1],
+        lesson: 'Tek bir zincir giriş → sandbox escape → kernel → kalıcılığı kullanıcı etkileşimi olmadan geçer. Zero-click en tehlikeli sınıftır. Savunma katmanlı olmalı: BlastDoor + PAC + SPTM/TXM + Lockdown Mode.',
+        term: ['[Pegasus · 2021] uçtan uca zero-click zincir'] }
+    ],
+    render: function (s, stateEl, u) {
+      var P = ['giriş', 'RCE', 'sandbox escape', 'kernel'];
+      var pat = P.map(function (p, k) {
+        return '<span class="p' + (s.on[k] ? ' on' : '') + '">' + u.esc(p) + '</span>' + (k < P.length - 1 ? '<span class="sep">→</span>' : '');
+      }).join('');
+      function row(lbl, val, cls) { return '<div class="case-row ' + (cls || '') + '"><span class="lbl">' + lbl + '</span><span class="val">' + u.esc(val) + '</span></div>'; }
+      stateEl.innerHTML =
+        '<p class="lab-label">Zincir ' + (s.i + 1) + ' / 4</p>' +
+        '<div class="case"><div class="case-h"><b>' + u.esc(s.name) + '</b><span class="yr">' + u.esc(s.year) + '</span></div>' +
+        '<div class="case-rows">' +
+          row('Hedef', s.target) +
+          row('Giriş noktası', s.entry) +
+          row('Bug sınıfı', s.vuln, 'vuln') +
+          row('Yenilen savunma', s.broke) +
+          row('Ders', s.lesson, 'lesson') +
+        '</div>' +
+        '<div><p class="lab-label" style="margin:2px 0 4px">Zincirin ağırlık verdiği halkalar</p><div class="pattern">' + pat + '</div></div>' +
+        '</div>';
+    }
+  },
+  underHood: {
+    heading: 'Kaputun altında: zincir ile savunmayı eşlemek',
+    html: '<p class="prose">Her halkanın karşısına Apple\'ın mimari yanıtını koyduğumuzda, bu savunmaların neden tam da oraya yerleştirildiği netleşir. Saldırı anatomisi, savunma mimarisinin haritasıdır.</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Halka</th><th>Örnek</th><th>Bug sınıfı</th><th>Apple savunması</th></tr></thead><tbody>' +
+      '<tr><td><b>Giriş (parser)</b></td><td>FORCEDENTRY</td><td>Integer overflow</td><td>BlastDoor, kod yolu kaldırma, bellek-güvenli kodlayıcı</td></tr>' +
+      '<tr><td><b>Keşif</b></td><td>CVE-2020-27950</td><td>Kernel info leak</td><td>Bellek ilklendirme, KASLR</td></tr>' +
+      '<tr><td><b>Kernel</b></td><td>mach_portal</td><td>Port over-release (UAF)</td><td>Port doğrulama, PAC, SPTM/TXM</td></tr>' +
+      '<tr><td><b>Uçtan uca</b></td><td>Pegasus</td><td>Zincir</td><td>Katmanlı + Lockdown Mode</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px">İki ders öne çıkar. Birincisi: <strong>giriş halkası neredeyse her zaman bir ayrıştırıcıdır</strong> — bu yüzden parser izolasyonu (BlastDoor) ve bellek-güvenli kod en yüksek getirili yatırımdır. İkincisi: <strong>kernel halkası her zaman bellek taşması değildir</strong> — mach_portal bir kaynak-yönetimi hatasıyla aynı sonuca ulaştı, dolayısıyla IPC nesnelerinin yaşam döngüsü bellek güvenliği kadar titiz doğrulanmalıdır.</p>' +
+      '<p class="prose" style="margin-top:14px">Bu modül bilinçli olarak çalışır teknik vermez. Her zincirin derin, sorumlu analizi için aşağıdaki kamuya açık kaynaklar birincil referanstır.</p>'
+  },
+  pipeline: { intro: 'Bu Apple zincirleri de önceki modüllerdeki aynı sömürü boru hattının (exploitation pipeline) örnekleridir: değişen, her zincirin hangi halkaya ağırlık verdiği ve hangi savunmayı yendiğidir.' },
+  tryIt: {
+    heading: 'Oku ve analiz et',
+    items: [
+      { h3: '1. Bir zinciri halkalarına ayır', p: 'Bu modülde komut çalıştırılmaz. Project Zero\'nun FORCEDENTRY yazısını (iki bölüm) oku ve zinciri halkalarına ayır: giriş → RCE → (ayrı yazıda) sandbox escape. Her halkanın hangi güven sınırını aştığını not et.' },
+      { h3: '2. Savunmayı halkaya eşle', p: 'Her halkanın karşısına Apple\'ın hangi savunmayı koyduğunu yaz: BlastDoor hangi halkayı, PAC hangi halkayı, Lockdown Mode neyi hedefliyor? Bir savunmacı olarak hangi halkayı kırmak en ucuz ve en etkili?' }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'FORCEDENTRY\'nin giriş noktası neden bu kadar tehlikeliydi?', opts: ['Kullanıcının parolasını çaldı', 'Zero-click idi — hiçbir etkileşim gerekmiyordu', 'Yalnızca jailbreak\'li cihazları etkiledi'], answer: 'Zero-click idi — hiçbir etkileşim gerekmiyordu',
+        ok: 'Doğru. Zero-click saldırılar kurban hiçbir şeye dokunmadan, arka planda çalışır; bu yüzden en tehlikeli sınıftır. Apple yanıtı: BlastDoor ile ayrıştırmayı izole etmek.', no: 'İpucu: kurban dosyayı açtı mı, bir şeye tıkladı mı?' },
+      { q: 'CVE-2020-27950 (kernel memory disclosure) bir zincirde hangi işi görür?', opts: ['Kalıcılık sağlar', 'KASLR\'yi yener (info leak)', 'Dosya şifreler'], answer: 'KASLR\'yi yener (info leak)',
+        ok: 'Doğru. Çekirdek bellek sızıntısı, saldırgana bellek haritasını verir ve KASLR\'yi etkisizleştirir; sonraki halkanın ön koşuludur.', no: 'İpucu: "disclose kernel memory" ne işe yarar — nereye yazılacağını öğrenmek mi?' },
+      { q: 'mach_portal\'ın klasik bir bellek taşmasından farkı nedir?', opts: ['Hiçbir bug kullanmaz', 'Bir Mach port hakkı yönetimi (over-release/UAF) hatasına dayanır', 'Yalnızca fiziksel erişimle çalışır'], answer: 'Bir Mach port hakkı yönetimi (over-release/UAF) hatasına dayanır',
+        ok: 'Doğru. mach_portal bir kaynak-yönetimi hatasıyla (port over-release) kernel task port\'a ulaştı — bellek taşması olmadan. Ders: IPC yaşam döngüsünü titiz doğrula.', no: 'İpucu: taşma mı, yoksa port referans sayımı hatası mı?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Ofansif', title: 'Tarihsel zincirler', desc: 'Platform-ötesi dönüm noktaları: Heartbleed, Dirty COW, Stagefright, checkm8.', href: 'offensive-cases.html' },
+  sources: [
+    { href: 'https://projectzero.google/2021/12/a-deep-dive-into-nso-zero-click.html', text: 'Project Zero — FORCEDENTRY deep dive', note: 'Beer & Groß, 2021; birincil teknik analiz' },
+    { href: 'https://support.apple.com/en-us/HT212807', text: 'Apple — iOS 14.8 güvenlik notu', note: 'CVE-2021-30860' },
+    { href: 'https://nvd.nist.gov/vuln/detail/CVE-2020-27950', text: 'NVD — CVE-2020-27950', note: 'kernel memory disclosure' },
+    { href: 'https://newosxbook.com/toc3.html', text: 'Levin — OS Internals Cilt III', note: 'iOS güvenlik ve jailbreak analizleri' }
+  ],
+  pageTitle: 'Modern iOS Zincirleri'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

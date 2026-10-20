@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Servis Mimarisi</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: uygulama — service manager — system_server akışı */
+.svc { display: grid; grid-template-columns: 1fr auto 1.2fr; gap: 10px; align-items: stretch; }
+@media (max-width: 640px) { .svc { grid-template-columns: 1fr; } }
+.snode { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 10px; display: grid; gap: 6px; align-content: start; min-width: 0; }
+.snode.app { border-color: var(--accent); } .snode.app b { color: var(--accent); }
+.snode.sm { border-color: var(--warn); background: var(--warn-soft); } .snode.sm b { color: var(--warn); }
+.snode.ss { border-color: var(--track); } .snode.ss b { color: var(--track); }
+.snode b { font-family: var(--f-display); font-size: 14px; }
+.snode .mono { font-family: var(--f-mono); font-size: 11.5px; color: var(--muted); }
+.snode .st { font-family: var(--f-mono); font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--sunk); color: var(--muted); justify-self: start; }
+.snode .st.busy { background: var(--accent-soft); color: var(--accent); }
+.snode .st.work { background: var(--track-soft); color: var(--track); }
+.svclist { display: grid; gap: 4px; margin-top: 2px; }
+.svcrow { font-family: var(--f-mono); font-size: 11px; display: flex; justify-content: space-between; gap: 8px; padding: 3px 7px; border-radius: 6px; background: var(--sunk); min-width: 0; }
+.svcrow.hot { background: var(--track-soft); color: var(--track); font-weight: 700; }
+.svcrow span:last-child { color: var(--muted); }
+.svcrow.hot span:last-child { color: var(--track); }
+.handle { border: 1px dashed var(--accent); border-radius: 6px; padding: 5px 8px; font-family: var(--f-mono); font-size: 11px; color: var(--accent); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'android',
+  crumbs: 'android › servis mimarisi › modül 5',
+  eyebrow: 'Modül 5 · Android · Servis mimarisi',
+  titleHTML: 'Sistem <code>servis</code>leri ve getSystemService()',
+  lede: 'Bir uygulama ekranı açtığında, bir bildirim gönderdiğinde ya da konum istediğinde aslında system_server içindeki bir sistem servisine (system service) Binder üzerinden çağrı yapar. Bu modül, bu servislerin nasıl kaydolduğunu ve isimle nasıl bulunduğunu (name resolution) gösterir.',
+  meta: ['~15 dk', 'ön koşul: Binder, Zygote', 'bağlam: AOSP'],
+  intuition: {
+    paras: [
+      'Android\'in çekirdek işlevlerinin çoğu — pencere yönetimi, uygulama yaşam döngüsü, paket kurulumu, güç — tek bir ayrıcalıklı süreçte, <code>system_server</code>\'da yaşayan <strong>sistem servisleri (system services)</strong> tarafından sağlanır. Uygulamalar bu süreçle doğrudan bellek paylaşamaz; onunla Binder üzerinden konuşur.',
+      'Bir servisi bulmak için önce adı gerekir. <strong>Service Manager</strong> Android\'in isim defteridir (name registry): servisler açılışta kendilerini bir isimle kaydeder (<code>addService</code>), uygulamalar da o isimle onları bulur (<code>getService</code>). Dönen şey bir Binder handle\'dır — uzaktaki servise bir vekil (proxy).'
+    ],
+    ideas: [
+      { b: 'Tek ayrıcalıklı süreç', span: 'system_server onlarca servisi barındırır (ActivityManager, PackageManager, WindowManager...). Hepsi system UID altında çalışır.' },
+      { b: 'İsimle bulma', span: 'Service Manager, isim → Binder nesnesi eşlemesini tutar. Kendisi de 0 numaralı, bilinen bir Binder nesnesidir.' },
+      { b: 'getSystemService sihri', span: 'Uygulamadaki tanıdık getSystemService() çağrısı, altta Service Manager + Binder vekiline dönüşür. Yerel gibi görünen çağrı aslında uzak (RPC).' }
+    ]
+  },
+  lab: {
+    intro: 'Bir uygulama <code>getSystemService(ACTIVITY_SERVICE)</code> çağırır. Sağda uygulama, Service Manager ve system_server üçlüsünü; servis kaydını ve çağrının Binder üzerinden akışını izle.',
+    codeLabel: 'servis çağrısı (temsilî)', cmd: 'app → system_server',
+    foot: 'PID\'ler ve çıktılar temsilîdir. Gerçek akış: ServiceManager + IPCThreadState (Binder).',
+    code: [
+      { t: '<span class="cm">// --- açılış: system_server ---</span>' },
+      { t: 'ServiceManager.<span class="f">addService</span>(<span class="s">"activity"</span>, ams);' },
+      { t: 'ServiceManager.<span class="f">addService</span>(<span class="s">"package"</span>, pms);' },
+      { t: '' },
+      { t: '<span class="cm">// --- uygulama ---</span>' },
+      { t: 'am = ctx.<span class="f">getSystemService</span>(ACTIVITY_SERVICE);' },
+      { t: '  <span class="cm">// → ServiceManager.getService("activity")</span>' },
+      { t: 'am.<span class="f">getRunningTasks</span>(<span class="n">1</span>);  <span class="cm">// → Binder transact</span>' }
+    ],
+    steps: [
+      { pc: 2, title: 'Servisler kaydolur', term: ['system_server: addService("activity") → ok', 'system_server: addService("package") → ok'],
+        text: 'Açılışta <code>system_server</code> barındırdığı tüm servisleri Service Manager\'a bir isimle kaydeder. Service Manager artık isim → Binder nesnesi defterini tutar.',
+        app: { st: 'wait', txt: 'henüz başlamadı' }, sm: { hot: null }, ss: { st: 'work', txt: 'servisler çalışıyor' } },
+      { pc: 5, title: 'Uygulama servis ister', term: ['app: getSystemService(ACTIVITY_SERVICE)'],
+        text: 'Uygulama tanıdık <code>getSystemService()</code>\'i çağırır. Bu, çatı (framework) içinde Service Manager\'a bir arama isteğine dönüşür: "activity" adlı servisi ver.',
+        app: { st: 'busy', txt: 'servis arıyor' }, sm: { hot: 'activity' }, ss: { st: 'work', txt: 'dinliyor' } },
+      { pc: 6, title: 'Service Manager handle döndürür', term: ['ServiceManager: "activity" → handle 3'],
+        text: 'Service Manager defterine bakar ve "activity" servisinin Binder handle\'ını döndürür. Bu handle, uygulama sürecinde yerel bir sayıdır ama çekirdekteki AMS düğümünü (node) gösterir.',
+        app: { st: 'busy', txt: 'handle 3 alındı', handle: 'IActivityManager (handle 3)' }, sm: { hot: 'activity' }, ss: { st: 'work', txt: 'dinliyor' } },
+      { pc: 8, title: 'Binder ile çağrı', term: ['app: getRunningTasks(1) → transact', 'AMS: onTransact → yanıt'],
+        text: 'Uygulama handle üzerinden bir metot çağırır (<code>getRunningTasks</code>). Bu, Binder transaksiyonuna dönüşür: istek system_server\'daki ActivityManagerService\'e gider, AMS işler ve yanıtı döndürür. Uygulama için yerel bir metot çağrısı gibi görünür.',
+        app: { st: 'busy', txt: 'yanıt bekliyor', handle: 'IActivityManager (handle 3)' }, sm: { hot: 'activity' }, ss: { st: 'work', txt: 'AMS.getRunningTasks işliyor' } }
+    ],
+    render: function (s, stateEl, u) {
+      var services = [
+        ['activity', 'AMS'], ['package', 'PMS'], ['window', 'WMS'], ['power', 'PowerMS']
+      ];
+      var rows = services.map(function (sv) {
+        var hot = s.sm.hot === sv[0];
+        return '<div class="svcrow' + (hot ? ' hot' : '') + '"><span>' + sv[0] + '</span><span>' + sv[1] + '</span></div>';
+      }).join('');
+      function node(cls, title, sub, st) {
+        var html = '<div class="snode ' + cls + '"><b>' + title + '</b><span class="mono">' + sub + '</span>' +
+          '<span class="st ' + st.st + '">' + u.esc(st.txt) + '</span>';
+        if (st.handle) html += '<div class="handle">' + u.esc(st.handle) + '</div>';
+        return html + '</div>';
+      }
+      stateEl.innerHTML =
+        '<p class="lab-label">Uygulama · Service Manager · system_server</p>' +
+        '<div class="svc">' +
+          node('app', 'Uygulama', 'kendi süreci', s.app) +
+          '<div class="snode sm"><b>Service Manager</b><span class="mono">isim defteri</span><div class="svclist">' + rows + '</div></div>' +
+          node('ss', 'system_server', 'system UID', s.ss) +
+        '</div>' +
+        '<p class="note" style="margin-top:12px">Servislerin tümü tek süreçte (system_server) yaşar ama uygulamadan Binder sınırıyla ayrılır. Service Manager yalnızca eşlemeyi tutar; veri onun üzerinden akmaz.</p>';
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: system_server ve servis mimarisi",
+    html: `<p class="lead">Android'de "sistem" dediğimiz şeyin büyük kısmı tek bir process'te yaşar: system_server. Onlarca system service aynı process içinde ayrı thread'ler olarak çalışır; uygulamalar bu servislere doğrudan değil, Service Manager üzerinden bulup Binder ile ulaşır. Bu tasarım, hem izolasyonu hem de merkezi yönetimi aynı anda sağlar.</p>
+
+<h3>1. system_server: tek process, onlarca servis</h3>
+<p>Zygote açılışta özel bir çocuk olarak system_server'ı fork eder. Bu process, Android framework'ünün kalbidir: uygulamaların kullandığı neredeyse tüm system service'ler burada birer thread olarak koşar. Böylece servisler belleği ve ART runtime'ını paylaşır, aralarındaki çağrılar ucuzdur. Bedeli ise kırılganlıktır: system_server çökerse, ona bağlı tüm UI ve servisler düşer ve sistem (çekirdeği yeniden başlatmadan) "soft reboot" yaşar.</p>
+<div class="manpage src-aosp"><div class="ref">android · architecture</div><p class="orig">System services are modular, focused components such as system_server, SurfaceFlinger, and MediaService.</p><p>system service'ler ayrı ayrı, odaklı bileşenlerdir. Hepsi system_server içinde değildir — SurfaceFlinger ve MediaService gibi bazıları ayrı native process'lerde koşar; ama ActivityManager, PackageManager gibi framework servisleri system_server'da toplanır.</p></div>
+<div class="deflist">
+<div><dt>ActivityManagerService</dt><dd>Activity/task yaşam döngüsü, process önceliği (oom_score_adj), uygulama başlatma. Kısaca AMS.</dd></div>
+<div><dt>PackageManagerService</dt><dd>Kurulu paketler, izinler, imza doğrulama, bileşen çözümleme. Kısaca PMS.</dd></div>
+<div><dt>WindowManagerService</dt><dd>Pencereler, z-order, girdi yönlendirme, SurfaceFlinger ile koordinasyon. Kısaca WMS.</dd></div>
+<div><dt>PowerManagerService</dt><dd>Wakelock'lar, ekran durumu, suspend/resume kararları.</dd></div>
+</div>
+
+<h3>2. Service Manager: isimden handle'a</h3>
+<p>Bir servisin bulunabilmesi için önce kaydolması gerekir. Service Manager, bu kayıt defterini tutan özel bir süreçtir ve Binder dünyasında bilinen <code>handle 0</code> numarasına sahiptir — yani bir istemci henüz hiçbir handle'ı yokken bile ona ulaşabilir (bootstrap problemi çözülür). Servis <code>addService(name, binder)</code> ile kaydolur; istemci <code>getService(name)</code> ile ismi bir Binder handle'ına çözer. Veri Service Manager üzerinden akmaz; o yalnızca isim → handle eşlemesini verir, sonra istemci doğrudan servisle konuşur.</p>
+<p>Kritik güvenlik noktası: <code>addService</code> yalnızca ayrıcalıklı (system UID) süreçlere açıktır. Rastgele bir uygulama kendini "activity" adıyla kaydedip araya giremez; bu service spoofing engeli, Binder'ın taşıdığı güvenilir caller UID sayesinde kernel düzeyinde zorlanır.</p>
+
+<h3>3. getSystemService çağrı deseni</h3>
+<p>Bir uygulama <code>getSystemService(ACTIVITY_SERVICE)</code> çağırdığında, elindeki şey aslında AMS'in uzaktaki nesnesini temsil eden bir binder proxy'dir (BinderProxy). Proxy üzerindeki her metot çağrısı bir Binder transaction'ına dönüşür: argümanlar Parcel'a yazılır, <code>ioctl(BINDER_WRITE_READ)</code> ile system_server'a gider, oradaki servis thread'i metodu çalıştırır ve yanıt geri döner. Uygulama, çağrının başka bir process'te çalıştığını çoğu zaman hiç fark etmez — bu şeffaflık (location transparency) framework'ün temel tasarımıdır.</p>
+<div class="manpage src-aosp"><div class="ref">android · architecture</div><p class="orig">Functionality exposed by Android framework API communicates with system services to access the underlying hardware.</p><p>Framework API'sinin sunduğu işlevsellik, altta yatan donanıma erişmek için system service'lerle konuşur. Yani uygulama → framework API → (Binder) → system service → HAL → sürücü zinciri her sistem işleminin arkasındadır.</p></div>
+
+<h3>4. Binder thread pool ve servis yaşam döngüsü</h3>
+<p>system_server, gelen transaction'ları işlemek için bir binder thread pool tutar (varsayılan üst sınır genelde 16 thread). Yüksek yük altında birden çok istemci farklı servislere paralel çağrı yapabilir. Ama aynı process'te olduklarından, bir servisteki uzun süren veya kilitlenen bir çağrı diğer servisleri de etkileyebilir — bu yüzden framework kodunda Binder thread'inde uzun iş yapmaktan kaçınılır. "Watchdog" mekanizması system_server bir süre yanıt vermezse onu bilerek öldürür, çünkü donmuş bir system_server kullanılamaz bir cihaz demektir; öldürülünce yeniden başlar ve sistem toparlanır.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">Uygulamadaki <code>getSystemService()</code>, bir dizi katman üzerinden Service Manager\'a ve oradan Binder\'a iner. Kaynak AOSP\'ta cs.android.com üzerinden okunabilir.</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">Context.getSystemService()</span><span class="where">frameworks/base</span><p>İstenen servisin yöneticisini (manager) döndürür; ilk kullanımda Binder vekilini (proxy) kurar.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">ServiceManager.getService(name)</span><span class="where">frameworks/base</span><p>İsmi Binder handle\'ına çözer; Service Manager\'ın kendisi 0 numaralı bilinen Binder nesnesidir.</p></div></li>' +
+      '<li class="boundary"><div>Binder · uygulama süreci → system_server</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://cs.android.com/android/platform/superproject/main/+/main:frameworks/base/services/core/java/com/android/server/am/ActivityManagerService.java" target="_blank" rel="noopener">ActivityManagerService.onTransact</a><span class="where">services/core</span><p>Binder iş parçacığı çağrıyı alır, metodu çalıştırır, yanıtı Parcel\'e koyar.</p></div></li>' +
+      '</ol>' +
+      '<p class="prose" style="margin-top:14px">Not: <code>addService</code> yalnızca system UID gibi ayrıcalıklı süreçlere açıktır; rastgele bir uygulama kendini "activity" adıyla kaydedip araya giremez (service spoofing engeli). Bu, Binder\'ın taşıdığı güvenilir UID sayesinde uygulanır.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Kayıtlı sistem servislerini say', p: 'system_server\'ın ne kadar çok servisi barındırdığını gör; her satır isimle bulunabilen bir Binder nesnesidir.',
+        shells: [{ label: 'adb (temsilî çıktı)', copy: 'adb shell service list | head', pre: '<span class="c">$</span> adb shell service list | head\nFound 180 services:\n  0  <span class="g">activity</span>: [android.app.IActivityManager]\n  1  <span class="g">package</span>: [android.content.pm.IPackageManager]\n  2  <span class="g">window</span>: [android.view.IWindowManager]' }] },
+      { h3: '2. Bir servisin durumunu dök', p: 'dumpsys, bir servise özel bir Binder metodunu çağırıp iç durumunu yazdırır. Servis mimarisinin en pratik gözlem aracıdır.',
+        shells: [{ label: 'adb', copy: 'adb shell dumpsys activity activities', pre: '<span class="c">$</span> adb shell dumpsys activity activities\n<span class="c"># ActivityManagerService\'in iç durumu: görev yığınları, süreçler</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'getSystemService() ile alınan manager aslında neyin üstüne kuruludur?', opts: ['Paylaşılan bellek', 'Binder üzerinden uzak çağrı (RPC)', 'Yerel dosya'], answer: 'Binder üzerinden uzak çağrı (RPC)',
+        ok: 'Doğru. Manager, system_server\'daki gerçek servise bir Binder vekilidir; yerel gibi görünen çağrı süreç sınırını Binder ile geçer.', no: 'İpucu: servis başka bir süreçte (system_server). Araya ne giriyor?' },
+      { q: 'Service Manager ne iş yapar?', opts: ['Veriyi taşır', 'İsim → Binder nesnesi eşlemesini tutar', 'Servisleri çalıştırır'], answer: 'İsim → Binder nesnesi eşlemesini tutar',
+        ok: 'Doğru. Yalnızca isim çözümlemesi (name resolution) yapar; veri onun üzerinden akmaz, doğrudan Binder ile gider.', no: 'İpucu: isim defteri. Veriyi mi taşır, yoksa adresi mi verir?' },
+      { q: 'Rastgele bir uygulama neden kendini "activity" adıyla kaydedip araya giremez?', opts: ['Şifreleme var', 'addService ayrıcalıklı UID ister; Binder UID\'i güvenilir', 'İsimler rastgele'], answer: 'addService ayrıcalıklı UID ister; Binder UID\'i güvenilir',
+        ok: 'Doğru. Binder\'ın sürücü tarafından eklenen güvenilir UID\'i sayesinde Service Manager, kaydı yalnızca yetkili süreçlere açar.', no: 'İpucu: Binder çağrıya ne ekliyordu? Bu kaydı kim yapabilir?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Android Modül 6', title: 'Uygulamaya Linux gözüyle', desc: 'Bir Android uygulaması /proc altında nasıl görünür? Süreç, thread ve bellek (USS/PSS/RSS).' },
+  sources: [
+    { href: 'https://newandroidbook.com/TOC.html', text: 'Levin — Android Internals', note: 'Cilt I, Bölüm 9' },
+    { href: 'https://cs.android.com/android/platform/superproject/main/+/main:frameworks/base/services/core/java/com/android/server/', text: 'system_server servisleri', note: 'AOSP kaynağı' },
+    { href: 'https://source.android.com/docs/core/architecture', text: 'AOSP — mimari' }
+  ],
+  pageTitle: 'Servis Mimarisi'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

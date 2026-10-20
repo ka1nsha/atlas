@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Android Yazılım Güvenliği</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: izin karar akışı */
+.gate { display: grid; gap: 8px; }
+.layer { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 10px 12px; display: grid; gap: 4px; min-width: 0; }
+.layer.on { border-color: var(--track); background: var(--track-soft); }
+.layer.pass { border-color: var(--ok); }
+.layer.deny { border-color: var(--bad); background: var(--bad-soft); }
+.layer .lh { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.layer .lt { font-family: var(--f-display); font-weight: 700; font-size: 15px; }
+.layer .lk { font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.layer .ld { font-size: 13px; color: var(--muted); }
+.layer .verdict-chip { font-family: var(--f-mono); font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
+.layer.pass .verdict-chip { background: var(--ok-soft); color: var(--ok); }
+.layer.deny .verdict-chip { background: var(--bad-soft); color: var(--bad); }
+.layer.wait .verdict-chip { background: var(--sunk); color: var(--muted); }
+.arrow { text-align: center; color: var(--muted); font-size: 14px; line-height: 1; }
+.final { font-family: var(--f-mono); font-size: 13px; padding: 8px 10px; border-radius: 8px; text-align: center; font-weight: 700; }
+.final.ok { background: var(--ok-soft); color: var(--ok); } .final.no { background: var(--bad-soft); color: var(--bad); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'android',
+  crumbs: 'android › yazılım güvenliği › modül 15',
+  eyebrow: 'Modül 15 · Android · Güvenlik',
+  titleHTML: 'İki kilit üst üste: <code>UID sandbox</code> ve SELinux',
+  lede: 'Android\'de bir uygulamanın bir kaynağa erişmesi için iki ayrı iznin birden geçmesi gerekir: klasik Linux izinleri (uygulama başına UID) ve SELinux zorunlu erişim kontrolü (mandatory access control, MAC). Bu modülde bir dosya erişiminin bu iki katmandan nasıl geçtiğini adım adım izleyeceksin.',
+  meta: ['~18 dk', 'ön koşul: Linux izinleri, UID', 'bağlam: AOSP'],
+  intuition: {
+    paras: [
+      'Android güvenliği tek bir duvar değil, üst üste binen katmanlardır. Birinci katman tanıdık: her uygulamaya kurulumda ayrı bir <strong>UID</strong> verilir, böylece uygulamalar birbirinin verisine sıradan Linux dosya izinleriyle (isteğe bağlı erişim kontrolü, discretionary access control / DAC) erişemez. Bu, uygulama başına kum havuzudur (sandbox).',
+      'İkinci katman daha katıdır: <strong>SELinux</strong> zorunlu erişim kontrolü (MAC). Burada izinler dosya sahibine bırakılmaz; merkezi bir politika (policy), hangi <em>alan</em>daki (domain) sürecin hangi <em>tür</em>deki (type) nesneye erişebileceğini belirler. root bile olsan politika hayır diyorsa erişemezsin. Üçüncü olarak <strong>seccomp-BPF</strong> sürecin çağırabileceği sistem çağrılarını (syscall) kısıtlar.',
+      'Kritik nokta: bu katmanlar VE (AND) ile çalışır. Erişimin gerçekleşmesi için DAC de, MAC de, seccomp da izin vermelidir; herhangi biri reddederse erişim durur.'
+    ],
+    ideas: [
+      { b: 'DAC: UID izni', span: 'Her uygulama kendi UID\'si; dosya sahibi/izin bitleri erişimi belirler. Klasik Linux.' },
+      { b: 'MAC: SELinux politikası', span: 'Süreç alanı (domain) × nesne türü (type); merkezi politika karar verir, sahip değil.' },
+      { b: 'Katmanlar VE ile çalışır', span: 'DAC ve MAC ve seccomp — hepsi izin vermeli. Biri bile reddederse erişim yok.' }
+    ]
+  },
+  lab: {
+    intro: 'Bir uygulama (untrusted_app, UID 10234) kendi veri dosyasını, sonra başka bir uygulamanın dosyasını açmaya çalışır. Sağda isteğin DAC → MAC → seccomp katmanlarından geçişini ve her katmanın kararını izle.',
+    codeLabel: 'erişim denemesi', cmd: 'open("/data/.../veri.db", O_RDONLY)',
+    foot: 'UID, alan ve tür adları Android için temsilîdir. Aşağıdaki "Kendin dene" çıktıları bu ortamda gerçek üretilmiştir.',
+    code: [
+      { t: '<span class="cm">// uygulama: untrusted_app, UID 10234</span>' },
+      { t: 'fd = <span class="f">open</span>(<span class="s">"/data/data/com.ornek.app/f.db"</span>, O_RDONLY);' },
+      { t: '' },
+      { t: '<span class="cm">// 1) DAC: Linux izin biti</span>' },
+      { t: '<span class="cm">// 2) MAC: SELinux politikası</span>' },
+      { t: '<span class="cm">// 3) seccomp: syscall filtresi</span>' },
+      { t: '' },
+      { t: '<span class="cm">// sonra: başka uygulamanın dosyası</span>' },
+      { t: 'fd = <span class="f">open</span>(<span class="s">"/data/data/com.banka.app/f.db"</span>, O_RDONLY);' }
+    ],
+    steps: [
+      { pc: 1, title: 'İstek: kendi dosyası', text: 'Uygulama kendi veri dizinindeki bir dosyayı açmak istiyor. Uygulama <code>untrusted_app</code> alanında (domain) çalışıyor ve UID\'si 10234. Çekirdek şimdi bu isteği katman katman denetleyecek.',
+        dac: 'wait', mac: 'wait', sec: 'wait', target: 'kendi dosyası', final: null,
+        term: ['open("/data/data/com.ornek.app/f.db", O_RDONLY)'] },
+      { pc: 4, title: 'DAC: Linux izni', text: 'Birinci kapı, isteğe bağlı erişim kontrolü (DAC). Dosya 10234 UID\'sine ait ve izni <code>rw-------</code>. İsteyen süreç de UID 10234 olduğu için sahip eşleşir: DAC izin verir. (Başka bir uygulama olsaydı burada EACCES ile dururdu.)',
+        dac: 'pass', mac: 'wait', sec: 'wait', target: 'kendi dosyası', final: null,
+        term: ['open(...) → DAC: sahip UID eşleşti'] },
+      { pc: 5, title: 'MAC: SELinux politikası', text: 'İkinci kapı, zorunlu erişim kontrolü (MAC). SELinux kaynak alanına (untrusted_app) ve hedef nesnenin türüne (app_data_file) bakar. Politikada <code>allow untrusted_app app_data_file:file { read }</code> kuralı var; izin verilir. Politika merkezîdir — dosya sahibi değiştiremez.',
+        dac: 'pass', mac: 'pass', sec: 'wait', target: 'kendi dosyası', final: null,
+        term: ['avc: granted { read } ... tcontext=...:app_data_file'] },
+      { pc: 6, title: 'seccomp: syscall filtresi', text: 'Üçüncü kapı, seccomp-BPF. Zygote her uygulamaya bir syscall beyaz listesi (whitelist) kurar. <code>openat</code> izinli syscall\'lar arasında, geçer. Üç kapı da açık: dosya açılır. Katmanlar VE ile çalıştığı için erişim ancak hepsi izin verince gerçekleşti.',
+        dac: 'pass', mac: 'pass', sec: 'pass', target: 'kendi dosyası', final: 'ok',
+        term: ['fd = 7  // açıldı: DAC ∧ MAC ∧ seccomp'] },
+      { pc: 9, title: 'Başka uygulamanın dosyası', text: 'Şimdi uygulama BAŞKA bir uygulamanın (com.banka.app, UID 10377) dosyasını açmaya çalışıyor. İlk kapıda düşer: dosya 10377\'ye ait, izni <code>rw-------</code>, isteyen 10234. Sahip de grup da eşleşmez, "diğerleri" için izin yok — DAC reddeder (EACCES). MAC\'e sıra bile gelmez. İşte uygulama izolasyonu.',
+        dac: 'deny', mac: 'skip', sec: 'skip', target: 'başka uygulamanın dosyası', final: 'no',
+        term: ['open(...com.banka.app...) → EACCES (Permission denied)'] }
+    ],
+    render: function (s, stateEl, u) {
+      function layer(key, state, title, kv, desc) {
+        var cls = 'layer';
+        if (state === 'pass') cls += ' pass'; else if (state === 'deny') cls += ' deny';
+        else if (state === 'wait' || state === 'skip') cls += ' wait';
+        var chip = state === 'pass' ? '<span class="verdict-chip">✓ izin</span>'
+          : state === 'deny' ? '<span class="verdict-chip">✕ reddetti</span>'
+          : state === 'skip' ? '<span class="verdict-chip">— sıra gelmedi</span>'
+          : '<span class="verdict-chip">bekliyor</span>';
+        return '<div class="' + cls + '"><div class="lh"><span class="lt">' + title + '</span>' + chip + '</div>' +
+          '<span class="lk">' + u.esc(kv) + '</span><span class="ld">' + desc + '</span></div>';
+      }
+      var html = '<p class="lab-label">Hedef</p><div class="box' + (s.target.indexOf('başka') >= 0 ? ' warn' : ' hi') + '">' +
+        '<b>' + u.esc(s.target) + '</b><span class="mono">kaynak: untrusted_app · UID 10234</span></div>' +
+        '<p class="lab-label" style="margin-top:14px">Erişim kapıları (hepsi geçmeli)</p><div class="gate">' +
+        layer('dac', s.dac, '1 · DAC (Linux izni)', 'dosya sahibi + izin biti', 'İsteğe bağlı erişim kontrolü (discretionary access control)') +
+        '<div class="arrow">↓</div>' +
+        layer('mac', s.mac, '2 · MAC (SELinux)', 'untrusted_app → app_data_file', 'Zorunlu erişim kontrolü (mandatory access control)') +
+        '<div class="arrow">↓</div>' +
+        layer('sec', s.sec, '3 · seccomp-BPF', 'syscall: openat', 'İzinli sistem çağrıları filtresi') +
+        '</div>';
+      if (s.final) html += '<div class="final ' + s.final + '" style="margin-top:12px">' + (s.final === 'ok' ? 'ERİŞİM VERİLDİ (fd = 7)' : 'ERİŞİM REDDEDİLDİ (EACCES)') + '</div>';
+      stateEl.innerHTML = html;
+      var hot = stateEl.querySelector('.layer.on, .layer.pass:last-of-type, .layer.deny');
+      var denyEl = stateEl.querySelector('.layer.deny');
+      if (denyEl) ATLAS.flash(denyEl, true);
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: iki katmanlı sandbox",
+    html: `<p class="lead">Android'in güvenlik modeli tek bir duvara değil, üst üste binen katmanlara dayanır. Bir uygulama bir kaynağa erişmek istediğinde önce <strong>DAC</strong> (klasik UID izinleri), sonra <strong>MAC</strong> (SELinux) ve gerektiğinde <strong>seccomp</strong> filtresinden geçer. Üçü de AND ile çalışır: herhangi biri "hayır" derse erişim reddedilir. Bu, defense in depth ilkesidir.</p>
+
+<h3>1. DAC: her uygulama kendi UID'sinde</h3>
+<p>Android'in en temel sandbox'ı aslında standart Linux izinleridir. Kurulumda her uygulamaya benzersiz bir UID atanır ve uygulama kendi process'inde, kendi UID'siyle çalışır. Bir uygulama başka bir uygulamanın <code>/data/data</code> dizinini okuyamaz, çünkü file ownership ve permission bits buna izin vermez — bu DAC (Discretionary Access Control).</p>
+<div class="manpage src-aosp"><div class="ref">app sandbox · uid</div><p class="orig">Android assigns a unique user ID (UID) to each Android app and runs it in its own process.</p><p>Her uygulama ayrı bir UID ve ayrı bir process alır; böylece iki uygulama varsayılan olarak birbirinin belleğine veya özel dosyalarına erişemez.</p></div>
+<div class="manpage src-aosp"><div class="ref">app sandbox · kernel</div><p class="orig">The kernel enforces security between apps and the system at the process level.</p><p>Sandbox bir kütüphane kuralı değil, kernel'de zorlanır — yani uygulama kodu ne yaparsa yapsın bu sınırı aşamaz.</p></div>
+<p>UID'ler sabit aralıklara (AID ranges) bölünmüştür:</p>
+<div class="deflist">
+<div><dt>system (1000)</dt><dd>system_server ve ayrıcalıklı sistem bileşenleri.</dd></div>
+<div><dt>radio (1001)</dt><dd>Telefon / RIL yığını.</dd></div>
+<div><dt>app (10000+)</dt><dd>Normal uygulamalar; her biri 10000'den başlayan benzersiz bir UID alır.</dd></div>
+<div><dt>isolated (99000+)</dt><dd>isolatedProcess servisleri — neredeyse hiçbir yetkisi olmayan aşırı kısıtlı UID'ler (ör. tarayıcı render process'i).</dd></div>
+</div>
+<p>Tarihsel bir not: <code>sharedUserId</code> ile iki uygulamanın aynı UID'yi paylaşması mümkündü, ama bu sandbox'ı zayıflattığı için kullanımdan kaldırıldı (deprecated).</p>
+
+<h3>2. MAC: SELinux type enforcement</h3>
+<p>DAC güçlüdür ama bir zaafı vardır: kaynağın sahibi izinleri gevşetebilir ve root (UID 0) çoğu DAC kontrolünü aşar. SELinux bu boşluğu kapatır: root bile olsan, policy'nin izin vermediği şeyi yapamazsın. Buna MAC (Mandatory Access Control) denir.</p>
+<div class="manpage src-aosp"><div class="ref">selinux · mac</div><p class="orig">Android uses Security-Enhanced Linux (SELinux) to enforce mandatory access control (MAC) over all processes.</p><p>SELinux tüm process'lerin ne yapabileceğini merkezi bir policy ile belirler; sistem bileşenleri ve root bile bu kuralların dışına çıkamaz.</p></div>
+<p>SELinux'un çalışma birimi <strong>type enforcement</strong>'tır. Her karar dört parçadan oluşur:</p>
+<div class="deflist">
+<div><dt>domain</dt><dd>Eylemi yapan process'in tipi (subject), ör. <code>untrusted_app</code>.</dd></div>
+<div><dt>type</dt><dd>Erişilen nesnenin tipi (object), ör. <code>app_data_file</code>.</dd></div>
+<div><dt>class</dt><dd>Nesnenin türü, ör. <code>file</code>, <code>dir</code>, <code>socket</code>.</dd></div>
+<div><dt>permission</dt><dd>İstenen eylem, ör. <code>read</code>, <code>write</code>, <code>open</code>.</dd></div>
+</div>
+<p>Policy yalnızca açıkça izin verilen (domain, type, class, permission) dörtlülerine izin verir; geri kalan her şey reddedilir.</p>
+<div class="manpage src-aosp"><div class="ref">selinux · default deny</div><p class="orig">SELinux operates on the principle of default denial: Anything not explicitly allowed is denied.</p><p>Varsayılan reddet (default deny): bir kural açıkça "allow" demiyorsa eylem reddedilir. Bu yüzden yeni bir özellik eklemek çoğu zaman yeni SELinux kuralları yazmayı gerektirir.</p></div>
+<p><code>neverallow</code> kuralları bunun tersidir: derleme zamanında belirli izinlerin ASLA verilemeyeceğini garanti eder — güvenlik invariant'larını korur. Çalışma anında engellenen her erişim <code>avc: denied</code> olarak loglanır; bu loglar hem hata ayıklamanın hem de saldırı tespitinin temelidir.</p>
+<div class="manpage src-aosp"><div class="ref">selinux · permissive</div><p class="orig">Permissive mode, in which permission denials are logged but not enforced.</p><p>İki mod vardır: <strong>enforcing</strong> (ihlal reddedilir) ve <strong>permissive</strong> (ihlal yalnızca loglanır, engellenmez). Geliştirme sırasında permissive kullanılıp loglardan eksik kurallar bulunur; üretimde her zaman enforcing'dir.</p></div>
+
+<h3>3. seccomp: syscall allowlist</h3>
+<p>Üçüncü katman seccomp-BPF'tir. Zygote her uygulamaya bir syscall allowlist uygular: uygulama yalnızca Android'in beklediği system call'ları çağırabilir. Listede olmayan bir çağrı denenirse process öldürülür (SIGSYS). Bu, kernel attack surface'ini daraltır — bir uygulama, istismar etmeye çalışacağı egzotik syscall'lara zaten erişemez.</p>
+
+<h3>4. Katmanlar birlikte: hepsi "evet" demeli</h3>
+<p>Bir uygulama bir dosyayı açmak istediğinde karar zinciri şudur: önce DAC (UID ve permission bits uygun mu?), sonra MAC (SELinux policy domain→type erişimine izin veriyor mu?), sonra seccomp (kullanılan syscall allowlist'te mi?). <strong>Üçü de izin vermek zorundadır.</strong> Bir saldırgan birini aşsa bile diğerleri ayakta kalır. Bu yüzden Android'de bir privilege escalation genellikle tek bir bug değil, birden çok katmanı aşan bir zincir gerektirir.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">Android güvenliği, tek bir kontrolün değil, birbirini tamamlayan katmanların işidir. Bir saldırgan tek katmanı aşsa bile diğerleri ayakta kalır (derinlemesine savunma, defense in depth). Katmanlar ve her birinin denetlediği şey:</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Katman</th><th>Kontrol</th><th>Örnek</th></tr></thead><tbody>' +
+      '<tr><td><b>DAC</b><br><span class="mono" style="font-size:11px">UID sandbox</span></td><td>Uygulama başına UID; dosya sahibi + izin bitleri</td><td>UID 10234 yalnız kendi <code>/data/data</code> dizinine yazar</td></tr>' +
+      '<tr><td><b>MAC</b><br><span class="mono" style="font-size:11px">SELinux</span></td><td>Alan × tür politikası; merkezî, sahip değiştiremez</td><td><code>allow untrusted_app app_data_file:file read</code></td></tr>' +
+      '<tr><td><b>seccomp</b><br><span class="mono" style="font-size:11px">BPF</span></td><td>Sürecin çağırabileceği syscall listesi</td><td>Zygote\'un kurduğu beyaz liste (whitelist)</td></tr>' +
+      '<tr><td><b>AppOps</b></td><td>Çalışma anı (runtime) hassas işlem denetimi</td><td>Kamera/konum erişiminin anlık onayı</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px">SELinux\'un iki kipi (mode) vardır: <strong>permissive</strong> (ihlalleri yalnız loglar, engellemez — geliştirme için) ve <strong>enforcing</strong> (ihlalleri gerçekten durdurur — üretimdeki her Android cihaz). Reddedilen her erişim <code>logcat</code>\'te bir <code>avc: denied</code> satırı bırakır; politika hatalarını ayıklamanın başlangıç noktası budur. Politika kaynakları AOSP\'ta <code>system/sepolicy</code> altındadır.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. DAC\'ı kendi gözünle gör (gerçek)', p: 'Bu ortamda gerçek üretildi: bir dosyayı yalnız sahibine okunur yapıp izin bitlerini gör. Android\'de "sahip" bir uygulamanın UID\'sidir; başka UID bu dosyayı açamaz.',
+        shells: [{ label: 'terminal · gerçek çıktı', copy: 'echo gizli > veri.txt && chmod 600 veri.txt && ls -l veri.txt && id -u', pre: '<span class="c">$</span> echo gizli > veri.txt &amp;&amp; chmod 600 veri.txt\n<span class="c">$</span> ls -l veri.txt\n-rw------- 1 root root 6 veri.txt   <span class="c"># yalnız sahip okur/yazar</span>\n<span class="c">$</span> id -u\n0' }] },
+      { h3: '2. seccomp durumunu oku (gerçek)', p: 'Bir sürecin seccomp filtresi altında olup olmadığı /proc\'tan okunur. Android uygulama süreçlerinde bu değer sıfırdan farklıdır (Zygote filtreyi kurar).',
+        shells: [{ label: 'terminal · gerçek çıktı', copy: 'grep Seccomp /proc/self/status', pre: '<span class="c">$</span> grep Seccomp /proc/self/status\nSeccomp:\t0            <span class="c"># 0 = filtre yok (bu ortam)</span>\nSeccomp_filters:\t0    <span class="c"># Android uygulamasında &gt; 0 olur</span>' }] },
+      { h3: '3. SELinux bağlamlarına bak', p: 'Android cihazda her süreç ve dosyanın bir SELinux bağlamı (context) vardır. -Z bayrağı bunu gösterir.',
+        shells: [{ label: 'adb (temsilî)', copy: 'adb shell ps -Z | grep untrusted_app', pre: '<span class="c">$</span> adb shell ps -Z | grep untrusted_app\nu:r:untrusted_app:s0:c234 u0_a234 ... com.ornek.app\n<span class="c">$</span> adb shell ls -Z /data/data/com.ornek.app\nu:object_r:app_data_file:s0 ...   <span class="c"># hedef tür</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Bir uygulama kendi veri dosyasını açıyor ama erişim reddediliyor. DAC izin verdiği halde bu nasıl olur?', opts: ['İmkânsız, DAC yeterli', 'SELinux (MAC) politikası reddetmiştir', 'Dosya yoktur'], answer: 'SELinux (MAC) politikası reddetmiştir',
+        ok: 'Doğru. Katmanlar VE ile çalışır: DAC izin verse bile SELinux politikası izin vermiyorsa erişim durur. logcat\'te bir avc: denied satırı olur.', no: 'İpucu: DAC tek kapı değil. İkinci, daha katı katman neydi?' },
+      { q: 'İki Android uygulamasının birbirinin verisine erişememesini sağlayan temel mekanizma nedir?', opts: ['Her uygulamaya ayrı UID (DAC)', 'Şifreleme', 'Ayrı CPU'], answer: 'Her uygulamaya ayrı UID (DAC)',
+        ok: 'Doğru. Uygulama başına UID + Linux dosya izinleri (DAC) temel izolasyonu kurar; SELinux bunu ikinci bir katmanla pekiştirir.', no: 'İpucu: labdaki son adımda erişim daha ilk kapıda düştü. O kapı hangisiydi?' },
+      { q: 'Üretimdeki bir Android cihazda SELinux hangi kiptedir?', opts: ['permissive (yalnız loglar)', 'enforcing (gerçekten engeller)', 'kapalı'], answer: 'enforcing (gerçekten engeller)',
+        ok: 'Doğru. Üretim cihazları enforcing kipindedir; ihlaller yalnız loglanmaz, fiilen durdurulur. permissive yalnız geliştirme içindir.', no: 'İpucu: gerçek bir cihazın ihlalleri sadece loglaması güvenli olur muydu?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Android Modül 16', title: 'Donanım destekli güvenlik', desc: 'TrustZone, TEE ve Titan M: en hassas sırlar neden ayrı bir güvenli dünyada tutulur?' },
+  sources: [
+    { href: 'https://newandroidbook.com/TOC.html', text: 'Levin — Android Internals', note: 'Cilt III, Bölüm 1' },
+    { href: 'https://source.android.com/docs/security/features/selinux', text: 'AOSP — SELinux' },
+    { href: 'https://source.android.com/docs/security/app-sandbox', text: 'AOSP — Application Sandbox' },
+    { href: 'https://man7.org/linux/man-pages/man2/seccomp.2.html', text: 'man 2 seccomp' }
+  ],
+  pageTitle: 'Android Yazılım Güvenliği'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>IPC: Pipe, Socket, Paylaşımlı Bellek</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: iki süreç + aradaki kanal */
+.ipc { display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: stretch; }
+@media (max-width: 580px) { .ipc { grid-template-columns: 1fr; } }
+.chan { border: 1.5px solid var(--track); border-radius: var(--r); background: var(--track-soft); padding: 10px; display: grid; gap: 8px; align-content: start; min-width: 0; }
+.chan .ch-h { font-family: var(--f-mono); font-size: 12px; color: var(--track); font-weight: 700; }
+.chan .ch-sub { font-size: 11.5px; color: var(--muted); }
+.buf { display: flex; flex-wrap: wrap; gap: 3px; }
+.cell { width: 20px; height: 24px; border: 1px solid var(--line); border-radius: 3px; display: grid; place-items: center; font-family: var(--f-mono); font-size: 11px; background: var(--surface); color: var(--muted); }
+.cell.full { background: var(--track); color: #fff; border-color: var(--track); }
+.flow { font-family: var(--f-mono); font-size: 11px; color: var(--muted); text-align: center; }
+.copies { font-family: var(--f-mono); font-size: 11px; justify-self: start; padding: 2px 8px; border-radius: 999px; background: var(--sunk); color: var(--muted); }
+.copies.two { background: var(--warn-soft); color: var(--warn); }
+.copies.one { background: var(--ok-soft); color: var(--ok); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'linux',
+  crumbs: 'linux › ipc › modül 10',
+  eyebrow: 'Modül 10 · Linux · Süreçler arası iletişim',
+  titleHTML: 'Süreçler nasıl konuşur? <code>pipe</code>, socket, paylaşımlı bellek',
+  lede: 'Ayrı süreçlerin bellekleri birbirinden yalıtılmıştır; biri diğerinin değişkenine doğrudan erişemez. Çekirdek bu yüzden aralarına kanallar koyar. Bu modülde bir boru (pipe) üzerinden veri akışını adım adım izleyecek, kopya maliyetini görecek ve bunun Android Binder ile macOS Mach port\'una nasıl bağlandığını anlayacaksın.',
+  meta: ['~18 dk', 'ön koşul: fork, fd', 'bağlam: Linux'],
+  intuition: {
+    paras: [
+      'Her sürecin kendi sanal bellek alanı vardır (fork modülünü hatırla). Bu yalıtım güvenliğin temelidir ama bir sorun doğurur: iki süreç bir iş birliği yapacaksa veriyi nasıl paylaşır? Cevap, çekirdeğin sağladığı <strong>süreçler arası iletişim (IPC, inter-process communication)</strong> mekanizmalarıdır.',
+      'Üç klasik yol vardır. <strong>Boru (pipe)</strong>: çekirdekte tek yönlü bir tampon; bir uç yazar, öbür uç okur. <strong>Yuva (socket)</strong>: çift yönlü, aynı makinede (Unix domain) veya ağ üzerinden. <strong>Paylaşımlı bellek (shared memory)</strong>: aynı fiziksel sayfaları iki sürece eşlemek — en hızlısı, çünkü veri kopyalanmaz, ama erişimi kendin senkronize etmen gerekir.',
+      'Bu aynı problem her sistemde karşımıza çıkar: Android bunu <strong>Binder</strong> ile, macOS/iOS <strong>Mach port</strong>\'ları ile çözer. Üçü de "yalıtılmış süreçler arasında güvenli veri taşıma" işini yapar; sadece tasarımları farklıdır.'
+    ],
+    ideas: [
+      { b: 'Boru = çekirdek tamponu', span: 'pipe() bir tampon (buffer) ve iki uç verir. Yazılan veri çekirdekte durur, okunana dek bekler.' },
+      { b: 'Kopya maliyeti', span: 'pipe ve socket veriyi iki kez kopyalar (yazan→çekirdek→okuyan). Paylaşımlı bellekte kopya yoktur.' },
+      { b: 'Aynı problem, farklı çözüm', span: 'Binder (Android) ve Mach port (macOS) de aynı yalıtım sorununu çözer; Binder tek kopya (one-copy) ile optimize eder.' }
+    ]
+  },
+  lab: {
+    intro: 'Ebeveyn bir boru (pipe) açar ve fork eder; çocuk yazar, ebeveyn okur. Sağda iki süreci ve aralarındaki çekirdek tamponunu izle. Son adımda aynı işin paylaşımlı bellekle nasıl kopyasız yapıldığını gör.',
+    codeLabel: 'pipedemo.c', cmd: './pipedemo',
+    foot: 'fd numaraları örnektir; gerçek strace çıktısı aşağıda. ← → tuşlarıyla da ilerleyebilirsin.',
+    code: [
+      { t: '<span class="t">int</span> fd[<span class="n">2</span>];' },
+      { t: '<span class="f">pipe</span>(fd);              <span class="cm">// fd[0]=okuma, fd[1]=yazma</span>' },
+      { t: '<span class="k">if</span> (<span class="f">fork</span>() == <span class="n">0</span>) {     <span class="cm">// çocuk: yazar</span>' },
+      { t: '    <span class="f">close</span>(fd[<span class="n">0</span>]);' },
+      { t: '    <span class="f">write</span>(fd[<span class="n">1</span>], <span class="s">"merhaba boru"</span>, <span class="n">12</span>);' },
+      { t: '}' },
+      { t: '<span class="f">close</span>(fd[<span class="n">1</span>]);         <span class="cm">// ebeveyn: okur</span>' },
+      { t: '<span class="t">int</span> n = <span class="f">read</span>(fd[<span class="n">0</span>], buf, <span class="n">32</span>);' }
+    ],
+    steps: [
+      { pc: 2, title: 'Boru yaratılır', term: ['pipe2([3, 4], 0) = 0'],
+        text: 'pipe() çekirdekte bir tampon (buffer) ve iki dosya tanımlayıcısı (fd) verir: fd[0] okuma ucu (3), fd[1] yazma ucu (4). Tampon şimdilik boş.',
+        p: { state: 'pipe() çağırdı', k: 'run' }, c: null,
+        buf: 0, flow: '', copies: null, note: 'Tek süreç; henüz çocuk yok.' },
+      { pc: 3, title: 'fork: uçlar paylaşılır', term: [],
+        text: 'fork() sonrası çocuk, ebeveynin fd tablosunu devralır: her iki süreç de borunun iki ucuna sahiptir. Herkes kullanmayacağı ucu kapatır — çocuk okuma ucunu, ebeveyn yazma ucunu — ki EOF doğru çalışsın.',
+        p: { state: 'okuma ucu açık (3)', k: 'run' }, c: { state: 'yazma ucu açık (4)', k: 'new', isNew: true },
+        buf: 0, flow: '', copies: null, note: 'İki süreç, bir boru. Çocuk yazacak, ebeveyn okuyacak.' },
+      { pc: 4, title: 'Çocuk yazar', term: ['[pid 1148] write(4, "merhaba boru", 12) = 12'],
+        text: 'Çocuk write(fd[1], ...) ile 12 baytı yazar. Veri çocuğun belleğinden ÇEKİRDEK tamponuna KOPYALANIR (birinci kopya). Ebeveyn henüz okumadıysa veri tamponda bekler.',
+        p: { state: 'read\'te bekliyor', k: 'sleep' }, c: { state: 'yazdı (12 bayt)', k: 'run' },
+        buf: 12, flow: 'çocuk → [çekirdek tamponu]', copies: 'two', note: '1. kopya: çocuğun belleği → çekirdek tamponu.' },
+      { pc: 7, title: 'Ebeveyn okur', term: ['read(3, "merhaba boru", 32) = 12'],
+        text: 'Ebeveyn read(fd[0], ...) çağırır. Çekirdek tamponundaki 12 bayt ebeveynin belleğine KOPYALANIR (ikinci kopya) ve tampon boşalır. Boru boşsa read uyur, doluysa veri gelir — senkronizasyon çekirdek tarafından yapılır.',
+        p: { state: 'okudu (12 bayt)', k: 'run' }, c: { state: 'çıktı', k: 'zombie' },
+        buf: 0, flow: '[çekirdek tamponu] → ebeveyn', copies: 'two', note: '2. kopya: çekirdek tamponu → ebeveynin belleği. Toplam 2 kopya.' },
+      { pc: 8, title: 'Alternatif: paylaşımlı bellek', term: ['ebeveyn okudu (12 bayt): merhaba boru'],
+        text: 'Aynı işi mmap(MAP_SHARED) ile de yapabilirdik: iki süreç AYNI fiziksel sayfaları görür. O zaman veri hiç kopyalanmaz — biri yazar, öbürü anında görür (sıfır kopya). Bedeli: erişimi kendin senkronize etmelisin (kilit/semafor), yoksa yarış durumu (race condition) oluşur. Boru güvenli ama 2 kopya; paylaşımlı bellek hızlı ama senkronizasyon sana kalır.',
+        p: { state: 'paylaşılan sayfayı okur', k: 'run' }, c: { state: 'paylaşılan sayfaya yazar', k: 'run' },
+        buf: 12, flow: 'çocuk ↔ [paylaşılan sayfa] ↔ ebeveyn', copies: 'one', shared: true, note: 'Sıfır kopya: tek fiziksel sayfa iki süreçte eşli. Senkronizasyon gerekir.' }
+    ],
+    render: function (s, stateEl, u) {
+      function proc(p, who, label) {
+        if (!p) return '<div class="box" style="place-content:center;text-align:center;color:var(--muted);border-style:dashed">Henüz yok</div>';
+        var cls = who === 'p' ? 'box hi' : 'box good';
+        return '<div class="' + cls + '"><b>' + label + '</b><span class="mono">' + u.esc(p.state) + '</span></div>';
+      }
+      var cells = '';
+      for (var i = 0; i < 16; i++) cells += '<div class="cell' + (i < s.buf ? ' full' : '') + '">' + (i < s.buf ? '·' : '') + '</div>';
+      var chTitle = s.shared ? 'Paylaşımlı bellek (shared memory)' : 'Boru · çekirdek tamponu (pipe buffer)';
+      var copies = s.copies ? '<span class="copies ' + s.copies + '">' + (s.copies === 'two' ? '2 kopya' : '0 kopya (sıfır)') + '</span>' : '';
+      stateEl.innerHTML =
+        '<p class="lab-label">İki süreç ve aradaki kanal</p>' +
+        '<div class="ipc">' +
+          proc(s.c, 'c', 'Çocuk (yazan)') +
+          '<div class="chan"><span class="ch-h">' + chTitle + '</span><div class="buf">' + cells + '</div>' +
+            (s.flow ? '<span class="flow">' + u.esc(s.flow) + '</span>' : '') + copies + '</div>' +
+          proc(s.p, 'p', 'Ebeveyn (okuyan)') +
+        '</div>' +
+        (s.note ? '<p class="note" style="margin-top:12px">' + u.esc(s.note) + '</p>' : '');
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: süreçler nasıl konuşur?",
+    html: `<p class="lead">IPC (interprocess communication) yöntemleri aynı soruyu farklı maliyetlerle çözer: iki process arasında veri nasıl taşınır? Seçim, verinin kaç kez kopyalandığına, iletişimin tek yönlü mü çift yönlü mü olduğuna ve senkronizasyon gerekip gerekmediğine bağlıdır. Bu bölüm man sayfalarına dayanır.</p>
+
+<h3>1. Pipe: tek yönlü kanal</h3>
+<p>Anonymous pipe, iki process arasında (genelde parent–child) tek yönlü bir bayt akışı sağlar. Veri bir kernel buffer'da tutulur: yazan uca yazılır, okuyan uçtan okunur. Çift yönlü iletişim için iki ayrı pipe gerekir.</p>
+<div class="manpage"><div class="ref">7 pipe · DESCRIPTION</div><p class="orig">Pipes and FIFOs (also known as named pipes) provide a unidirectional interprocess communication channel.</p><p>pipe ve FIFO, tek yönlü (unidirectional) bir IPC kanalı sağlar; tek bir pipe ile veri yalnızca bir yöne akar.</p></div>
+<p>Küçük yazmalar <strong>atomic</strong>tir: <code>PIPE_BUF</code> baytından (Linux'ta 4096) küçük bir <code>write</code>, araya başka bir yazanın verisi karışmadan tek parça olarak yazılır. Bu, birden çok process aynı pipe'a yazarken satırların birbirine karışmamasını sağlar.</p>
+<div class="manpage"><div class="ref">7 pipe · PIPE_BUF</div><p class="orig">POSIX.1 says that writes of less than PIPE_BUF bytes must be atomic:</p><p>PIPE_BUF'tan küçük yazmalar atomic olmak zorundadır; bundan büyük yazmalar parçalanabilir ve araya başka verinin girmesine izin verebilir.</p></div>
+<p>Okuyan uç kapanmışsa yazan process'e <code>SIGPIPE</code> gönderilir; process bu sinyali yok sayıyorsa <code>write</code> çağrısı <code>EPIPE</code> ile başarısız olur. Boş bir pipe'tan okuma veri gelene kadar bloklanır; dolu bir pipe'a yazma yer açılana kadar bloklanır (blocking mode).</p>
+<div class="manpage"><div class="ref">7 pipe · DESCRIPTION</div><p class="orig">If the calling process is ignoring this signal, then write(2) fails with the error EPIPE.</p><p>Kabuğun "Broken pipe" mesajı tam da budur: okuyucu kalmayınca gelen SIGPIPE ya da EPIPE.</p></div>
+
+<h3>2. Named pipe (FIFO)</h3>
+<p>FIFO, pipe'ın dosya sistemi üzerinde isimlendirilmiş hâlidir (<code>mkfifo</code>). Akraba olmayan (unrelated) process'ler onu bir yol adıyla açıp aynı kanalı paylaşabilir; anonymous pipe'ın aksine ortak bir ata (parent) gerekmez.</p>
+
+<h3>3. Unix domain socket: çift yönlü ve daha güçlü</h3>
+<p>Unix domain socket (AF_UNIX), aynı makinedeki process'ler arasında çift yönlü, güvenilir iletişim sağlar. Ağ soketlerinin aksine TCP/IP yığınına girmez; doğrudan çekirdek içinde çalışır, bu yüzden hızlıdır.</p>
+<div class="manpage"><div class="ref">7 unix · DESCRIPTION</div><p class="orig">...is used to communicate between processes on the same machine efficiently.</p><p>AF_UNIX, aynı makinedeki process'ler arasında verimli iletişim için kullanılır.</p></div>
+<p>Üç soket türü vardır:</p>
+<div class="deflist">
+<div><dt>SOCK_STREAM</dt><dd>Akış yönelimli (stream-oriented) bayt akışı; TCP benzeri.</dd></div>
+<div><dt>SOCK_DGRAM</dt><dd>Datagram yönelimli; mesaj sınırlarını korur.</dd></div>
+<div><dt>SOCK_SEQPACKET</dt><dd>Sıralı paket; bağlantı yönelimli ve mesaj sınırlarını koruyan.</dd></div>
+</div>
+<p>Unix domain socket'in en güçlü özelliği <strong>fd passing</strong>: bir process, açık bir file descriptor'ı <code>SCM_RIGHTS</code> ancillary mesajıyla başka bir process'e gönderebilir. Karşı taraf aynı kaynağa erişen yeni bir file descriptor alır. Bu, ayrıcalıklı bir process'in açtığı bir kaynağı sandbox'lı bir process'e devretmesini sağlar ve tam da bu yüzden güvenlik açısından önemli bir yüzeydir.</p>
+<div class="manpage"><div class="ref">7 unix · ANCILLARY MESSAGES</div><p class="orig">Send or receive a set of open file descriptors from another process.</p><p>Açık file descriptor'ları başka bir process'e gönder veya ondan al. Taşınan şey bir sayı değil, çekirdekteki open file description'a bir referanstır.</p></div>
+
+<h3>4. Shared memory: en hızlı, senkronizasyon sizde</h3>
+<p>Shared memory, iki process'in aynı fiziksel belleği kendi address space'lerine eşlemesidir (POSIX: <code>shm_open</code> + <code>mmap</code>; System V: <code>shmget</code>). Veri hiç kopyalanmaz: bir process yazar, diğeri aynı anda görür. Bu onu en hızlı IPC yapar; ama çekirdek araya girmediği için race condition'ları önlemek — semaphore, mutex ya da futex ile — sizin sorumluluğunuzdadır.</p>
+
+<h3>5. Hangisi ne zaman?</h3>
+<div class="deflist">
+<div><dt>pipe / FIFO</dt><dd>Basit, tek yönlü akış. Veri iki kez kopyalanır (yazan → kernel buffer → okuyan).</dd></div>
+<div><dt>Unix socket</dt><dd>Çift yönlü, mesaj sınırlı, fd passing destekli. İki kopya ama en esnek.</dd></div>
+<div><dt>shared memory</dt><dd>Sıfır kopya, en hızlı. Senkronizasyon elle. Büyük veri için ideal.</dd></div>
+</div>
+
+<h3>6. Android ve macOS'ta karşılığı</h3>
+<p>Aynı problem her platformda çözülür ama farklı soyutlamalarla. Android'in <strong>Binder</strong>'ı tek kopyalı (one-copy) bir IPC sağlar ve nesne referansı taşıyabilir; macOS/iOS'un <strong>Mach port</strong>'ları mesaj kuyruklarına dayalı, yetki (capability) tabanlı bir model sunar. Üçü de aynı çekirdek sorusunu — "veriyi ve erişim hakkını güvenle nasıl taşırım?" — kendi tasarım felsefesiyle yanıtlar.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">Boru, dosya soyutlamasının (VFS) üstüne kuruludur: uçları birer <code>struct file</code>\'dır, bu yüzden <code>read</code>/<code>write</code> aynı sistem çağrılarıyla çalışır. Çekirdekteki yol:</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://man7.org/linux/man-pages/man2/pipe.2.html" target="_blank" rel="noopener">pipe()</a><span class="where">glibc</span><p>pipe2 sistem çağrısını (syscall) yapar; iki fd döndürür.</p></div></li>' +
+      '<li class="boundary"><div>sistem çağrısı sınırı · kullanıcı → çekirdek</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/do_pipe2" target="_blank" rel="noopener">do_pipe2()</a><span class="where">fs/pipe.c</span><p>Bir pipe inode\'u ve halka tampon (ring buffer) kurar, iki <code>struct file</code> ayırır.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/pipe_write" target="_blank" rel="noopener">pipe_write()</a><span class="where">fs/pipe.c</span><p>Veriyi tampona kopyalar; tampon doluysa yazanı uyutur, okuyanı uyandırır.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/pipe_read" target="_blank" rel="noopener">pipe_read()</a><span class="where">fs/pipe.c</span><p>Tampondan okuyanın belleğine kopyalar; boş ve yazan ucu kapanmışsa EOF döner.</p></div></li>' +
+      '</ol>' +
+      '<p class="prose" style="margin-top:14px">Üç sistem, aynı problem: <strong>Linux</strong> pipe/socket/shm, <strong>Android</strong> Binder (tek kopya mmap ile iki yerine bir kopya), <strong>macOS/iOS</strong> Mach port (mesaj + hak taşıma). Hepsi yalıtılmış süreçler arasında denetimli veri aktarımı sağlar; tasarım farkı güvenlik ve hız dengesidir.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Boruyu çalıştır', p: 'Çocuk yazar, ebeveyn okur. Çıktı tek satır: ebeveynin tampondan aldığı 12 bayt.',
+        shells: [{ label: 'terminal · gerçek çıktı', copy: 'gcc -o pipedemo pipedemo.c && ./pipedemo', pre: '<span class="c">$</span> gcc -o pipedemo pipedemo.c &amp;&amp; ./pipedemo\nebeveyn okudu (12 bayt): merhaba boru' }] },
+      { h3: '2. Sistem çağrılarını izle', p: 'strace ile pipe2, write ve read\'i gör: write yazma ucuna (4), read okuma ucuna (3) gidiyor; aradaki veri çekirdek tamponunda.',
+        shells: [{ label: 'terminal · gerçek çıktı', copy: 'strace -f -e trace=pipe2,read,write ./pipedemo', pre: '<span class="c">$</span> strace -f -e trace=pipe2,read,write ./pipedemo\n<span class="y">pipe2([3, 4], 0)</span>            = 0\n<span class="ch">[pid 1148] write(4, "merhaba boru", 12)</span> = 12\n<span class="pa">read(3, "merhaba boru", 32)</span>  = 12' }] },
+      { h3: '3. Kabuktaki | operatörü', p: 'Kabuk iki komutu bağlarken tam da bunu yapar: ilkinin stdout\'unu (fd 1) bir borunun yazma ucuna, ikincinin stdin\'ini (fd 0) okuma ucuna dup2 eder.',
+        shells: [{ label: 'terminal', copy: 'ls | wc -l', pre: '<span class="c">$</span> ls | wc -l   <span class="c"># ls\'in çıktısı boru üzerinden wc\'ye akar</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Bir boru (pipe) ile 1 KB veri göndermek kaç kez kopyalanır?', opts: ['Hiç (sıfır kopya)', '2 kez (yazan→çekirdek→okuyan)', '4 kez'], answer: '2 kez (yazan→çekirdek→okuyan)',
+        ok: 'Doğru. Veri önce yazanın belleğinden çekirdek tamponuna, sonra okuyanın belleğine kopyalanır. Paylaşımlı bellekte ise sıfır kopya olur.', no: 'İpucu: veri çekirdek tamponundan geçer. Kaç sınır aşıyor?' },
+      { q: 'Paylaşımlı belleğin (shared memory) borular karşısındaki ana dezavantajı nedir?', opts: ['Daha yavaş', 'Senkronizasyonu kendin yapmalısın', 'Sadece aynı kullanıcıda çalışır'], answer: 'Senkronizasyonu kendin yapmalısın',
+        ok: 'Doğru. Kopya yok, çok hızlı; ama iki süreç aynı sayfaya aynı anda erişebildiği için kilit/semafor ile yarış durumunu (race condition) sen önlemelisin.', no: 'İpucu: paylaşımlı bellek en hızlısıdır. Peki aynı sayfaya iki süreç yazarsa?' },
+      { q: 'Android Binder ve macOS Mach port hangi temel problemi çözer?', opts: ['Dosya sıkıştırma', 'Yalıtılmış süreçler arası veri aktarımı', 'Disk bölümleme'], answer: 'Yalıtılmış süreçler arası veri aktarımı',
+        ok: 'Doğru. Üçü de (Linux IPC, Binder, Mach port) aynı işi yapar: belleği ayrı süreçler arasında denetimli biçimde taşımak. Binder bunu tek kopya ile optimize eder.', no: 'İpucu: bu modülün ana fikri — hepsi aynı sorunu farklı çözer.' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Linux Modül 11', title: 'Thread\'ler ve futex', desc: 'Thread fork\'tan nasıl farklı? Kullanıcı alanı kilitleri (futex) nasıl çalışır?' },
+  sources: [
+    { href: 'https://man7.org/linux/man-pages/man2/pipe.2.html', text: 'man 2 pipe', note: 'uçlar ve EOF' },
+    { href: 'https://man7.org/linux/man-pages/man7/unix.7.html', text: 'man 7 unix', note: 'Unix domain socket' },
+    { href: 'https://man7.org/linux/man-pages/man2/mmap.2.html', text: 'man 2 mmap', note: 'MAP_SHARED paylaşımlı bellek' },
+    { href: 'https://0xax.gitbooks.io/linux-insides/content/', text: 'linux-insides', note: 'kaynak gezintisi' },
+    { href: 'https://elixir.bootlin.com/linux/latest/source/fs/pipe.c', text: 'fs/pipe.c', note: 'Elixir' }
+  ],
+  pageTitle: 'IPC: Pipe, Socket, Paylaşımlı Bellek'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>ART ve DEX çalıştırma</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: sıcaklık (hotness) göstergesi + metod durumu */
+.hot { display: grid; gap: 4px; margin: 2px 0 4px; }
+.hot .hlab { display: flex; justify-content: space-between; font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.hot .bar { height: 10px; border-radius: 999px; background: var(--sunk); overflow: hidden; }
+.hot .fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--track), var(--warn)); transition: width .4s ease; }
+.mstate { display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); gap: 6px; margin-top: 8px; }
+.mstate .ms { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; font-family: var(--f-mono); font-size: 11.5px; color: var(--muted); text-align: center; background: var(--surface); }
+.mstate .ms.on { border-color: var(--track); background: var(--track-soft); color: var(--track); font-weight: 700; }
+@media (prefers-reduced-motion: reduce) { .hot .fill { transition: none; } }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'android',
+  crumbs: 'android › art › modül 13',
+  eyebrow: 'Modül 13 · Android · Çalışma zamanı',
+  titleHTML: '<code>ART</code>: bytecode nasıl makine koduna dönüşür?',
+  lede: 'Android uygulamaları DEX bytecode olarak paketlenir ama CPU bunu doğrudan çalıştıramaz. ART (Android Runtime) aynı metodu önce yorumlar, ısındıkça JIT ile derler, boştayken de AOT ile kalıcı makine koduna çevirir. Bu modülde bir metodun bu üç aşamadan geçişini izleyeceksin.',
+  meta: ['~18 dk', 'ön koşul: DEX, süreç kavramı', 'bağlam: AOSP ART'],
+  intuition: {
+    paras: [
+      'İlk Android sürümlerinde Dalvik vardı: her açılışta JIT (anında derleme / just-in-time) ile çalışırdı, hızlı kurardı ama her seferinde yeniden derlerdi. ART bunu değiştirdi: kurulumda veya boşta AOT (önceden derleme / ahead-of-time) ile makine kodu üretip diske yazar, böylece sonraki açılışlar hızlı olur.',
+      'Saf AOT da ideal değildi (kurulum yavaş, depolama şişer). Bugünkü ART <strong>melez</strong> çalışır: metod ilk kez yorumlanır (interpret), sık çağrılırsa JIT devreye girer ve bir <strong>profil</strong> toplanır; cihaz boştayken <code>dex2oat</code> bu profili kullanıp yalnızca sık kullanılan metodları AOT derler (profil güdümlü / profile-guided).'
+    ],
+    ideas: [
+      { b: 'Üç hız', span: 'Yorumlama (interpret) en yavaş ama anında; JIT ısınınca hızlanır; AOT en hızlı ve kalıcı.' },
+      { b: 'Profil hatırlar', span: 'JIT hangi metodların sıcak (hot) olduğunu kaydeder; dex2oat yalnızca onları derler.' },
+      { b: 'Dosyalar', span: 'VDEX (doğrulanmış DEX), OAT (makine kodu) ve ART (önceden hazır nesne görüntüsü) birlikte çalışır.' }
+    ]
+  },
+  lab: {
+    intro: 'Bir metodun (örneğin bir listeyi çizen <code>onDraw</code>) yaşam döngüsünü izle. ART çağrı sayısını (hotness) sayar; eşiği geçince JIT derler, boşta AOT kalıcılaştırır. Sağda metodun durumu ve sıcaklık göstergesi.',
+    codeLabel: 'ART yürütme kararı (temsilî)', cmd: 'app → ART',
+    foot: 'Eşik ve sayılar temsilîdir; gerçek ART eşikleri sürüme göre değişir.',
+    code: [
+      { t: '<span class="cm">// ART bir metodu çağırmadan önce</span>' },
+      { t: '<span class="k">if</span> (method.hasCompiledCode()) {' },
+      { t: '    method.entryPoint();        <span class="cm">// native (OAT) çalıştır</span>' },
+      { t: '} <span class="k">else</span> {' },
+      { t: '    interpreter.execute(method); <span class="cm">// yorumla</span>' },
+      { t: '    method.hotness++;' },
+      { t: '    <span class="k">if</span> (method.hotness > kJitThreshold)' },
+      { t: '        jit.compile(method);     <span class="cm">// JIT derle + profile ekle</span>' },
+      { t: '}' },
+      { t: '<span class="cm">// boştayken: dex2oat profile.prof -> app.oat (AOT)</span>' }
+    ],
+    steps: [
+      { pc: 5, title: 'İlk çağrı: yorumlama', term: ['onDraw() çağrıldı (1): interpreter'],
+        text: 'Metod ilk kez çağrılır. Derlenmiş kodu yok, bu yüzden ART yorumlayıcısı (interpreter) DEX bytecode\'unu opcode opcode yürütür. Yavaş ama hazırlık gerektirmez.',
+        mode: 'interpret', hotness: 8, files: ['DEX', 'VDEX'], note: 'Henüz makine kodu yok; sadece DEX okunuyor.' },
+      { pc: 6, title: 'Isınma (hotness)', term: ['onDraw() çağrıldı (2..N): interpreter', 'hotness artıyor...'],
+        text: 'Metod tekrar tekrar çağrılır (örneğin her kare / frame). ART her çağrıda hotness sayacını artırır. Sayaç JIT eşiğine (kJitThreshold) yaklaşıyor.',
+        mode: 'interpret', hotness: 62, files: ['DEX', 'VDEX'], note: 'Sayaç eşiğe yaklaştı; JIT birazdan devreye girecek.' },
+      { pc: 8, title: 'JIT derleme', term: ['hotness > eşik → JIT', 'onDraw() JIT ile derlendi (native)'],
+        text: 'Hotness eşiği aştı. JIT derleyici metodu arka planda makine koduna (native) çevirir ve bir sonraki çağrıdan itibaren bu hızlı kod çalışır. Aynı anda bir profil kaydı tutulur: "onDraw sıcak".',
+        mode: 'jit', hotness: 100, files: ['DEX', 'VDEX', 'profil'], note: 'Metod artık native çalışıyor; profil "sıcak" olarak işaretledi.' },
+      { pc: 10, title: 'Boşta: AOT (dex2oat)', term: ['cihaz boşta: dex2oat profile.prof', 'app.oat üretildi'],
+        text: 'Cihaz şarjdayken ve boştayken bir arka plan işi, toplanan profili kullanarak <code>dex2oat</code> çalıştırır: yalnızca profilde sıcak görünen metodları AOT ile derleyip kalıcı bir <code>.oat</code> dosyasına yazar. JIT\'in geçici kodu artık diske yazılmış oldu.',
+        mode: 'aot', hotness: 100, files: ['VDEX', 'OAT', 'ART'], note: 'Profil güdümlü (profile-guided) AOT: yalnızca sıcak metodlar derlendi.' },
+      { pc: 3, title: 'Sonraki açılış: doğrudan native', term: ['uygulama açıldı', 'onDraw() entryPoint → OAT (native), yorumlama yok'],
+        text: 'Uygulama bir daha açıldığında ART, <code>.oat</code> dosyasındaki hazır makine kodunu doğrudan eşler. Sıcak metodlar ilk çağrıda native çalışır; yorumlama ve JIT ısınması gerekmez. Açılış ve akıcılık (jank azalması) buradan gelir.',
+        mode: 'aot', hotness: 100, files: ['VDEX', 'OAT', 'ART'], note: 'Soğuk metodlar hâlâ yorumlanır; sıcaklar baştan native.' },
+      { pc: 2, title: 'Çöp toplama (GC)', term: ['GC: concurrent mark-sweep', 'kısa duraklama (pause) ~1ms'],
+        text: 'ART yönetilen bir heap kullanır; nesneleri çöp toplayıcı (garbage collector) temizler. Modern ART eşzamanlı (concurrent) işaretle-süpür (mark-sweep) kullanır: uygulama çalışırken arka planda erişilebilir nesneleri işaretler, erişilemeyenleri süpürür, uygulamayı yalnızca çok kısa duraklatır.',
+        mode: 'aot', hotness: 100, files: ['VDEX', 'OAT', 'ART'], gc: true, note: 'GC çalışma zamanının ayrı bir parçası; derlemeden bağımsız.' }
+    ],
+    render: function (s, stateEl, u) {
+      var modes = [['interpret', 'Yorumla'], ['jit', 'JIT'], ['aot', 'AOT / native']];
+      var ms = modes.map(function (m) {
+        return '<div class="ms' + (s.mode === m[0] ? ' on' : '') + '">' + m[1] + '</div>';
+      }).join('');
+      var files = s.files.map(function (f) {
+        return '<div class="box" style="text-align:center"><b class="mono" style="font-size:12px">' + u.esc(f) + '</b></div>';
+      }).join('');
+      stateEl.innerHTML =
+        '<p class="lab-label">Metod: onDraw()</p>' +
+        '<div class="hot"><div class="hlab"><span>sıcaklık (hotness)</span><span>' + s.hotness + ' / 100</span></div>' +
+        '<div class="bar"><div class="fill" style="width:' + s.hotness + '%"></div></div></div>' +
+        '<div class="mstate">' + ms + '</div>' +
+        (s.gc ? '<div class="box warn" style="margin-top:12px"><b>Çöp toplama (GC)</b><span>eşzamanlı işaretle-süpür · kısa duraklama</span></div>' : '') +
+        '<p class="lab-label" style="margin-top:14px">Diskteki dosyalar</p><div class="boxrow">' + files + '</div>' +
+        (s.note ? '<p class="note" style="margin-top:10px">' + u.esc(s.note) + '</p>' : '');
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: interpreter, JIT ve AOT",
+    html: `<p class="lead">ART, aynı DEX bytecode'u üç farklı şekilde çalıştırabilir ve aralarında dinamik olarak geçiş yapar: yavaş ama anında başlayan interpreter, ısınan metodları derleyen JIT, ve kuruluma/boşta zamana yayılan AOT. Amaç, hem hızlı uygulama başlangıcı hem düşük bellek hem de sıcak kodda native hız elde etmektir. Bu bölüm AOSP belgelerine dayanır.</p>
+
+<h3>1. Üç çalıştırma modu</h3>
+<p>Bir metod ilk çağrıldığında ART onu <strong>interpreter</strong> ile çalıştırır — derleme yok, anında başlar, ama her bytecode tek tek yorumlandığı için yavaştır. Bir metod yeterince sık çalışırsa (hot method olursa) <strong>JIT</strong> (just-in-time) devreye girer ve o metodu çalışma anında native kod'a derleyip code cache'e koyar. Sonraki çağrılar doğrudan bu derlenmiş kodu kullanır.</p>
+<div class="manpage src-aosp"><div class="ref">runtime · jit</div><p class="orig">JIT makes use of runtime type information, can do better inlining, and makes on stack replacement (OSR) compilation possible.</p><p>JIT'in avantajı, çalışma anındaki gerçek tip bilgisini görebilmesidir: hangi dalın sık geçildiğini, hangi nesnenin hangi tipte olduğunu bildiği için AOT'tan daha iyi inlining yapabilir. OSR (on-stack replacement) sayesinde, uzun süren bir döngünün ortasında bile metodun yorumlanan sürümünden derlenmiş sürümüne geçebilir.</p></div>
+<p>Bir metod hem JIT hem AOT koduna sahip olabilir (örneğin tekrarlı de-optimization'lar yüzünden); bu durumda hangisinin kullanılacağı bellidir.</p>
+<div class="manpage src-aosp"><div class="ref">runtime · jit</div><p class="orig">If both JIT and AOT code exists (e.g. due to repeated de-optimizations), the JITed code is preferred.</p><p>JIT kodu çalışma anındaki bilgiyle üretildiği için AOT koduna tercih edilir — AOT daha önce, daha az bilgiyle derlenmiştir.</p></div>
+
+<h3>2. Profile-guided compilation</h3>
+<p>ART, her uygulamanın gerçekte hangi metodları sık çalıştırdığını bir <strong>profile</strong> dosyasında biriktirir. Bu profil, neyi AOT ile derlemeye değeceğini belirler: tüm uygulamayı derlemek yerine yalnızca gerçekten sıcak olan kısımları derler. Böylece hem disk hem derleme süresi hem de bellek tasarruf edilir.</p>
+<div class="manpage src-aosp"><div class="ref">runtime · profile-guided</div><p class="orig">The JIT profile data is dumped to a file in a system directory that only the application can access.</p><p>JIT çalışırken hangi metodların sıcak olduğunu kaydeder ve bu profil verisini yalnızca o uygulamanın erişebildiği bir dizine yazar — profil, uygulamanın gerçek kullanım desenini temsil eder.</p></div>
+<div class="manpage src-aosp"><div class="ref">runtime · profile-guided</div><p class="orig">The AOT compilation (dex2oat) daemon parses that file to drive its compilation.</p><p>Cihaz boştayken (veya şarjdayken) bir dex2oat daemon'ı bu profili okur ve yalnızca profildeki sıcak metodları AOT ile derler. Play ayrıca <strong>baseline profile</strong>'ları uygulamayla birlikte dağıtır, böylece ilk açılıştan itibaren kritik yollar derlenmiş olur.</p></div>
+
+<h3>3. dex2oat ve derleme filtreleri (compilation filters)</h3>
+<p>Asıl AOT derleyicisi cihaz üstünde çalışan <code>dex2oat</code>'tır. Ne kadarının derleneceğini bir <strong>compilation filter</strong> belirler: <code>verify</code> (sadece doğrula, derleme yok), <code>speed-profile</code> (profildeki sıcak metodları derle — varsayılan), <code>speed</code> (her şeyi derle), <code>space</code> (yer için). Böylece aynı araç, cihaza ve duruma göre hız/boyut dengesini ayarlar.</p>
+<div class="manpage src-aosp"><div class="ref">runtime · dex2oat</div><p class="orig">At install time, ART compiles apps using the on-device dex2oat tool.</p><p>Dalvik'ten farklı olarak ART, derlemeyi cihazın kendisinde yapar; bu sayede üretilen kod tam o cihazın işlemcisine göre optimize edilir.</p></div>
+<div class="manpage src-aosp"><div class="ref">runtime · dex2oat</div><p class="orig">This utility accepts DEX files as input and generates a compiled app executable for the target device.</p><p>dex2oat girdi olarak DEX dosyalarını alır ve hedef cihaz için derlenmiş bir çalıştırılabilir üretir — çıktı aşağıdaki OAT/VDEX/ART dosyalarıdır.</p></div>
+
+<h3>4. OAT, VDEX, ODEX ve ART dosyaları</h3>
+<p>dex2oat'ın ürettiği artefaktlar farklı şeyler tutar; bir uygulamanın başlangıç hızı büyük ölçüde bunların hazır olup olmamasına bağlıdır.</p>
+<div class="deflist">
+<div><dt>.oat</dt><dd>dex2oat'ın ürettiği native kod. Aslında özel bir ELF dosyasıdır; AOT ile derlenmiş metodların makine kodunu barındırır.</dd></div>
+<div><dt>.vdex</dt><dd>Doğrulanmış (verified) ve hızlı okunur hale getirilmiş DEX. Doğrulama sonucunu saklar, böylece sonraki açılışlarda yeniden doğrulamaya gerek kalmaz.</dd></div>
+<div><dt>.odex</dt><dd>Optimize edilmiş DEX; pratikte OAT çıktısının bir uygulama/paket için paketlenmiş biçimi (kurulumda /data'da oluşur).</dd></div>
+<div><dt>.art</dt><dd>Heap image: önceden başlatılmış (pre-initialized) sınıf ve nesnelerin bellek anlık görüntüsü. Açılışta doğrudan belleğe eşlenir, böylece uygulama sık kullanılan nesneleri sıfırdan kurmaz.</dd></div>
+</div>
+
+<h3>5. Garbage collection</h3>
+<p>ART'ın çöp toplayıcısı, managed heap'teki artık erişilemeyen nesneleri geri kazanır. Mobilde kritik olan, bunu yaparken uygulamayı mümkün olduğunca az durdurmaktır (düşük pause). Modern ART, çoğunlukla eşzamanlı (mostly concurrent) ve copying bir GC kullanır.</p>
+<div class="manpage src-aosp"><div class="ref">runtime · gc</div><p class="orig">Concurrent copying to reduce background memory usage and fragmentation.</p><p>Concurrent copying GC, nesneleri çalışırken taşıyarak hem fragmentation'ı azaltır hem de arka plan bellek kullanımını düşürür — uygulama çoğunlukla durmaz.</p></div>
+<div class="manpage src-aosp"><div class="ref">runtime · gc</div><p class="orig">The length of the GC pause is independent of the heap size.</p><p>Kritik tasarım hedefi: GC duraklamasının (pause) süresi heap büyüklüğünden bağımsızdır. Büyük heap'li uygulamalar bile kısa, öngörülebilir takılmalar yaşar — bu, akıcı bir arayüz için şarttır.</p></div>`
+  },
+  underHood: {
+    html: '<p class="prose">ART iki ayrı dünyadan oluşur: derleme hattı (<code>dex2oat</code>) ve çalışma zamanı (yorumlayıcı + JIT + GC). Kaynak AOSP\'ta <code>art/</code> altında, cs.android.com üzerinden okunabilir.</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Dosya</th><th>İçerik</th><th>Rolü</th></tr></thead><tbody>' +
+      '<tr><td><b>DEX</b></td><td>Dalvik bytecode</td><td>Uygulamanın taşınabilir (portable) kodu; APK içinde</td></tr>' +
+      '<tr><td><b>VDEX</b></td><td>Doğrulanmış (verified) DEX</td><td>Doğrulama bir kez yapılır, tekrar doğrulama atlanır</td></tr>' +
+      '<tr><td><b>OAT</b></td><td>AOT makine kodu</td><td>Sıcak metodların native karşılığı (ELF içine gömülü)</td></tr>' +
+      '<tr><td><b>ART</b></td><td>Önceden hazır nesne görüntüsü (image)</td><td>Sık kullanılan sınıf/nesneler; açılışı hızlandırır</td></tr>' +
+      '</tbody></table></div>' +
+      '<ol class="chain" style="margin-top:16px">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">dex2oat</span><span class="where">art/dex2oat</span><p>DEX + profil → OAT/VDEX/ART üretir. Kurulumda veya boşta çalışır.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">interpreter → JIT</span><span class="where">art/runtime</span><p>Çalışma anında yorumlar, hotness sayar, eşik aşılınca derler; OSR (on-stack replacement) ile çalışan döngüyü bile derlenmiş koda geçirebilir.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">ConcurrentCopying GC</span><span class="where">art/runtime/gc</span><p>Eşzamanlı çöp toplayıcı; uygulamayı neredeyse durdurmadan belleği geri kazanır.</p></div></li>' +
+      '</ol>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Bir OAT dosyasını incele', p: 'oatdump, bir .oat içindeki derlenmiş metodları ve hangi derleme türünden geçtiklerini gösterir.',
+        shells: [{ label: 'adb (temsilî çıktı)', copy: 'adb shell oatdump --oat-file=/data/app/.../base.odex | head', pre: '<span class="c">$</span> oatdump --oat-file=base.odex\n<span class="c"># COMPILER: optimizing</span>\n<span class="y">OatMethod</span> void onDraw(Canvas)\n  code_offset: 0x12a40   <span class="c"># AOT native kodu var</span>\n<span class="y">OatMethod</span> void rareInit()\n  code: (none)           <span class="c"># soğuk: yorumlanacak</span>' }] },
+      { h3: '2. Derleme durumunu gör', p: 'dexopt / compilation filter bir paketin hangi seviyede derlendiğini söyler (verify, speed-profile, speed).',
+        shells: [{ label: 'adb', copy: 'adb shell dumpsys package dexopt | grep -A2 com.ornek.app', pre: '<span class="c">$</span> dumpsys package dexopt\n  com.ornek.app\n    arm64: [status=<span class="g">speed-profile</span>] [reason=bg-dexopt]  <span class="c"># profil güdümlü</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'ART bir metodu ilk kez çağırdığında ne yapar?', opts: ['AOT ile derler', 'Yorumlar (interpret)', 'Hata verir'], answer: 'Yorumlar (interpret)',
+        ok: 'Doğru. İlk çağrıda derlenmiş kod yoktur; yorumlayıcı DEX bytecode\'unu yürütür ve hotness saymaya başlar.', no: 'İpucu: ilk çağrıda henüz makine kodu yok. ART en hızlı mı, en hazır olanı mı seçer?' },
+      { q: '<code>dex2oat</code>\'ın profil güdümlü (profile-guided) çalışması ne sağlar?', opts: ['Tüm metodları derler', 'Yalnızca sıcak metodları derler', 'Hiçbir şeyi derlemez'], answer: 'Yalnızca sıcak metodları derler',
+        ok: 'Doğru. JIT\'in topladığı profil sayesinde dex2oat yalnızca sık kullanılan metodları AOT derler; depolama ve derleme süresinden tasarruf eder.', no: 'Tekrar dene. Profil hangi metodların sık çağrıldığını kaydeder — bu neyi sınırlar?' },
+      { q: 'Modern ART\'ın çöp toplayıcısı (GC) uygulamayı neden çok kısa duraklatır?', opts: ['Çok hızlı donanım', 'Eşzamanlı (concurrent) çalıştığı için', 'GC yapmadığı için'], answer: 'Eşzamanlı (concurrent) çalıştığı için',
+        ok: 'Doğru. Eşzamanlı işaretle-süpür, erişilebilir nesneleri uygulama çalışırken işaretler; yalnızca küçük anlarda duraklatır, bu yüzden takılma (jank) azalır.', no: 'İpucu: GC işini uygulama dururken mi, çalışırken mi yapıyor?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Android Modül 14', title: 'Binder derinlemesine', desc: 'Uygulamalar ve servisler Binder üzerinden tek kopya (one-copy) ile nasıl haberleşir?', href: 'android-binder.html' },
+  sources: [
+    { href: 'https://newandroidbook.com/TOC.html', text: 'Levin — Android Internals', note: 'Cilt II, Bölüm 7' },
+    { href: 'https://source.android.com/docs/core/runtime', text: 'AOSP — ART ve Dalvik' },
+    { href: 'https://source.android.com/docs/core/runtime/configure', text: 'AOSP — dex2oat ve derleme filtreleri' },
+    { href: 'https://cs.android.com/android/platform/superproject/main/+/main:art/', text: 'art/ kaynağı', note: 'cs.android.com' }
+  ],
+  pageTitle: 'ART ve DEX çalıştırma'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

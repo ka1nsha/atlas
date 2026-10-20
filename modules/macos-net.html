@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>XNU Ağ Yığını</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: dikey protokol yığını + mbuf zinciri */
+.netstack { display: grid; gap: 7px; }
+.layer { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 9px 12px; display: flex; justify-content: space-between; align-items: center; gap: 10px; transition: border-color .15s, background .15s; }
+.layer.lit { border-color: var(--track); background: var(--track-soft); }
+.layer h4 { margin: 0; font-family: var(--f-display); font-size: 14px; }
+.layer .fn { font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.layer.lit .fn { color: var(--track); }
+.dirbar { font-family: var(--f-mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--track); text-align: center; padding: 3px 0; }
+.mbufrow { display: flex; align-items: center; gap: 5px; margin-top: 10px; flex-wrap: wrap; }
+.mbufrow .lbl { font-family: var(--f-mono); font-size: 11px; color: var(--muted); margin-right: 4px; }
+.mbuf { border: 1.5px solid var(--track); border-radius: 7px; background: var(--track-soft); padding: 5px 9px; font-family: var(--f-mono); font-size: 11px; display: grid; gap: 1px; min-width: 60px; }
+.mbuf b { color: var(--track); font-size: 10px; letter-spacing: .04em; }
+.mbuf span { color: var(--muted); font-size: 10px; }
+.mbuf.clu { border-style: dashed; }
+.marrow { color: var(--track); font-weight: 700; }
+.hdrtag { display: inline-block; font-family: var(--f-mono); font-size: 10px; padding: 1px 5px; border-radius: 4px; background: var(--track); color: #fff; margin-left: 6px; }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'macos',
+  crumbs: 'macos › ağ yığını › modül 24',
+  eyebrow: 'Modül 24 · macOS / iOS · Ağ yığını',
+  titleHTML: 'Bir paket yığından nasıl geçer?',
+  lede: 'Bir <code>send()</code> çağrısı ile verinin kablodan çıkışı arasında XNU\'nun ağ yığını katman katman çalışır: socket, protokol (TCP/UDP), IP, data link ve sürücü. Her katman veriyi bir <code>mbuf</code> zincirinde taşır ve kendi header\'ını ekler. Bu modül o yolculuğu ve neden ağ yığınının kritik bir saldırı yüzeyi olduğunu gösterir.',
+  meta: ['~16 dk', 'ön koşul: VFS/fd (Linux Modül 8), BSD katmanı (Modül 13)', 'bağlam: XNU bsd/net, bsd/netinet'],
+  intuition: {
+    paras: [
+      'XNU\'nun ağ yığını doğrudan BSD\'den (FreeBSD) miras alınmıştır. Bir programın gördüğü yüz tanıdık POSIX <strong>socket</strong> API\'sidir: <code>socket()</code>, <code>connect()</code>, <code>send()</code>, <code>recv()</code>. Ama bu çağrıların altında, verinin katmanlı protokol yığınından geçtiği bir boru hattı vardır.',
+      'Veri bu boru hattında kopyalanarak değil, <strong>mbuf</strong> adı verilen küçük çekirdek tamponlarının bir zincirinde taşınır. Her katman (TCP, sonra IP, sonra data link) mbuf zincirinin başına kendi header\'ını ekler; alıcıda ise aynı header\'lar ters sırayla soyulur. Böylece büyük bir paket tek bir büyük kopya yerine zincirlenmiş parçalarla, verimli biçimde işlenir.',
+      'Bu katmanların her biri dışarıdan gelen ham baytı <em>ayrıştıran</em> (parse eden) koddur — ve ayrıştırıcılar güvenlik açısından en riskli yerlerdir. Bu yüzden ağ yığını, çekirdeğin en dikkatle incelenen saldırı yüzeylerinden biridir.'
+    ],
+    ideas: [
+      { b: 'socket API', span: 'Programın gördüğü POSIX yüzü. Altta kernel socket yapısı + gönderme/alma tamponları (sockbuf) durur.' },
+      { b: 'mbuf zinciri', span: 'Ağ verisinin çekirdekteki taşıma birimi. Küçük mbuf\'lar zincirlenir; büyük veri için mbuf cluster kullanılır.' },
+      { b: 'protosw katmanları', span: 'protosw tablosu protokolleri (TCP/UDP/IP) birbirine bağlar: tcp_output → ip_output → dlil → ifnet.' },
+      { b: 'saldırı yüzeyi', span: 'Her katman dışarıdan gelen baytı ayrıştırır; parser hataları çekirdekte uzaktan tetiklenebilir.' }
+    ]
+  },
+  lab: {
+    intro: 'Bir <code>send()</code> çağrısıyla yola çıkan verinin giden yolunu (outbound) katman katman izle. Verinin bir mbuf zincirine konuşunu ve her katmanın kendi header\'ını ekleyişini gör. Son adımda gelen yolun (inbound) tersine işlediğini göreceksin.',
+    codeLabel: 'net.c (temsilî)', cmd: './net api.example.com',
+    foot: 'İşlev adları ve değerler temsilîdir; XNU kaynağındaki gerçek yollar bsd/netinet ve bsd/net altındadır.',
+    code: [
+      { t: '<span class="t">int</span> fd = <span class="f">socket</span>(AF_INET, SOCK_STREAM, <span class="n">0</span>);' },
+      { t: '<span class="f">connect</span>(fd, (<span class="t">struct</span> sockaddr*)&amp;addr, <span class="k">sizeof</span> addr);' },
+      { t: '<span class="f">send</span>(fd, buf, len, <span class="n">0</span>);' },
+      { t: '' },
+      { t: '<span class="cm">// çekirdek: giden yol (outbound)</span>' },
+      { t: '<span class="cm">//   sosend(): veri → sockbuf → mbuf zinciri</span>' },
+      { t: '<span class="cm">//   protosw: tcp_output() → ip_output()</span>' },
+      { t: '<span class="cm">//   dlil → ifnet → sürücü (driver) → kablo</span>' },
+      { t: '' },
+      { t: '<span class="f">recv</span>(fd, buf, len, <span class="n">0</span>);  <span class="cm">// gelen yol tersine</span>' }
+    ],
+    steps: [
+      { pc: 1, title: 'socket() — uç nokta', lit: 'socket', dir: '',
+        term: ['socket(AF_INET, SOCK_STREAM) = fd 5'],
+        text: '<code>socket()</code> çekirdekte bir <strong>socket</strong> yapısı yaratır ve ona bir file descriptor bağlar (VFS modülündeki fd mantığı). Bu socket\'in bir gönderme tamponu (send sockbuf) ve bir alma tamponu (receive sockbuf) vardır. Henüz veri yok.',
+        mbufs: [] },
+      { pc: 3, title: 'send() — veri sockbuf\'a', lit: 'socket', dir: 'down',
+        term: ['sosend(): 1400 bayt → send sockbuf'],
+        text: '<code>send()</code> çağrısı <code>sosend()</code>\'e iner: uygulamanın verisi kullanıcı alanından kopyalanır ve socket\'in gönderme tamponunda bir <strong>mbuf zinciri</strong> olarak tutulur. Büyük veri tek mbuf\'a sığmazsa bir mbuf cluster kullanılır.',
+        mbufs: [{ b: 'mbuf', s: 'veri 256B' }, { b: 'mbuf clu', s: 'veri 1144B', clu: true }] },
+      { pc: 7, title: 'TCP katmanı (protosw)', lit: 'proto', dir: 'down',
+        term: ['tcp_output(): + TCP header (20B)'],
+        text: 'protosw tablosu veriyi protokolün çıkış işlevine yönlendirir: <code>tcp_output()</code>. TCP, veri mbuf zincirinin başına kendi <strong>header</strong>\'ını (port\'lar, sıra no, bayraklar) ekler. Akış kontrolü ve yeniden gönderim de burada yönetilir.',
+        mbufs: [{ b: 'TCP hdr', s: '20B', hdr: true }, { b: 'mbuf', s: 'veri 256B' }, { b: 'mbuf clu', s: 'veri 1144B', clu: true }] },
+      { pc: 7, title: 'IP katmanı', lit: 'ip', dir: 'down',
+        term: ['ip_output(): + IP header (20B), route lookup'],
+        text: '<code>ip_output()</code> IP header\'ını (kaynak/hedef adres) ekler ve yönlendirme tablosuna bakarak paketin hangi arayüzden (interface) çıkacağına karar verir. Paket artık tam bir IP datagramıdır.',
+        mbufs: [{ b: 'IP hdr', s: '20B', hdr: true }, { b: 'TCP hdr', s: '20B', hdr: true }, { b: 'mbuf', s: 'veri' }, { b: 'mbuf clu', s: 'veri', clu: true }] },
+      { pc: 8, title: 'dlil → ifnet → sürücü', lit: 'link', dir: 'down',
+        term: ['dlil_output() → en0 → sürücü → kablo'],
+        text: 'Data Link Interface Layer (<strong>dlil</strong>) IP\'yi somut arayüzden (ör. en0) ayrıştıran ortak katmandır. Paketi <code>ifnet</code> soyutlaması üzerinden aygıt sürücüsüne verir; sürücü link-layer header\'ı (ör. Ethernet) ekleyip baytları donanıma yazar. Paket makineden çıktı.',
+        mbufs: [{ b: 'Link hdr', s: '14B', hdr: true }, { b: 'IP hdr', s: '20B', hdr: true }, { b: 'TCP hdr', s: '20B', hdr: true }, { b: 'mbuf', s: 'veri', clu: true }] },
+      { pc: 10, title: 'Gelen yol: tersine', lit: 'rev', dir: 'up',
+        term: ['sürücü IRQ → dlil → ip_input() → tcp_input() → recv sockbuf'],
+        text: 'Gelen paket yolu aynı yığının tersidir: sürücü bir kesme (interrupt) ile paketi alır, dlil üst katmana verir, <code>ip_input()</code> IP header\'ını doğrular ve soyar, <code>tcp_input()</code> TCP header\'ını işler, kalan veri socket\'in alma tamponuna konur ve <code>recv()</code> onu kullanıcı alanına kopyalar. <strong>Her soyma bir ayrıştırmadır</strong> — ve her ayrıştırıcı, dışarıdan gelen baytla uğraştığı için bir saldırı yüzeyidir.',
+        mbufs: [{ b: 'recv', s: 'veri', clu: true }] }
+    ],
+    render: function (s, stateEl, u) {
+      var layers = [
+        { k: 'socket', h4: 'Socket katmanı', fn: 'sosend / soreceive · sockbuf' },
+        { k: 'proto', h4: 'Protokol (protosw)', fn: 'tcp_output / tcp_input' },
+        { k: 'ip', h4: 'Ağ katmanı (inet)', fn: 'ip_output / ip_input' },
+        { k: 'link', h4: 'Data link (dlil)', fn: 'dlil → ifnet → sürücü' }
+      ];
+      var lit = s.lit === 'rev' ? null : s.lit;
+      var allLit = s.lit === 'rev';
+      var stackHTML = layers.map(function (L) {
+        var on = allLit || L.k === lit;
+        return '<div class="layer' + (on ? ' lit' : '') + '"><h4>' + u.esc(L.h4) + '</h4><span class="fn">' + u.esc(L.fn) + '</span></div>';
+      }).join('');
+      var dir = '';
+      if (s.dir === 'down') dir = '<div class="dirbar">↓ giden yol (outbound) ↓</div>';
+      else if (s.dir === 'up') dir = '<div class="dirbar">↑ gelen yol (inbound) ↑</div>';
+      var mb = '';
+      if (s.mbufs && s.mbufs.length) {
+        mb = '<div class="mbufrow"><span class="lbl">mbuf zinciri:</span>';
+        mb += s.mbufs.map(function (m, i) {
+          var cls = 'mbuf' + (m.clu ? ' clu' : '');
+          var label = m.hdr ? '<b>' + u.esc(m.b) + '</b>' : '<b>' + u.esc(m.b) + '</b>';
+          var cell = '<div class="' + cls + '">' + label + '<span>' + u.esc(m.s) + '</span></div>';
+          return (i > 0 ? '<span class="marrow">→</span>' : '') + cell;
+        }).join('');
+        mb += '</div>';
+      } else {
+        mb = '<div class="mbufrow"><span class="lbl">mbuf zinciri:</span><span class="fn" style="font-family:var(--f-mono);font-size:11px;color:var(--muted)">henüz veri yok</span></div>';
+      }
+      stateEl.innerHTML = dir + '<div class="netstack">' + stackHTML + '</div>' + mb;
+    }
+  },
+  underHood: {
+    html: '<p class="prose">Ağ yığını XNU\'nun <code>bsd/net</code> (genel ağ, dlil, pf) ve <code>bsd/netinet</code> (IP/TCP/UDP) dizinlerinde yaşar. Giden bir paketin izlediği çağrı zinciri şöyledir:</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">send() / write()</span><span class="where">socket API</span><p>Uygulama verisi; fd üzerinden socket\'e ulaşır.</p></div></li>' +
+      '<li class="boundary"><div>sistem çağrısı · kullanıcı → çekirdek</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">sosend()</span><span class="where">bsd/kern/uipc_socket.c</span><p>Veriyi send sockbuf\'a mbuf zinciri olarak kopyalar.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://github.com/apple-oss-distributions/xnu" target="_blank" rel="noopener">tcp_output()</a><span class="where">bsd/netinet/tcp_output.c</span><p>TCP header ekler; akış kontrolü ve yeniden gönderim.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">ip_output()</span><span class="where">bsd/netinet/ip_output.c</span><p>IP header ekler; route lookup ile çıkış arayüzü seçilir.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">dlil_output() → ifnet</span><span class="where">bsd/net/dlil.c</span><p>Arayüz soyutlaması; paketi aygıt sürücüsüne verir.</p></div></li>' +
+      '</ol>' +
+      '<div class="tbl-wrap" style="margin-top:14px"><table class="bugs"><thead><tr><th>Katman</th><th>Birincil yapı</th><th>Güvenlik rolü</th></tr></thead><tbody>' +
+      '<tr><td>Socket</td><td>socket, sockbuf</td><td>fd erişim denetimi; sockbuf sınırları (DoS)</td></tr>' +
+      '<tr><td>Protokol</td><td>protosw, tcpcb</td><td>TCP/UDP durum makineleri; parser hataları</td></tr>' +
+      '<tr><td>Ağ</td><td>ip header, route</td><td>IP opsiyonları/parça (fragment) ayrıştırma riski</td></tr>' +
+      '<tr><td>Filtre</td><td>socket filter (NKE), pf</td><td>İçerik filtresi, firewall; MACF kancaları</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px">Kullanıcı alanı için modern yol artık <code>NetworkExtension</code> çatısıdır: eski Network Kernel Extension (NKE) yerine içerik filtresi (content filter), DNS proxy ve VPN sağlayıcıları ayrı, imzalı sistem uzantıları (system extension) olarak çalışır — çekirdek kodu yazmadan ağ trafiğine müdahale edilir.</p>'
+  },
+  deepDive: {
+    heading: "Derinlemesine: XNU ağ yığını",
+    html: `<p class="lead">XNU'nun ağ yığını, FreeBSD'den gelen köklü bir mimariyi taşır: socket katmanı en üstte, protosw ile birbirine bağlı protokol katmanları ortada, dlil ve ifnet ile aygıt sürücüleri en altta. Veriyi tüm bu katmanlar boyunca taşıyan ortak para birimi ise mbuf'tur. Bu bölüm BSD man sayfalarına, Apple geliştirici belgelerine ve Levin'in OS Internals Cilt II (Bölüm 17) kaynağına dayanır.</p>
+
+<h3>1. Socket: her şeyin başladığı uç nokta</h3>
+<p>Ağ programlamanın tanıdık yüzü socket API'sidir. Bir socket, çekirdekte iki tampona (send ve receive <em>sockbuf</em>) sahip bir uç noktadır ve VFS modülündeki gibi bir file descriptor ile temsil edilir — bu yüzden <code>read</code>/<code>write</code>/<code>close</code> socket'lerde de çalışır.</p>
+<div class="manpage src-docs"><div class="ref">2 socket · DESCRIPTION</div><p class="orig">The socket() system call creates an endpoint for communication and returns a descriptor.</p><p><code>socket()</code> bir "iletişim uç noktası" yaratır ve geriye bir descriptor döndürür. <code>AF_INET</code> (adres ailesi) ve <code>SOCK_STREAM</code> (tür) argümanları hangi protokol yığınının (ör. TCP/IP) devreye gireceğini belirler.</p></div>
+
+<h3>2. mbuf: ağ verisinin taşıma birimi</h3>
+<p>Ağ verisi katmanlar arasında düz bir tampon olarak değil, <strong>mbuf</strong> adı verilen küçük, zincirlenebilir çekirdek tamponlarında taşınır. Bu tasarım, header eklemeyi/soymayı kopyalamadan yapmayı ve dağınık veriyi (scatter-gather) verimli işlemeyi sağlar.</p>
+<div class="manpage src-docs"><div class="ref">9 mbuf · DESCRIPTION</div><p class="orig">An mbuf is a basic unit of memory management in the kernel IPC subsystem. Network packets and socket buffers are stored in mbufs.</p><p>mbuf, çekirdeğin IPC alt sistemindeki temel bellek yönetim birimidir; network packet'ler ve socket buffer'lar mbuf'larda saklanır. Küçük bir mbuf'a sığmayan büyük veri için harici depolama devreye girer:</p></div>
+<div class="manpage src-docs"><div class="ref">9 mbuf · CLUSTERS</div><p class="orig">The system also supplies a default type of external storage buffer called an mbuf cluster.</p><p>Sistem, <strong>mbuf cluster</strong> denen bir harici depolama tamponu da sunar (tipik olarak 2 KB). Büyük bir paket böylece birkaç mbuf + cluster zinciriyle temsil edilir; her katman zincirin başına kendi header'ını ekleyerek veriyi kopyalamaktan kaçınır.</p></div>
+
+<h3>3. protosw: katmanları birbirine bağlayan tablo</h3>
+<p>XNU protokolleri <code>protosw</code> adlı bir anahtar tablosuyla bağlar. Her protokol kendi giriş (<em>input</em>) ve çıkış (<em>output</em>) işlevlerini bu tabloya kaydeder; böylece <code>tcp_output()</code> bir sonraki katmanı sabit kodlamadan <code>ip_output()</code>'a geçebilir. Giden yol yukarıdan aşağı (socket → TCP → IP → dlil), gelen yol aşağıdan yukarı akar.</p>
+<div class="deflist">
+<div><dt>tcp_output / tcp_input</dt><dd>TCP durum makinesi: header ekleme/soyma, sıra numaraları, akış kontrolü, yeniden gönderim. En karmaşık ve tarihsel olarak en çok incelenen parser'lardan biri.</dd></div>
+<div><dt>ip_output / ip_input</dt><dd>IP datagram oluşturma/doğrulama, route lookup, fragment (parça) birleştirme. Fragment yeniden birleştirme klasik bir güvenlik riski noktasıdır.</dd></div>
+<div><dt>ifnet</dt><dd>Her ağ arayüzünü (en0, lo0...) temsil eden soyutlama; sürücüyü üst katmanlardan ayırır.</dd></div>
+<div><dt>dlil</dt><dd>Data Link Interface Layer: protokol katmanı ile sürücü arasındaki ortak ara katman. Tüm arayüzler için tek bir giriş/çıkış noktası sağlar.</dd></div>
+</div>
+
+<h3>4. Filtreleme: socket filter, pf ve NetworkExtension</h3>
+<p>Ağ yığınına birkaç noktadan müdahale edilebilir. Çekirdek içinde <strong>socket filter</strong>'lar (eski adıyla NKE — Network Kernel Extension) ve <strong>pf</strong> (packet filter, OpenBSD'den gelen firewall) trafiği inceleyip değiştirebilir. Modern macOS/iOS'ta Apple, çekirdeğe kod yüklemeyi kısıtladığı için bu işi kullanıcı alanına taşımıştır.</p>
+<div class="manpage src-apple"><div class="ref">docs NetworkExtension · OVERVIEW</div><p class="orig">With the NetworkExtension framework, you can customize and extend the system's core networking features.</p><p>NetworkExtension çatısı, sistemin çekirdek ağ özelliklerini (içerik filtresi, DNS proxy, VPN) özelleştirmeyi sağlar. İçerik filtresi sağlayıcısı için Apple'ın tarifi nettir:</p></div>
+<div class="manpage src-apple"><div class="ref">docs Content filter · TOPIC</div><p class="orig">Create an on-device network content filter.</p><p>İçerik filtresi artık imzalı, sandbox'lı bir <em>system extension</em> olarak çalışır; eski KEXT tabanlı NKE'lerin aksine çekirdek belleğine doğrudan erişmez. Bu, saldırı yüzeyini çekirdekten kullanıcı alanına indiren bilinçli bir güvenlik kararıdır.</p></div>
+
+<h3>5. Neden ağ yığını kritik bir saldırı yüzeyidir?</h3>
+<p>Ağ yığınının her katmanı, <strong>dışarıdan gelen ve güvenilmeyen</strong> baytı ayrıştırır: TCP header'ları, IP opsiyonları, fragment'ler, protokol seçenekleri. Bir parser'daki tek bir sınır hatası (out-of-bounds read/write) uzaktan, kimlik doğrulaması olmadan tetiklenebilir — üstelik bu kod çekirdek ayrıcalığıyla çalışır. Tarihsel olarak TCP/IP yığınları, uzaktan çekirdek ele geçirme için en değerli hedefler arasında olmuştur.</p>
+<p>Savunma bu yüzden katmanlıdır: ayrıştırıcıları olabildiğince sadeleştirmek, kullanıcı alanına taşımak (NetworkExtension), bellek-güvenli sınır denetimleri eklemek ve çekirdek mitigasyonlarıyla (bkz. donanım destekli korumalar modülü) bir hatanın tam ele geçirmeye dönüşmesini zorlaştırmak. Ağ yığınını okurken "bu baytlar nereden geliyor ve kim doğruluyor?" sorusu, bir güvenlikçinin pusulasıdır (bkz. ofansif izlek: kernel saldırı yüzeyi).</p>`
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Arayüzleri ve yığını gör (macOS)', p: 'ifconfig ağ arayüzlerini (ifnet) listeler; netstat protokol yığınının canlı durumunu (socket\'ler, route\'lar) gösterir.',
+        shells: [{ label: 'terminal (macOS)', copy: 'netstat -an -p tcp | head', pre: '<span class="c">$</span> ifconfig en0 | grep inet\n<span class="c"># en0: ifnet soyutlaması — bir ağ arayüzü</span>\n<span class="c">$</span> netstat -an -p tcp | head\n<span class="c"># aktif TCP socket\'leri ve durumları (tcpcb)</span>' }] },
+      { h3: '2. pf firewall durumu (macOS)', p: 'macOS, OpenBSD\'nin pf (packet filter) firewall\'ını taşır. Kuralları ve durumu pfctl ile incelenir (yetki gerekir).',
+        shells: [{ label: 'terminal (macOS · sudo)', copy: 'sudo pfctl -s info', pre: '<span class="c">$</span> sudo pfctl -s info\n<span class="c"># pf durumu: paket sayaçları, aktif state tablosu</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'XNU ağ yığınında veri katmanlar arasında nasıl taşınır?', opts: ['Her katmanda tam kopya alınarak', 'mbuf adı verilen zincirlenebilir tamponlarda', 'Doğrudan diske yazılarak'], answer: 'mbuf adı verilen zincirlenebilir tamponlarda',
+        ok: 'Doğru. mbuf\'lar zincirlenir; her katman başa kendi header\'ını ekler, böylece büyük kopyalardan kaçınılır. Büyük veri için mbuf cluster kullanılır.', no: 'İpucu: header ekleme/soyma kopyalamadan yapılır. Veri neyin içinde zincirlenir?' },
+      { q: 'protosw tablosunun işlevi nedir?', opts: ['Dosya izinlerini tutar', 'Protokol katmanlarının giriş/çıkış işlevlerini birbirine bağlar', 'Ekran çıktısını yönetir'], answer: 'Protokol katmanlarının giriş/çıkış işlevlerini birbirine bağlar',
+        ok: 'Doğru. protosw sayesinde tcp_output bir sonraki katmanı sabit kodlamadan ip_output\'a geçebilir; giden yol yukarıdan aşağı akar.', no: 'İpucu: tcp_output nasıl olup da ip_output\'u çağırır? Onları ne bağlar?' },
+      { q: 'Ağ yığını neden kritik bir saldırı yüzeyidir?', opts: ['Çok yavaş olduğu için', 'Her katman dışarıdan gelen güvenilmeyen baytı çekirdek ayrıcalığıyla ayrıştırdığı için', 'Yalnızca root erişebildiği için'], answer: 'Her katman dışarıdan gelen güvenilmeyen baytı çekirdek ayrıcalığıyla ayrıştırdığı için',
+        ok: 'Doğru. Parser hataları uzaktan, kimlik doğrulaması olmadan tetiklenebilir ve kod çekirdek ayrıcalığıyla çalışır. Bu yüzden ayrıştırıcılar sadeleştirilir ve kullanıcı alanına taşınır.', no: 'İpucu: baytlar nereden geliyor, kim doğruluyor ve hangi ayrıcalıkla çalışıyor?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · macOS Modül 25', title: 'Dosya sistemleri: VFS ve APFS', desc: 'vnode katmanı, APFS container/volume, copy-on-write ve snapshot.', href: 'macos-fs.html' },
+  sources: [
+    { href: 'https://newosxbook.com/index.php', text: 'Levin — OS Internals Cilt II', note: 'Bölüm 17: The Networking Stack' },
+    { href: 'https://github.com/apple-oss-distributions/xnu', text: 'XNU kaynağı', note: 'bsd/net (dlil, pf), bsd/netinet (ip, tcp, udp)' },
+    { href: 'https://man.freebsd.org/cgi/man.cgi?query=mbuf&sektion=9', text: 'man 9 mbuf', note: 'BSD mbuf / cluster tanımı' },
+    { href: 'https://man.freebsd.org/cgi/man.cgi?query=socket&sektion=2', text: 'man 2 socket' },
+    { href: 'https://developer.apple.com/documentation/networkextension', text: 'Apple — NetworkExtension', note: 'içerik filtresi, DNS proxy, VPN' }
+  ],
+  pageTitle: 'XNU Ağ Yığını'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

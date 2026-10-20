@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Güç Yönetimi</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: güç durumu + wakelock + pil tüketim çubuğu */
+.pstate { border: 1.5px solid var(--track); border-radius: var(--r); background: var(--track-soft); padding: 12px; display: grid; gap: 8px; }
+.pstate.sleep { border-color: var(--ok); background: var(--ok-soft); }
+.pstate.drain { border-color: var(--bad); background: var(--bad-soft); }
+.pstate.warn { border-color: var(--warn); background: var(--warn-soft); }
+.pstate .mode { font-family: var(--f-display); font-weight: 800; font-size: 18px; }
+.pstate.sleep .mode { color: var(--ok); } .pstate.drain .mode { color: var(--bad); } .pstate.warn .mode { color: var(--warn); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.pchip { font-family: var(--f-mono); font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--surface); border: 1px solid var(--line); color: var(--muted); }
+.pbar-wrap { display: grid; gap: 3px; }
+.pbar-lbl { font-family: var(--f-mono); font-size: 11px; color: var(--muted); display: flex; justify-content: space-between; }
+.pbar { height: 12px; border-radius: 6px; background: var(--sunk); overflow: hidden; }
+.pbar i { display: block; height: 100%; border-radius: 6px; background: var(--track); transition: width .3s; }
+.pstate.sleep .pbar i { background: var(--ok); } .pstate.drain .pbar i { background: var(--bad); } .pstate.warn .pbar i { background: var(--warn); }
+.wl { margin-top: 12px; }
+.wl-h { font-family: var(--f-mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
+.wl-list { display: grid; gap: 4px; }
+.wl-row { font-family: var(--f-mono); font-size: 12px; display: flex; justify-content: space-between; gap: 8px; padding: 5px 8px; border-radius: 6px; background: var(--bad-soft); color: var(--bad); min-width: 0; }
+.wl-row span:last-child { opacity: .8; }
+.wl-empty { font-family: var(--f-mono); font-size: 12px; color: var(--ok); padding: 5px 8px; border-radius: 6px; background: var(--ok-soft); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'android',
+  crumbs: 'android › güç yönetimi › modül 8',
+  eyebrow: 'Modül 8 · Android · Güç yönetimi',
+  titleHTML: '<code>wakelock</code>, suspend ve pilin savaşı',
+  lede: 'Bir telefon ekranı kapandığında işlemciyi (CPU) durdurup pil harcamayı keser. Ama bir uygulama işini bitirmek için sistemi uyanık tutabilir. Bu modül, güç durumları arasındaki geçişi ve bir wakelock\'un (uyanık tutma) pili nasıl tükettiğini gösterir.',
+  meta: ['~15 dk', 'ön koşul: süreç, kesme', 'bağlam: AOSP'],
+  intuition: {
+    paras: [
+      'Mobil cihazda en değerli kaynak pildir. Linux\'un güç yönetiminin üstüne Android, agresif bir politika ekler: iş yapılmadığı an sistemi <strong>askıya al (suspend)</strong>. Askıya alınan cihazda işlemci tamamen durur ve neredeyse hiç enerji harcanmaz.',
+      'Ama bazen bir uygulamanın ekran kapalıyken de çalışması gerekir (müzik çalmak, veri senkronu). Bunun için bir <strong>wakelock (uyanık tutma)</strong> alır; wakelock tutulduğu sürece sistem askıya alınamaz. Kötü yazılmış bir uygulama wakelock\'u bırakmazsa pil eriyip gider. <strong>Doze</strong> modu ve App Standby, bu savurganlığı sistem düzeyinde dizginler.'
+    ],
+    ideas: [
+      { b: 'Varsayılan: uyu', span: 'İş yoksa sistem suspend\'e girer, CPU durur. Android\'in pil ömrünün temeli budur.' },
+      { b: 'Wakelock bir vetodur', span: 'Bir wakelock tutulduğu sürece suspend engellenir. Güç ister, sorumluluk da ister: bırakılmazsa pil erir.' },
+      { b: 'Doze sistemi dizginler', span: 'Cihaz uzun süre boştaysa Doze, uygulamaları kısıtlar ve yalnızca periyodik "bakım pencerelerinde" çalışmaya izin verir.' }
+    ]
+  },
+  lab: {
+    intro: 'Bir uygulama bir wakelock alıp bırakıyor. Sağda cihazın güç durumunu, tahmini pil tüketimini ve aktif wakelock\'ları izle. Ekran kapanınca ne olduğuna, wakelock alınınca suspend\'in nasıl engellendiğine dikkat et.',
+    codeLabel: 'wakelock (temsilî)', cmd: 'app · PowerManager',
+    foot: 'Değerler ve çıktılar temsilîdir. Gerçek API: PowerManager / PowerManagerService.',
+    code: [
+      { t: '<span class="cm">// --- bir uygulama ---</span>' },
+      { t: 'PowerManager pm = <span class="f">getSystemService</span>(POWER_SERVICE);' },
+      { t: 'WakeLock wl = pm.<span class="f">newWakeLock</span>(PARTIAL_WAKE_LOCK, <span class="s">"sync"</span>);' },
+      { t: 'wl.<span class="f">acquire</span>();      <span class="cm">// sistem uyumasın</span>' },
+      { t: '<span class="f">doSync</span>();          <span class="cm">// CPU uyanık kalır</span>' },
+      { t: 'wl.<span class="f">release</span>();      <span class="cm">// bırak, sistem uyuyabilir</span>' }
+    ],
+    steps: [
+      { pc: 1, title: 'Ekran açık', term: ['ekran: AÇIK · CPU: çalışıyor'],
+        text: 'Kullanıcı ekranı açık, etkileşim var. CPU tam hızda, ekran ve GPU açık. Bu en yüksek tüketim durumudur; amaç bu durumda kalınan süreyi azaltmaktır.',
+        mode: 'Etkin (ekran açık)', cls: '', screen: 'AÇIK', cpu: 'çalışıyor', draw: 95, wl: [] },
+      { pc: null, title: 'Ekran kapandı', term: ['ekran: KAPALI', 'wakelock yok → suspend\'e hazırlanılıyor'],
+        text: 'Kullanıcı güç tuşuna bastı. Ekran, dokunmatik ve GPU kapanır. Tutulan bir wakelock olmadığı için sistem askıya alma (suspend) sürecini başlatır.',
+        mode: 'Ekran kapandı', cls: 'warn', screen: 'KAPALI', cpu: 'yavaşlıyor', draw: 35, wl: [] },
+      { pc: null, title: 'Askıya alındı (suspend)', term: ['PowerManagerService: suspend', 'CPU durduruldu · uyandırıcı bekleniyor'],
+        text: 'Wakelock olmadığı için çekirdek tüm CPU çekirdeklerini durdurur. Sistem artık yalnızca bir donanım kesmesiyle (alarm, ağ, güç tuşu) uyanır. Tüketim neredeyse sıfırdır. Linux\'un suspend-to-RAM mekanizmasının üstüne kuruludur.',
+        mode: 'Askıda (suspend)', cls: 'sleep', screen: 'KAPALI', cpu: 'DURDU', draw: 3, wl: [] },
+      { pc: 3, title: 'Wakelock alındı', term: ['app: wl.acquire("sync")', 'suspend ENGELLENDİ · CPU uyanık'],
+        text: 'Bir uygulama senkron için <code>acquire()</code> çağırdı. Bu bir PARTIAL_WAKE_LOCK: ekran kapalı kalır ama CPU uyanık tutulur. Wakelock tutulduğu sürece sistem askıya alınamaz; bu yüzden pil yeniden tükenmeye başlar. İş bitince <code>release()</code> şarttır.',
+        mode: 'Uyanık tutuluyor (wakelock)', cls: 'drain', screen: 'KAPALI', cpu: 'çalışıyor', draw: 45, wl: [['PARTIAL · "sync"', 'com.ornek.app']] },
+      { pc: null, title: 'Doze modu', term: ['deviceidle: IDLE', 'bakım penceresi dışında ağ/iş kısıtlı'],
+        text: 'Cihaz uzun süredir hareketsiz ve şarjda değil. Doze devreye girer: uygulamaların ağ erişimi ve wakelock\'ları çoğu zaman askıya alınır; yalnızca periyodik "bakım pencerelerinde" (maintenance window) kısa süre çalışmalarına izin verilir. Böylece kötü davranan wakelock\'lar bile dizginlenir.',
+        mode: 'Doze (derin boşta)', cls: 'sleep', screen: 'KAPALI', cpu: 'çoğunlukla durmuş', draw: 6, wl: [] },
+      { pc: null, title: 'Isıl kısma (thermal)', term: ['thermal-engine: sıcaklık eşiği aşıldı', 'CPU frekansı kısıldı (throttle)'],
+        text: 'Yoğun iş (oyun, kamera) cihazı ısıttı. Thermal yönetimi ve Power HAL devreye girer: donanımı korumak için CPU/GPU frekansı düşürülür (ısıl kısma / thermal throttling). Güç bir "aç/kapat" değil, sürekli ayarlanan bir dengedir.',
+        mode: 'Isıl kısma (throttle)', cls: 'warn', screen: 'AÇIK', cpu: 'kısıldı', draw: 70, wl: [] }
+    ],
+    render: function (s, stateEl, u) {
+      var wl = s.wl.length
+        ? '<div class="wl-list">' + s.wl.map(function (w) { return '<div class="wl-row"><span>' + u.esc(w[0]) + '</span><span>' + u.esc(w[1]) + '</span></div>'; }).join('') + '</div>'
+        : '<div class="wl-empty">aktif wakelock yok → sistem uyuyabilir</div>';
+      stateEl.innerHTML =
+        '<p class="lab-label">Güç durumu</p>' +
+        '<div class="pstate ' + s.cls + '" id="ps">' +
+          '<div class="mode">' + u.esc(s.mode) + '</div>' +
+          '<div class="chips"><span class="pchip">ekran: ' + u.esc(s.screen) + '</span><span class="pchip">CPU: ' + u.esc(s.cpu) + '</span></div>' +
+          '<div class="pbar-wrap"><div class="pbar-lbl"><span>tahmini pil tüketimi</span><span>' + s.draw + '%</span></div>' +
+          '<div class="pbar"><i style="width:' + s.draw + '%"></i></div></div>' +
+        '</div>' +
+        '<div class="wl"><div class="wl-h">Aktif wakelock\'lar</div>' + wl + '</div>';
+      ATLAS.flash(document.getElementById('ps'), s.cls === 'drain');
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: suspend, wakelock ve Doze",
+    html: `<p class="lead">Android'in pil ömrü tek bir agresif fikre dayanır: iş yapılmadığı an bütün sistemi durdur (opportunistic suspend). Wakelock bu kurala konan bir vetodur; Doze ve App Standby ise bu vetoyu kötüye kullanan uygulamaları sistem düzeyinde dizginler. Bu bölüm bu üç mekanizmanın nasıl birlikte çalıştığını AOSP belgelerine dayanarak açar.</p>
+
+<h3>1. Opportunistic suspend: çekirdek gerçeği</h3>
+<p>Masaüstü Linux'ta suspend kullanıcının tetiklediği bir olaydır. Android ise <strong>autosleep</strong> (opportunistic suspend) kullanır: çekirdek sürekli "şu an uyuyabilir miyim?" diye kontrol eder ve hiçbir wakelock tutulmuyorsa sistemi otomatik olarak suspend-to-RAM durumuna sokar. Bir wakelock, çekirdeğin <code>/sys/power/wakeup_count</code> üzerinden gördüğü aktif bir wakeup source'tur; sayı sıfırdan büyük olduğu sürece suspend ertelenir. Uygulama tarafındaki <code>PowerManager.WakeLock</code>, bu kernel mekanizmasının üst katmandaki yüzüdür.</p>
+<div class="manpage src-aosp"><div class="ref">power · wakelock</div><p class="orig">Resource consumption is associated with the application using the resource.</p><p>AOSP güç çerçevesi, bir wakelock'un pil maliyetini onu tutan uygulamaya fatura eder — bu yüzden <code>dumpsys batterystats</code> hangi uygulamanın sistemi ne kadar uyanık tuttuğunu uid bazında gösterebilir.</p></div>
+
+<h3>2. Wakelock türleri</h3>
+<p>Modern Android'de uygulamaların doğrudan kullanması önerilen tek tür <code>PARTIAL_WAKE_LOCK</code>'tur; ekranla ilgili türler deprecated edilmiştir (bunun yerine <code>FLAG_KEEP_SCREEN_ON</code> veya window flag'leri kullanılır).</p>
+<div class="deflist">
+<div><dt>PARTIAL_WAKE_LOCK</dt><dd>CPU uyanık kalır; ekran ve klavye ışığı kapalı olabilir. Ekran kapalıyken sessizce pil tüketebildiği için en çok suistimal edilen türdür.</dd></div>
+<div><dt>SCREEN_DIM / SCREEN_BRIGHT</dt><dd>Ekranı (dim veya tam parlak) açık tutar. <strong>Deprecated</strong> — artık window flag'leri tercih edilir.</dd></div>
+<div><dt>FULL_WAKE_LOCK</dt><dd>Ekran + klavye tam açık. <strong>Deprecated</strong>; güç açısından savurgan.</dd></div>
+<div><dt>wakeup source</dt><dd>Wakelock'un kernel karşılığı. Mainline Linux'a Android'in katkısıdır: hangi kaynakların sistemi uyanık tuttuğu <code>/sys/kernel/debug/wakeup_sources</code>'ta görünür.</dd></div>
+</div>
+
+<h3>3. Doze: derin boşta kısıtlama</h3>
+<p>Kullanıcı cihaza bir süre dokunmaz ve ekran kapalı/şarjsızsa sistem Doze'a girer. Doze, tek tek uygulamaları değil tüm cihazı kısıtlar.</p>
+<div class="manpage src-docs"><div class="ref">doze · tanım</div><p class="orig">In Doze mode, the system attempts to conserve battery by restricting apps' access to network and CPU-intensive services.</p><p>Doze, cihaz uzun süre hareketsizken ağ ve CPU-yoğun servislere erişimi kısar; wakelock tutsa bile uygulama çoğu zaman çalışamaz.</p></div>
+<div class="manpage src-docs"><div class="ref">doze · kısıtlamalar</div><p class="orig">Suspends network access. Ignores wake locks. Doesn't let JobScheduler run.</p><p>Doze derinleştikçe üç şey birden olur: ağ askıya alınır, <strong>wakelock'lar görmezden gelinir</strong> (kötü davranan uygulama bile dizginlenir) ve JobScheduler/WorkManager işleri ertelenir.</p></div>
+<div class="manpage src-docs"><div class="ref">doze · maintenance window</div><p class="orig">During this maintenance window, the system runs all pending syncs, jobs, and alarms, and lets apps access the network.</p><p>Doze sürekli değildir: periyodik "maintenance window"larda sistem bekleyen tüm sync/job/alarm'ları toplu çalıştırır ve ağı kısa süre açar. Pencereler arası aralık zamanla uzar, böylece gece boyunca tüketim düşer.</p></div>
+
+<h3>4. App Standby ve standby bucket'ları</h3>
+<p>Doze tüm cihaz boştayken devreye girer; App Standby ise cihaz kullanılırken bile <em>tek tek</em> az kullanılan uygulamaları kısıtlar. Sistem her uygulamayı kullanım sıklığına göre bir bucket'a koyar; bucket ne kadar "soğuk"sa job/alarm/ağ o kadar seyrek.</p>
+<div class="deflist">
+<div><dt>active</dt><dd>Uygulama şu an kullanılıyor. Hiçbir kısıtlama yok.</dd></div>
+<div><dt>working set</dt><dd>Sık kullanılıyor. Hafif kısıtlama.</dd></div>
+<div><dt>frequent</dt><dd>Düzenli ama her gün değil. Job/alarm'lar daha seyrek.</dd></div>
+<div><dt>rare</dt><dd>Nadiren kullanılıyor. Ağ, job ve alarm'lar belirgin biçimde sınırlı.</dd></div>
+<div><dt>restricted</dt><dd>Çok fazla kaynak tüketen veya hiç kullanılmayan uygulamalar. En katı kısıtlama.</dd></div>
+</div>
+<div class="manpage src-docs"><div class="ref">app standby · tanım</div><p class="orig">App Standby lets the system determine that an app is idle when the user isn't actively using it.</p><p>App Standby, kullanıcının aktif kullanmadığı bir uygulamayı "idle" sayar ve onu daha soğuk bir bucket'a indirir; böylece arka plandaki az kullanılan uygulamalar pili yemez.</p></div>
+
+<h3>5. Thermal yönetimi</h3>
+<p>Güç yalnızca bir "uyu/uyan" meselesi değildir; cihaz ısındıkça ayrı bir denge devreye girer. Thermal HAL, sıcaklık sensörlerini (skin temperature dahil) okur ve eşikler aşılınca cooling device'ları tetikler: CPU/GPU frekansı düşürülür (thermal throttling), gerekirse çekirdekler kapatılır. Amaç donanımı güvenli sıcaklıkta tutarken performansı olabildiğince korumaktır — bu yüzden yoğun oyunda cihaz bir süre sonra yavaşlar.</p>
+<ul>
+<li><strong>thermal throttling</strong> — sıcaklık eşiği aşılınca frekansın kademeli düşürülmesi.</li>
+<li><strong>cooling device</strong> — çekirdeğin soğutma için kısabileceği bir bileşen (CPU cluster, GPU, modem).</li>
+<li><strong>skin temperature</strong> — cihazın dış yüzey sıcaklığı; kullanıcı güvenliği için ayrı bir eşik.</li>
+</ul>`
+  },
+  underHood: {
+    html: '<p class="prose">Uygulamadaki <code>acquire()</code>, Binder üzerinden PowerManagerService\'e gider; orada tutulan wakelock sayısı sıfırdan büyük olduğu sürece çekirdek suspend\'e girmez. Kaynak AOSP\'ta cs.android.com üzerinden okunabilir.</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">WakeLock.acquire()</span><span class="where">frameworks/base</span><p>Uygulama API\'si; Binder ile PowerManagerService\'e iletilir.</p></div></li>' +
+      '<li class="boundary"><div>Binder · uygulama → system_server</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://cs.android.com/android/platform/superproject/main/+/main:frameworks/base/services/core/java/com/android/server/power/PowerManagerService.java" target="_blank" rel="noopener">PowerManagerService</a><span class="where">services/core</span><p>Wakelock sayımını tutar; sayı > 0 ise suspend bloklanır. Doze/standby politikasını da yönetir.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">/sys/power/wake_lock, state</span><span class="where">Linux kernel</span><p>Çekirdek güç çekirdeği (power core): wakelock yoksa suspend-to-RAM, ağır iş thermal/cpufreq ile ayarlanır.</p></div></li>' +
+      '</ol>' +
+      '<p class="prose" style="margin-top:14px">Linux köprüsü: Android\'in suspend\'i, çekirdeğin standart suspend-to-RAM yolunu kullanır; wakelock kavramı (eskiden "wakelocks", sonra kısmen mainline\'a "wakeup sources" olarak girdi) Android\'in Linux\'a en görünür katkılarından biridir.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Wakelock tutanları gör', p: 'Hangi uygulamaların sistemi uyanık tuttuğunu ve ne kadar süredir tuttuğunu dök. Pil sorunlarının ilk bakılacak yeri burasıdır.',
+        shells: [{ label: 'adb (temsilî çıktı)', copy: 'adb shell dumpsys power | grep -i wake', pre: '<span class="c">$</span> adb shell dumpsys power | grep -i wake\n<span class="c"># Wake Locks: size=1</span>\n  PARTIAL_WAKE_LOCK  \'sync\'  <span class="y">ACQ=-2m13s</span> (uid=10234)' }] },
+      { h3: '2. Doze durumunu incele', p: 'Cihazın boşta (idle) durumunu ve bakım penceresi zamanlamasını gör; testte zorla Doze\'a sokabilirsin.',
+        shells: [{ label: 'adb', copy: 'adb shell dumpsys deviceidle', pre: '<span class="c">$</span> adb shell dumpsys deviceidle\n<span class="c"># mState=IDLE, bir sonraki bakım penceresine kalan süre...</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Tutulan hiç wakelock yokken ekran kapanırsa sistem ne yapar?', opts: ['Tam hızda çalışmaya devam eder', 'Askıya alınır (suspend), CPU durur', 'Yeniden başlar'], answer: 'Askıya alınır (suspend), CPU durur',
+        ok: 'Doğru. Varsayılan davranış uyumaktır; CPU durur ve cihaz yalnızca bir donanım kesmesiyle uyanır. Pil ömrünün temeli budur.', no: 'İpucu: Android\'in varsayılan politikası "iş yoksa ne yap"?' },
+      { q: 'Bir PARTIAL_WAKE_LOCK tutulduğunda ne garanti edilir?', opts: ['Ekran açık kalır', 'CPU uyanık kalır, ekran kapalı olabilir', 'Ağ hep açık kalır'], answer: 'CPU uyanık kalır, ekran kapalı olabilir',
+        ok: 'Doğru. PARTIAL_WAKE_LOCK yalnızca CPU\'yu uyanık tutar; ekran kapalı kalabilir. Bu yüzden sessizce pil tüketebilir.', no: 'İpucu: "partial" — neyin uyanık kaldığını, neyin kapanabileceğini düşün.' },
+      { q: 'Doze modunun amacı nedir?', opts: ['Ekranı parlatmak', 'Uzun boşta uygulamaları kısıtlayıp pil korumak', 'CPU\'yu hızlandırmak'], answer: 'Uzun boşta uygulamaları kısıtlayıp pil korumak',
+        ok: 'Doğru. Doze, cihaz uzun süre hareketsizken ağ/iş/wakelock\'ları kısıtlar ve yalnızca periyodik bakım pencerelerine izin verir; kötü davranan uygulamaları bile dizginler.', no: 'İpucu: cihaz uzun süre boştayken pili korumak için ne yapılır?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Android Modül 9', title: 'Bionic derinlemesine', desc: 'Android\'in libc\'si Bionic\'in glibc\'den farkları; native hata ayıklama, tombstone ve core dump.' },
+  sources: [
+    { href: 'https://newandroidbook.com/TOC.html', text: 'Levin — Android Internals', note: 'Cilt I, Bölüm 13' },
+    { href: 'https://source.android.com/docs/core/power', text: 'AOSP — güç yönetimi' },
+    { href: 'https://developer.android.com/training/monitoring-device-state/doze-standby', text: 'Doze ve App Standby', note: 'developer.android.com' }
+  ],
+  pageTitle: 'Güç Yönetimi'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

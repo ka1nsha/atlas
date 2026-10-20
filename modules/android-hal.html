@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>HAL ve Treble</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: sistem | treble sınırı | vendor düzeni */
+.treble { display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: stretch; }
+@media (max-width: 620px) { .treble { grid-template-columns: 1fr; } }
+.tside { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 10px; display: grid; gap: 6px; align-content: start; min-width: 0; }
+.tside.sys { border-color: var(--accent); } .tside.ven { border-color: var(--track); }
+.tside h4 { margin: 0; font-family: var(--f-display); font-size: 14px; }
+.tside.sys h4 { color: var(--accent); } .tside.ven h4 { color: var(--track); }
+.tlayer { border: 1px solid var(--line); border-radius: 6px; background: var(--sunk); padding: 6px 8px; font-size: 12px; display: grid; gap: 1px; min-width: 0; }
+.tlayer.on { background: var(--accent-soft); border-color: var(--accent); }
+.tside.ven .tlayer.on { background: var(--track-soft); border-color: var(--track); }
+.tlayer b { font-family: var(--f-display); font-size: 12.5px; }
+.tlayer .mono { font-family: var(--f-mono); font-size: 10.5px; color: var(--muted); }
+.wall { display: grid; align-content: center; justify-items: center; gap: 6px; border-left: 2px dashed var(--warn); border-right: 2px dashed var(--warn); background: var(--warn-soft); padding: 8px 10px; min-width: 56px; }
+@media (max-width: 620px) { .wall { border: 2px dashed var(--warn); } }
+.wall .lbl { font-family: var(--f-mono); font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--warn); text-align: center; writing-mode: horizontal-tb; }
+.wall .arrow { font-size: 18px; color: var(--warn); }
+.wall .arrow.off { opacity: .25; }
+.modebar { display: flex; align-items: center; gap: 8px; margin-top: 12px; flex-wrap: wrap; font-size: 13px; }
+.modebar .pill { font-family: var(--f-mono); font-size: 11.5px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.modebar .pill.on { background: var(--track-soft); border-color: var(--track); color: var(--track); font-weight: 700; }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'android',
+  crumbs: 'android › hal ve treble › modül 20',
+  eyebrow: 'Modül 20 · Android · Uygulayıcı görünümü',
+  titleHTML: '<code>HAL</code> ve Treble: sistemi vendor\'dan ayırmak',
+  lede: 'Android neden diğer telefonlardan daha hızlı güncellenebilir hale geldi? Cevap Treble: sistem yazılımı (AOSP) ile satıcı (vendor) yazılımını, aralarına standart bir donanım soyutlama katmanı (HAL) koyarak ayırmak. Bu modül bir sensör çağrısının bu sınırdan geçişini izler.',
+  meta: ['~18 dk', 'ön koşul: Binder, bölümler', 'bağlam: AOSP'],
+  intuition: {
+    paras: [
+      'Bir telefonun donanımı (kamera, sensör, modem) satıcıya (vendor — SoC üreticisi, telefon markası) özeldir; Android framework\'ü ise AOSP\'tan gelir ve tüm cihazlarda ortaktır. Bu ikisinin konuşabilmesi için araya standart bir arayüz konur: <strong>donanım soyutlama katmanı (HAL — hardware abstraction layer)</strong>. Framework "sensör oku" der; hangi çipin nasıl okunduğunu HAL bilir.',
+      'Android 8\'den önce HAL\'ler framework ile aynı süreçte, derlenmiş kütüphaneler olarak yüklenirdi; bu yüzden sistem güncellemesi vendor kodunu da yeniden derlemeyi gerektirirdi — güncellemeler yıllarca gecikirdi. <strong>Treble</strong> bu bağı kopardı: HAL\'ler artık <em>ayrı süreçlerde</em> çalışır ve framework\'le <strong>Binder</strong> (HIDL, sonra AIDL) üzerinden konuşur. Böylece <code>/system</code> ve <code>/vendor</code> ayrı güncellenebilir.'
+    ],
+    ideas: [
+      { b: 'HAL bir sözleşmedir', span: 'Framework ile donanım arasında sürüm kontrollü standart arayüz (HIDL/AIDL). İki taraf ayrı ayrı gelişebilir.' },
+      { b: 'Treble = ayrım', span: 'Sistem (/system, AOSP) ile vendor (/vendor, SoC) ayrılır; HAL\'ler ayrı süreçte Binder\'laşır. Güncelleme vendor\'ı değiştirmeden gelir.' },
+      { b: 'VINTF uyumu', span: 'Sürüm arayüzü (VINTF) sistem ile vendor\'ın birbiriyle uyumlu olduğunu açılışta doğrular; uyumsuzsa başlamaz.' }
+    ]
+  },
+  deepDive: {
+    heading: "Derinlemesine: HAL ve Treble nasıl çalışır?",
+    html: `<p class="lead">HAL, Android framework'ü ile donanım sürücüleri arasına standart bir arayüz koyar; Treble bu arayüzü bir process sınırına taşıyarak system ve vendor kodunu birbirinden ayırır. Bu ayrım, Android güncellemelerinin neden vendor kodunu değiştirmeden gelebildiğinin anahtarıdır.</p>
+
+<h3>1. HAL nedir?</h3>
+<p>Her SoC ve telefon üreticisinin donanımı farklıdır. Framework'ün her kamera veya sensör için ayrı kod taşıması mümkün değil; bunun yerine framework standart bir arayüz tanımlar, vendor o arayüzü kendi donanımına göre doldurur. İşte bu arayüz katmanı HAL'dir.</p>
+<div class="manpage src-aosp"><div class="ref">hal · definition</div><p class="orig">A hardware abstraction layer (HAL) is type of abstraction layer with a standard interface for hardware vendors to implement.</p><p>Framework HAL arayüzünü sabit tutar; vendor arkasındaki gerçek sürücüyü istediği gibi yazar. Framework donanımın ne olduğunu değil, hangi arayüzü konuştuğunu bilir.</p></div>
+
+<h3>2. Pre-Treble vs Treble (binderized HAL)</h3>
+<p>Treble öncesinde (Android 7 ve öncesi) HAL'ler framework process'inin içinde yüklenen <code>.so</code> paylaşımlı kütüphanelerdi: framework ile vendor kodu aynı process'te, aynı bellekte çalışırdı. Bu, her OS güncellemesinde vendor kodunun da yeniden derlenmesini gerektiriyordu — güncellemelerin yıllarca gecikmesinin baş nedeni. Treble (Android 8) ile HAL'ler ayrı bir vendor process'ine taşındı ve framework onlarla Binder üzerinden konuşur hale geldi.</p>
+<div class="manpage src-aosp"><div class="ref">hal · binderized</div><p class="orig">A HAL that communicates with other processes using binder inter-process communication (IPC) calls.</p><p>Binderized HAL ayrı bir process'te çalışır; framework ona Binder ile mesaj yollar. Böylece framework (system) ve HAL (vendor) birbirinden bağımsız derlenip güncellenebilir — Project Treble'ın özü budur.</p></div>
+<div class="deflist">
+<div><dt>pre-Treble</dt><dd>HAL = framework process'i içinde yüklenen <code>.so</code>; system ve vendor aynı process, aynı derleme. OS güncellemesi vendor kodunu da bağlar.</dd></div>
+<div><dt>Treble (binderized)</dt><dd>HAL = ayrı vendor process; framework Binder ile konuşur. system ve vendor ayrı derlenir, ayrı güncellenir.</dd></div>
+</div>
+
+<h3>3. HIDL'den AIDL'ye: arayüz tanım dilleri</h3>
+<p>Treble HAL arayüzlerini tarif etmek için önce HIDL (HAL Interface Definition Language) kullanıldı. Android 13'ten itibaren HIDL deprecate edildi; yeni HAL'ler framework'ün zaten kullandığı AIDL ile yazılıyor. Böylece framework ve HAL tek bir interface dili (AIDL) altında birleşti; ayrı bir HAL dili taşıma yükü kalktı.</p>
+<div class="manpage src-aosp"><div class="ref">hal · aidl</div><p class="orig">Instead of HIDL, you should use Android Interface Definition Language (AIDL) for HALs.</p><p>AIDL hem uygulama-içi IPC hem HAL arayüzleri için ortak dildir; stub (server) ve proxy (client) kodunu otomatik üretir, versiyonlamayı yönetir.</p></div>
+<div class="deflist">
+<div><dt>HIDL</dt><dd>Treble'ın ilk HAL dili (Android 8–12). Kendi <code>.hal</code> dosyaları, hwservicemanager ile servis kaydı. Android 13'te deprecate.</dd></div>
+<div><dt>AIDL for HALs</dt><dd>Yeni standart. Framework ile aynı dil; stable AIDL ile versiyonlanır, servismanager üzerinden yayınlanır.</dd></div>
+</div>
+
+<h3>4. hwservicemanager ve system/vendor ayrımı</h3>
+<p>HIDL HAL'leri <code>hwservicemanager</code> adlı ayrı bir service manager üzerinden bulunurken (normal servisler servicemanager kullanır), AIDL HAL'leri doğrudan servicemanager'a taşındı. Fiziksel ayrım bölümlerde de görünür: framework <code>/system</code>'de, vendor kodu (HAL'ler, sürücüler, firmware) <code>/vendor</code> bölümündedir. Bu ayrım sayesinde Google bir Android sürümü yayınladığında, telefon üreticisi yalnızca <code>/system</code>'i güncelleyip <code>/vendor</code>'a dokunmayabilir.</p>
+
+<h3>5. VINTF ve uyumluluk (compatibility)</h3>
+<p>system ve vendor ayrı ayrı güncellenebiliyorsa, ikisinin birbiriyle uyumlu olduğundan emin olmak gerekir. Bunu VINTF (Vendor Interface) halleder: her taraf hangi HAL arayüzlerini sunduğunu/beklediğini bir manifest ve compatibility matrix ile bildirir; sistem açılışta ve OTA sırasında bunları karşılaştırır, uyumsuzsa güncelleme/başlatma durur.</p>
+<div class="manpage src-aosp"><div class="ref">vintf · object</div><p class="orig">A VINTF object gathers some of the information it needs directly from the device.</p><p>VINTF, cihazdaki vendor manifest'i ve framework compatibility matrix'i çalışma anında toplayıp eşleştirir.</p></div>
+<div class="manpage src-aosp"><div class="ref">vintf · ota</div><p class="orig">must be reconciled at OTA time to ensure a device can get framework updates.</p><p>Bir OTA güncellemesi uygulanmadan önce framework ile vendor arayüzlerinin uyumu doğrulanır; uyumsuzsa cihaz o güncellemeyi alamaz. GSI (Generic System Image) testleri de bu uyumu doğrulamak için saf bir AOSP system imajını vendor üzerinde çalıştırır.</p></div>`
+  },
+  lab: {
+    intro: 'Bir uygulama ivmeölçer (accelerometer) verisi ister. Sağda sistem tarafı, Treble sınırı ve vendor tarafını; çağrının Binder üzerinden donanıma inişini izle. Alttan Treble öncesi/sonrası farkını da görebilirsin.',
+    codeLabel: 'sensör çağrısı (temsilî)', cmd: 'app → sensör HAL',
+    foot: 'Değerler ve çıktılar temsilîdir. Gerçek akış: SensorManager → sensorservice → Sensor AIDL HAL.',
+    code: [
+      { t: '<span class="cm">// --- uygulama (sistem tarafı) ---</span>' },
+      { t: 'SensorManager sm = getSystemService(SensorManager.<span class="k">class</span>);' },
+      { t: 'sm.<span class="f">registerListener</span>(l, accel, RATE);' },
+      { t: '' },
+      { t: '<span class="cm">// --- framework servisi, HAL arayüzünü çağırır ---</span>' },
+      { t: 'ISensors hal = ISensors.Stub.<span class="f">asInterface</span>(binder);' },
+      { t: 'hal.<span class="f">activate</span>(handle, <span class="k">true</span>);   <span class="cm">// → Binder → vendor süreci</span>' },
+      { t: 'hal.<span class="f">poll</span>(count);              <span class="cm">// olayları oku</span>' },
+      { t: '' },
+      { t: '<span class="cm">// --- vendor HAL, çekirdek sürücüsüyle konuşur ---</span>' },
+      { t: '<span class="f">read</span>(<span class="s">"/dev/iio:device0"</span>, ...);' }
+    ],
+    steps: [
+      { pc: 2, title: 'Uygulama ister', term: ['app: registerListener(accelerometer)'],
+        text: 'Uygulama <code>SensorManager</code> üzerinden ivmeölçer verisi ister. Bu, sistem tarafında (framework, AOSP) kalan tamamen standart bir API\'dir; uygulama hangi çipin takılı olduğunu bilmez.',
+        sys: ['app', 'sensorservice'], sysOn: 0, ven: [], venOn: -1, cross: false, mode: 'treble', note: 'İstek şimdilik yalnızca sistem tarafında.' },
+      { pc: 5, title: 'Framework HAL arayüzünü bulur', term: ['sensorservice: ISensors HAL bağlandı'],
+        text: '<code>sensorservice</code> (sistem servisi) sensör HAL\'inin Binder arayüzünü (<code>ISensors</code>, AIDL) hwservicemanager/servicemanager üzerinden bulur. Bu arayüz bir sözleşmedir: metot imzaları sabit, uygulaması vendor\'a ait.',
+        sys: ['app', 'sensorservice'], sysOn: 1, ven: ['ISensors HAL arayüzü'], venOn: -1, cross: false, mode: 'treble', note: 'Arayüz (AIDL) sistemde tanımlı; uygulaması vendor sürecinde.' },
+      { pc: 6, title: 'Treble sınırını geç (Binder)', term: ['sensorservice: hal.activate() → Binder → vendor'],
+        text: '<code>activate()</code> çağrısı bir Binder transaksiyonuna dönüşür ve Treble sınırını geçer: sistem sürecinden vendor sürecindeki HAL uygulamasına. İki taraf ayrı süreçtir; bu yüzden biri güncellenirken diğeri değişmeyebilir. Binder modülündeki tek-kopya taşıma burada da geçerli.',
+        sys: ['app', 'sensorservice'], sysOn: 1, ven: ['ISensors HAL (vendor süreci)'], venOn: 0, cross: true, mode: 'treble', note: 'Çağrı sistem → vendor yönünde Binder ile aktı.' },
+      { pc: 10, title: 'HAL donanıma iner', term: ['vendor HAL: /dev/iio:device0 okunuyor'],
+        text: 'Vendor\'ın HAL uygulaması, çipe özel koduyla çekirdek sürücüsünü (ör. IIO alt sistemi, <code>/dev/iio:device0</code>) okur. Donanıma özgü tüm bilgi burada kapsüllenmiştir; sistem tarafı bunu hiç bilmez.',
+        sys: ['app', 'sensorservice'], sysOn: 1, ven: ['ISensors HAL', 'çekirdek sürücüsü'], venOn: 1, cross: false, mode: 'treble', note: 'Donanıma özel kod vendor tarafında kaldı.' },
+      { pc: 7, title: 'Veri geri döner', term: ['vendor HAL: poll() → 128 olay', 'app: onSensorChanged(...)'],
+        text: 'Okunan ham veri HAL tarafından standart formata çevrilir ve Binder ile sistem tarafına geri döner; <code>sensorservice</code> uygulamaya iletir. Uygulama hiçbir vendor detayı görmeden tutarlı veriyi alır.',
+        sys: ['app', 'sensorservice'], sysOn: 0, ven: ['ISensors HAL', 'çekirdek sürücüsü'], venOn: 0, cross: true, back: true, mode: 'treble', note: 'Çift yönlü akış tamam. Sistem ve vendor hiç birbirinin koduna girmedi.' },
+      { pc: 5, title: 'Treble öncesi ile karşılaştır', term: [],
+        text: 'Treble\'dan önce (Android 8 öncesi) HAL framework ile AYNI süreçte, bir <code>.so</code> kütüphanesi olarak yüklenirdi. O zaman sistemi güncellemek, vendor kodunu yeniden derlemeyi gerektirirdi — güncellemelerin yıllarca gecikme sebebi. Treble araya Binder sınırı koyarak bu bağı kopardı.',
+        sys: ['framework + HAL (.so, aynı süreç)'], sysOn: 0, ven: [], venOn: -1, cross: false, mode: 'pre', note: 'Treble öncesi: HAL framework sürecinin içinde; ayrım yok, güncelleme zor.' }
+    ],
+    render: function (s, stateEl, u) {
+      function side(cls, title, layers, on) {
+        var rows = layers.length
+          ? layers.map(function (l, i) { return '<div class="tlayer' + (i === on ? ' on' : '') + '"><b>' + u.esc(l) + '</b></div>'; }).join('')
+          : '<div class="tlayer"><span class="mono">— (bu modda yok)</span></div>';
+        return '<div class="tside ' + cls + '"><h4>' + title + '</h4>' + rows + '</div>';
+      }
+      var pre = s.mode === 'pre';
+      var wallHTML = pre
+        ? '<div class="wall" style="border-color:var(--muted);background:var(--sunk)"><span class="lbl" style="color:var(--muted)">sınır yok</span><span class="arrow off">↔</span></div>'
+        : '<div class="wall" id="wall"><span class="lbl">Treble sınırı · Binder</span><span class="arrow ' + (s.cross ? '' : 'off') + '">' + (s.back ? '←' : '→') + '</span></div>';
+      var right = pre ? '' : side('ven', 'Vendor tarafı (/vendor)', s.ven, s.venOn);
+      stateEl.innerHTML =
+        '<p class="lab-label">Sistem · Treble sınırı · vendor</p>' +
+        '<div class="treble">' +
+          side('sys', pre ? 'Tek süreç (Treble öncesi)' : 'Sistem tarafı (/system)', s.sys, s.sysOn) +
+          wallHTML +
+          right +
+        '</div>' +
+        '<div class="modebar"><span>Mimari:</span>' +
+          '<span class="pill ' + (s.mode === 'pre' ? 'on' : '') + '">Treble öncesi (aynı süreç)</span>' +
+          '<span class="pill ' + (s.mode === 'treble' ? 'on' : '') + '">Treble (ayrı süreç + Binder)</span></div>' +
+        (s.note ? '<p class="note" style="margin-top:12px">' + u.esc(s.note) + '</p>' : '');
+      if (s.cross && !pre) ATLAS.flash(document.getElementById('wall'), false);
+    }
+  },
+  underHood: {
+    html: '<p class="prose">Treble, donanım arayüzlerini bir arayüz tanım dili (IDL) ile standartlaştırır: önce <strong>HIDL</strong> (Android 8–12), sonra sade <strong>AIDL</strong>. Bu arayüzler bir vendor sürecinde uygulanır ve <code>hwservicemanager</code> (HIDL) ya da normal <code>servicemanager</code> (AIDL) üzerinden bulunur. Katmanlar:</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Katman</th><th>Kime ait</th><th>Görevi</th></tr></thead><tbody>' +
+      '<tr><td><b>Uygulama / framework</b></td><td>Sistem (AOSP)</td><td>Standart API (SensorManager vb.); donanımdan habersiz</td></tr>' +
+      '<tr><td><b>Sistem servisi</b></td><td>Sistem (AOSP)</td><td>İsteği toplar, HAL arayüzünü (AIDL) çağırır (ör. sensorservice)</td></tr>' +
+      '<tr><td><b>HAL arayüzü</b></td><td>Sözleşme (AIDL/HIDL)</td><td>Sürüm kontrollü metot imzaları; Treble sınırı</td></tr>' +
+      '<tr><td><b>HAL uygulaması</b></td><td>Vendor (/vendor)</td><td>Çipe özel kod; ayrı süreçte, Binder üzerinden erişilir</td></tr>' +
+      '<tr><td><b>Çekirdek sürücüsü</b></td><td>Vendor / çekirdek</td><td>Gerçek donanımı sürer</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px">Bölümler modülüyle bağ: Treble ayrımı fiziksel olarak <code>/system</code> ve <code>/vendor</code> bölümlerinde yaşar; biri AOSP güncellemesiyle, diğeri SoC üreticisiyle gelir. <strong>VINTF</strong> (Vendor Interface) manifestleri açılışta iki tarafın arayüz sürümlerinin uyumlu olduğunu doğrular — uyumsuzsa cihaz başlamaz. Binder modülüyle bağ: Treble sınırını geçen her HAL çağrısı bir Binder transaksiyonudur.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Çalışan HAL\'leri listele', p: 'lshal, cihazdaki tüm HIDL/AIDL HAL arayüzlerini, hangi vendor sürecinin sunduğunu ve sürümünü gösterir.',
+        shells: [{ label: 'adb (temsilî çıktı)', copy: 'adb shell lshal', pre: '<span class="c">$</span> adb shell lshal\n<span class="c"># Arayüz                                   Sürüm  Sunan süreç</span>\nandroid.hardware.sensors.ISensors          <span class="g">2</span>    <span class="g">android.hardware.sensors-service</span>\nandroid.hardware.camera.provider.ICamera.. <span class="g">2</span>    vendor.camera-provider\nandroid.hardware.audio.core.IModule         <span class="g">1</span>    android.hardware.audio.service\n<span class="c"># her satır: sistemin çağırdığı arayüz → vendor süreci</span>' }] },
+      { h3: '2. VINTF uyumunu gör', p: 'Sistem ve vendor arayüz manifestleri; açılışta bunların uyumu doğrulanır.',
+        shells: [{ label: 'adb (temsilî)', copy: 'adb shell cat /vendor/etc/vintf/manifest.xml', pre: '<span class="c">$</span> adb shell cat /vendor/etc/vintf/manifest.xml\n<span class="c">&lt;!-- vendor\'ın sunduğu HAL sürümleri; --&gt;</span>\n<span class="c">&lt;!-- /system/etc/vintf içindeki matrix ile eşleşmeli --&gt;</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Treble, Android güncellemelerini neden kolaylaştırdı?', opts: ['HAL\'leri sildi', 'Sistem ile vendor kodunu ayırdı', 'Binder\'ı kaldırdı'], answer: 'Sistem ile vendor kodunu ayırdı',
+        ok: 'Doğru. Sistem (/system) ve vendor (/vendor) ayrı güncellenebilir hale geldi; AOSP güncellemesi vendor kodunu yeniden derlemeyi gerektirmez.', no: 'İpucu: Treble öncesi HAL framework ile aynı süreçteydi; Treble neyi ayırdı?' },
+      { q: 'Treble sonrası bir HAL çağrısı sistemden vendor sürecine nasıl geçer?', opts: ['Doğrudan fonksiyon çağrısı', 'Binder (HIDL/AIDL)', 'Dosya paylaşımı'], answer: 'Binder (HIDL/AIDL)',
+        ok: 'Doğru. HAL\'ler ayrı süreçte çalışır; sınırı Binder transaksiyonu ile geçer. Bu yüzden Binder, Treble\'ın da temelidir.', no: 'İpucu: ayrı süreçler arası iletişim Android\'de hangi mekanizmayla olur?' },
+      { q: 'VINTF ne işe yarar?', opts: ['Vendor HAL sürümlerinin sistemle uyumunu doğrular', 'Uygulamaları imzalar', 'Belleği şifreler'], answer: 'Vendor HAL sürümlerinin sistemle uyumunu doğrular',
+        ok: 'Doğru. Açılışta sistem ve vendor arayüz sürümleri eşleşmezse cihaz başlamaz; bu, ayrı güncellenen iki tarafın tutarlılığını garanti eder.', no: 'İpucu: sistem ve vendor ayrı güncelleniyorsa, uyumlu olduklarını kim kontrol eder?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Android Modül 21', title: 'Grafik ve giriş mimarisi', desc: 'Bir dokunuş olayı ekrana nasıl ulaşır, bir kare SurfaceFlinger ile nasıl çizilir?' },
+  sources: [
+    { href: 'https://newandroidbook.com/TOC.html', text: 'Levin — Android Internals', note: 'Cilt IV, Bölüm 1' },
+    { href: 'https://source.android.com/docs/core/architecture/hal', text: 'AOSP — HAL' },
+    { href: 'https://source.android.com/docs/core/architecture/vintf', text: 'AOSP — Treble ve VINTF' },
+    { href: 'https://source.android.com/docs/core/architecture/aidl/aidl-hals', text: 'AOSP — AIDL HAL\'ler' }
+  ],
+  pageTitle: 'HAL ve Treble'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

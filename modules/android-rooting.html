@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Rooting ve Tehdit Modeli</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: durum göstergeleri */
+.box.bad { border-color: var(--bad); background: var(--bad-soft); }
+.box.bad b { color: var(--bad); }
+.stpill { font-family: var(--f-mono); font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; justify-self: start; }
+.stpill.on { background: var(--ok-soft); color: var(--ok); }
+.stpill.off { background: var(--warn-soft); color: var(--warn); }
+.stpill.red { background: var(--bad-soft); color: var(--bad); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'android',
+  crumbs: 'android › rooting ve tehdit modeli › modül 19',
+  eyebrow: 'Modül 19 · Android · Rooting ve tehdit modeli',
+  titleHTML: 'Kökü ele geçirmek: <code>rooting</code> ve güvenin bedeli',
+  lede: 'Android\'in güvenlik modeli, kullanıcının bile sisteme tam erişimi olmadığını varsayar. Root (kök) elde etmek bu varsayımı kaldırır. Bu modül rooting\'i mimari olarak ele alır: meşru yolu (kendi cihazının kilidini açma), systemless root\'un nasıl çalıştığını ve bunun bütünlük garantileriyle çatışmasını.',
+  meta: ['~16 dk', 'ön koşul: attestation, SELinux', 'bağlam: AOSP / Magisk'],
+  ethic: '<b>İlke.</b> Bu modül rooting\'i <b>kavramsal ve mimari</b> olarak anlatır: tehdit modelini, meşru yolu ve güvenlik sonuçlarını. Belirli bir cihaza yönelik exploit ya da çalışır kod içermez; tüm işlemler <b>yalnızca sahibi olduğun cihazda</b> geçerlidir. Amaç savunmayı ve saldırgan bakışını anlamak.',
+  intuition: {
+    paras: [
+      'Android\'in <strong>tehdit modeli (threat model)</strong> katmanlı bir varsayıma dayanır: uygulamalara güvenilmez (her biri kendi UID sandbox\'ında), sisteme kısmen güvenilir, çekirdeğe ve donanım köküne tam güvenilir. "Root" yetkisi normalde yalnızca sistem süreçlerine aittir; kullanıcı uygulamaları ona erişemez. Rooting, bu sınırı kaldırıp keyfi koda root yetkisi vermektir.',
+      'Root\'a iki yoldan gidilir. <strong>Meşru yol:</strong> cihaz sahibinin <strong>önyükleyici kilidini (bootloader lock)</strong> kendi rızasıyla açması — bu kasıtlı bir tasarım kapısıdır ve bedeli vardır (veri silinir, güven düşer). <strong>Saldırgan yolu:</strong> bir zafiyeti (vulnerability) kullanarak kilitli bir cihazda izinsiz root elde etmek — iOS jailbreak\'inin Android karşılığı. İkisi aynı yetkiye ulaşır ama biri görünür ve rızalı, diğeri gizli ve izinsizdir.'
+    ],
+    ideas: [
+      { b: 'Root bir sınır ihlalidir', span: 'Tehdit modeli uygulamaların root olamayacağını varsayar; rooting tam da bu varsayımı kaldırır.' },
+      { b: 'Meşru ≠ bedelsiz', span: 'OEM unlock kasıtlı bir kapıdır ama veriyi siler, doğrulanmış açılış durumunu düşürür ve attestation\'da görünür.' },
+      { b: 'Systemless (sistemsiz)', span: 'Magisk /system\'e dokunmaz; boot imajına yama yapar. Ama dm-verity ve attestation yine de değişikliği görür.' }
+    ]
+  },
+  lab: {
+    intro: 'Meşru rooting yolunu adım adım izle: kilitli cihazdan OEM unlock\'a, oradan systemless root\'a. Sağda önyükleyici kilidi, boot imajı, doğrulanmış açılış durumu ve attestation sonucunun her adımda nasıl değiştiğini gör.',
+    codeLabel: 'rooting akışı (temsilî)', cmd: 'kullanıcı · fastboot · magisk',
+    foot: 'Komutlar ve durumlar temsilîdir; gerçek adımlar cihaza ve üreticiye göre değişir. Yalnızca kendi cihazında geçerlidir.',
+    code: [
+      { t: '<span class="cm">// başlangıç: kilitli, güvenilir cihaz</span>' },
+      { t: 'getprop ro.boot.flash.locked   <span class="cm">// 1</span>' },
+      { t: '' },
+      { t: '<span class="cm">// kullanıcı rızasıyla kilidi açar (VERİ SİLİNİR)</span>' },
+      { t: 'fastboot flashing <span class="f">unlock</span>' },
+      { t: '' },
+      { t: '<span class="cm">// systemless root: boot imajına yama</span>' },
+      { t: 'magisk <span class="f">--patch</span> boot.img' },
+      { t: 'fastboot flash boot magisk_patched.img' },
+      { t: '' },
+      { t: '<span class="cm">// sonuç: su daemon root verir, ama...</span>' },
+      { t: '<span class="cm">// verifiedbootstate = orange, Play Integrity düşer</span>' }
+    ],
+    steps: [
+      { pc: [1, 2], title: 'Kilitli cihaz', verdict: { cls: 'safe', txt: 'tehdit modeli bütün: kullanıcı kodu root olamaz' },
+        text: 'Fabrika durumundaki cihaz: önyükleyici kilitli (bootloader locked), boot imajı üreticinin imzaladığı haliyle, doğrulanmış açılış durumu yeşil (green). Uygulamalar kendi sandbox\'larında; hiçbiri root\'a erişemez. Attestation "kilitli ve bütün" der.',
+        bl: 'locked', boot: 'stock', root: 'no', vb: 'green', integ: 'pass',
+        note: 'Bu, Android\'in tehdit modelinin varsaydığı durumdur.' },
+      { pc: [4, 5], title: 'OEM unlock: kapı açılır', verdict: { cls: 'breach', txt: 'kilit açıldı → tüm veri silindi, güven düştü' },
+        text: 'Kullanıcı Geliştirici Seçenekleri\'nde "OEM unlock"u açar ve <code>fastboot flashing unlock</code> çalıştırır. Bu kasıtlı bir tasarım kapısıdır — ama bedeli ağırdır: cihazın <strong>tüm verisi silinir (wipe)</strong>. Bu bir güvenlik önlemidir: biri telefonunu çalıp kilidini açarak verine erişemesin diye. Artık önyükleyici açık ve doğrulanmış açılış durumu turuncuya (orange) döner.',
+        bl: 'unlocked', boot: 'stock', root: 'no', vb: 'orange', integ: 'fail',
+        note: 'Kilidi açmak henüz root vermez; sadece değiştirmeye izin verir.' },
+      { pc: [7, 8], title: 'Systemless yama (Magisk)', verdict: { cls: 'breach', txt: 'boot imajı değişti; /system el değmemiş' },
+        text: 'Magisk, <code>boot.img</code>\'a yama yapar: kendi başlatma kodunu açılış sürecine ekler, ama <strong>/system bölümüne dokunmaz</strong> (sistemsiz root / systemless root). Bu akıllıcadır çünkü /system dm-verity ile korunur; ona dokunmak anında yakalanırdı. Yamalı boot imajı açık önyükleyiciden yüklenir.',
+        bl: 'unlocked', boot: 'patched', root: 'no', vb: 'orange', integ: 'fail',
+        note: 'Değişiklik /system\'de değil boot\'ta; ama boot da AVB kapsamındadır.' },
+      { pc: [8], title: 'su daemon: root gelir', verdict: { cls: 'breach', txt: 'artık keyfi uygulama root isteyebilir' },
+        text: 'Yamalı boot açıldığında Magisk bir <code>su</code> daemon\'ı başlatır. Artık bir uygulama root yetkisi isteyebilir ve Magisk kullanıcıya izin sorar. Tehdit modelinin "kullanıcı kodu root olamaz" varsayımı artık geçerli değil: sandbox\'ın üstündeki sınır kalktı.',
+        bl: 'unlocked', boot: 'patched', root: 'yes', vb: 'orange', integ: 'fail',
+        note: 'Güç geldi; ama her uygulamaya açılan bu kapı yeni bir saldırı yüzeyidir.' },
+      { pc: [11], title: 'Bütünlük garantisi kırıldı', verdict: { cls: 'breach', txt: 'Play Integrity / attestation: başarısız' },
+        text: 'Sonuç attestation\'a yansır: doğrulanmış açılış durumu turuncu, önyükleyici kilidi açık. <strong>Play Integrity</strong> ve banka/DRM uygulamaları bunu donanım-destekli kanıttan okur ve çalışmayı reddedebilir. Gizlenemez, çünkü durum donanım köküne bağlı imzalanır. Root gücü ile "güvenilir cihaz" rozetini aynı anda tutamazsın — bu kasıtlı bir takastır (trade-off).',
+        bl: 'unlocked', boot: 'patched', root: 'yes', vb: 'orange', integ: 'fail',
+        note: 'Meşru root bile görünürdür. Zafiyet-tabanlı gizli root ise bu izleri bırakmamaya çalışır — asıl tehdit budur.' }
+    ],
+    render: function (s, stateEl, u) {
+      function pill(val, map) { var m = map[val]; return '<span class="stpill ' + m[0] + '">' + m[1] + '</span>'; }
+      var blM = { locked: ['on', 'LOCKED (kilitli)'], unlocked: ['red', 'UNLOCKED (açık)'] };
+      var bootM = { stock: ['on', 'stok (üretici imzalı)'], patched: ['off', 'patched (Magisk)'] };
+      var rootM = { no: ['on', 'yok'], yes: ['red', 'VAR (su daemon)'] };
+      var vbM = { green: ['on', 'GREEN'], orange: ['red', 'ORANGE'] };
+      var integM = { pass: ['on', 'geçti'], fail: ['red', 'başarısız'] };
+      var blCls = s.bl === 'locked' ? 'good' : 'bad';
+      var rootCls = s.root === 'yes' ? 'bad' : 'good';
+      var integCls = s.integ === 'pass' ? 'good' : 'bad';
+      stateEl.innerHTML =
+        '<p class="lab-label">Cihaz güvenlik durumu</p>' +
+        '<div class="boxgrid">' +
+          '<div class="boxrow">' +
+            '<div class="box ' + blCls + '"><b>Önyükleyici kilidi</b>' + pill(s.bl, blM) + '</div>' +
+            '<div class="box"><b>Boot imajı</b>' + pill(s.boot, bootM) + '</div>' +
+          '</div>' +
+          '<div class="boxrow">' +
+            '<div class="box ' + rootCls + '"><b>Root (su)</b>' + pill(s.root, rootM) + '</div>' +
+            '<div class="box"><b>Verified Boot durumu</b>' + pill(s.vb, vbM) + '</div>' +
+          '</div>' +
+          '<div class="box ' + integCls + '"><b>Play Integrity / attestation</b>' + pill(s.integ, integM) +
+            '<span>Donanım köküne bağlı; durum gizlenemez.</span></div>' +
+        '</div>' +
+        (s.note ? '<p class="note" style="margin-top:12px">' + u.esc(s.note) + '</p>' : '') +
+        '<div class="read-out"><div class="verdict ' + s.verdict.cls + '"><span class="dot"></span><span>' + u.esc(s.verdict.txt) + '</span></div></div>';
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: rooting, tehdit modeli ve bütünlük",
+    html: `<p class="lead">Rooting tek bir işlem değil, bir takaslar zinciridir: her adım bir güç kapısı açarken bir güvenlik garantisini düşürür. Bunu anlamak için önce Android'in tehdit modelini, sonra meşru ve saldırgan yolların nasıl aynı yetkiye farklı bedellerle ulaştığını görmek gerekir. Bu bölüm kavramsaldır; belirli bir cihaza yönelik exploit içermez.</p>
+
+<h3>1. Android security model: katmanlı güven</h3>
+<p>Android'in <strong>threat model</strong>'i, farklı aktörlere farklı güven seviyeleri atar. Kritik varsayım şudur: kullanıcı cihazın sahibidir ama <strong>uygulamalara güvenilmez</strong>, ve normal çalışmada hiçbir kullanıcı kodu root (UID 0) olamaz. Rooting tam da bu en dıştaki sınırı kaldırır.</p>
+<div class="deflist">
+<div><dt>trusted (güvenilir)</dt><dd>Hardware root of trust, bootloader, kernel — açılışta imzayla doğrulanır; tabanı donanımdadır.</dd></div>
+<div><dt>partially trusted</dt><dd>System partition, system_server, privileged apps — imzalı ama daha geniş yüzey.</dd></div>
+<div><dt>untrusted (güvenilmez)</dt><dd>Kullanıcı uygulamaları — her biri kendi UID sandbox'ında, SELinux domain'inde; root'a erişemez.</dd></div>
+</div>
+<p>Root yetkisi normalde yalnızca birkaç sistem sürecine aittir. "Rooting", bu yetkiyi untrusted katmana — yani keyfi koda — vermektir. Bu yüzden rooting her şeyden önce bir <strong>tehdit modeli ihlalidir</strong>, bir özellik değil.</p>
+
+<h3>2. OEM unlock: meşru ama bedelli kapı</h3>
+<p>Android açık bir ekosistem olduğu için <strong>meşru bir kapı</strong> sunar: cihaz sahibi, Geliştirici Seçenekleri'nde "OEM unlocking"i açıp <code>fastboot flashing unlock</code> ile <strong>bootloader unlock</strong> yapabilir. Bu kasıtlı bir tasarımdır — ama iki ağır bedeli vardır.</p>
+<p>Birincisi: kilidi açmak cihazın <strong>tüm kullanıcı verisini siler (wipe)</strong>. Bu bir güvenlik önlemidir — biri çalınan bir telefonun kilidini açıp verine erişemesin diye.</p>
+<div class="manpage src-aosp"><div class="ref">AOSP · verified boot · ORANGE</div><p class="orig">The bootloader is unlocked and software integrity cannot be guaranteed. Any data stored on the device might be available to attackers.</p><p>İkincisi: kilit açık kaldığı sürece cihaz <strong>ORANGE</strong> durumuna düşer. Yazılım bütünlüğü (software integrity) artık garanti edilemez; bu durum attestation'da görünür ve gizlenemez.</p></div>
+<p>Önemli ayrım: kilidi açmak henüz root <em>vermez</em>; yalnızca cihazı değiştirmeye izin verir. Root ayrı bir adımdır.</p>
+
+<h3>3. Systemless root: /system'e dokunmadan</h3>
+<p>Root'u elde etmenin modern yolu <strong>systemless root</strong>'tur (ör. Magisk): değişiklik <code>/system</code> partition'ına değil, <strong>boot image</strong>'a yapılır. Boot imajına küçük bir başlatma kodu eklenir; açılışta bir <code>su</code> daemon kurulur ve bir uygulama root isteyince kullanıcıya izin sorulur.</p>
+<p>Neden /system yerine boot? Çünkü <strong>/system dm-verity ile korunur</strong> (Modül 18): her blok bir hash tree ile doğrulanır, oraya yazılan tek bir bayt bile okuma anında yakalanır. Boot imajına yama bu blok-düzeyi denetimi atlar — ama boot imajı da Android Verified Boot (AVB) kapsamındadır, bu yüzden değişiklik yine de bütünlük zincirini kırar. systemless yaklaşım, izi en aza indirip bazı root-gizleme (ör. DenyList) tekniklerini mümkün kılar; ama donanım-destekli attestation'ı tam gizleyemez.</p>
+
+<h3>4. Bütünlük garantisiyle çatışma</h3>
+<p>Rooting'in kaçınılmaz sonucu, cihazın "ben kilitli ve bütünüm" diyememesidir. Android Verified Boot, açılışın her aşamasını bir sonraki için doğrulayan bir güven zinciri kurar:</p>
+<div class="manpage src-aosp"><div class="ref">AOSP · verified boot</div><p class="orig">It establishes a full chain of trust, starting from a hardware-protected root of trust to the bootloader,</p><p>Zincir donanımdaki bir kökten başlar; her halka bir sonrakini imzayla doğrular. Bootloader unlock veya boot yaması bu zinciri kırar ve durum (GREEN → ORANGE) donanım köküne bağlı olarak imzalanır — yani yalan söylenemez.</p></div>
+<p>Bu yüzden <strong>Play Integrity</strong> ve banka/DRM uygulamaları, cihazın bütünlüğünü donanım-destekli kanıttan okuyup root'lu cihazda çalışmayı reddedebilir. Root gücü ile "güvenilir cihaz" rozetini aynı anda tutamazsın; bu kasıtlı bir takastır.</p>
+<div class="manpage src-aosp"><div class="ref">AOSP · rollback protection</div><p class="orig">Rollback protection helps to prevent a possible exploit from becoming persistent</p><p>Verified Boot ayrıca <strong>rollback protection</strong> içerir: eski, zafiyetli bir sürüme geri dönüş engellenir — böylece yamalanmış bir açık tekrar açılıp kalıcı hale getirilemez.</p></div>
+
+<h3>5. Meşru root vs zafiyet-tabanlı root</h3>
+<p>İki yol aynı yetkiye (root) ulaşır ama taban taban farklıdır:</p>
+<div class="deflist">
+<div><dt>meşru (OEM unlock)</dt><dd>Görünür ve rızalı. Cihaz sahibi kilidi bilerek açar; veri silinir, attestation ORANGE'a düşer. İzler açıkça bırakılır.</dd></div>
+<div><dt>zafiyet-tabanlı</dt><dd>Gizli ve izinsiz. Kilit açılmadan, bir kernel/bootloader vulnerability kötüye kullanılarak root alınır; amaç iz bırakmamak ve attestation'ı atlatmaktır. Asıl tehdit budur.</dd></div>
+</div>
+<p>Bu, Android ile iOS'un felsefe farkını da açıklar: Android <em>meşru</em> bir kilit açma kapısı sunar (açık ekosistem; bedeli attestation düşüşü), iOS sunmaz — bu yüzden oradaki her root bir jailbreak, yani bir zafiyet zinciridir (Ofansif Modül 9). Savunmacı için ders: root tespiti donanım-destekli attestation'a dayanmalı; <code>su</code> ikilisini aramak gibi kaba sinyaller kolayca atlatılır.</p>`
+  },
+  underHood: {
+    heading: 'Aşama aşama: ne değişir, güvenlik etkisi ne',
+    html: '<p class="prose">Rooting yolu bir dizi takastan (trade-off) ibarettir; her adım bir kapı açarken bir garantiyi düşürür:</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Aşama</th><th>Ne değişir</th><th>Güvenlik etkisi</th></tr></thead><tbody>' +
+      '<tr><td><b>OEM unlock</b></td><td>Önyükleyici kilidi açılır, veri silinir</td><td>Doğrulanmış açılış garantisi kalkar; cihaz değiştirmeye açılır</td></tr>' +
+      '<tr><td><b>Boot yaması</b></td><td>boot.img\'a Magisk eklenir (systemless)</td><td>AVB artık yamalı boot\'u "bozuk" görür; /system korumalı kalır</td></tr>' +
+      '<tr><td><b>su daemon</b></td><td>Uygulamalar root isteyebilir</td><td>Sandbox üstü sınır kalkar; yeni ve güçlü bir saldırı yüzeyi</td></tr>' +
+      '<tr><td><b>Attestation</b></td><td>verifiedbootstate → orange</td><td>Play Integrity / banka / DRM uygulamaları reddedebilir</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px">Bu, bütünlük ve attestation modülünün (Modül 18) tersten okunuşudur: orada "cihaz nasıl kendini kanıtlar" vardı; burada o kanıtın bilinçli olarak nasıl geçersizleştiğini görüyoruz. Meşru root bu izleri açıkça bırakır. <strong>Zafiyet-tabanlı (saldırgan) root</strong> ise kilidi açmadan, bir çekirdek zafiyetiyle gizlice root almayı ve bu izleri bırakmamayı hedefler — ki asıl tehdit ve iOS jailbreak (Ofansif Modül 9) ile birebir örtüşen taraf budur.</p>' +
+      '<p class="prose">Android ile iOS\'un felsefe farkı: Android <em>meşru</em> bir kilit açma kapısı sunar (açık ekosistem, bedeli attestation düşüşü); iOS böyle bir kapı sunmaz, bu yüzden oradaki her root bir jailbreak, yani bir zafiyet zinciridir.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Kilit ve açılış durumunu oku', p: 'Bu özellikler cihazın tehdit-modeli duruşunu söyler. Yalnızca kendi cihazında; root gerektirmez.',
+        shells: [{ label: 'adb (temsilî)', copy: 'adb shell getprop ro.boot.flash.locked; adb shell getprop ro.boot.verifiedbootstate', pre: '<span class="c">$</span> adb shell getprop ro.boot.flash.locked\n1   <span class="c"># 1 = kilitli, 0 = açık</span>\n<span class="c">$</span> adb shell getprop ro.boot.verifiedbootstate\ngreen   <span class="c"># green / yellow / orange</span>' }] },
+      { h3: '2. Bir uygulama root\'u nasıl tespit eder', p: 'Uygulamalar genelde su ikilisini, Magisk izlerini ya da Play Integrity sonucunu arar. Savunmacı bakış: bu sinyaller donanım-destekli oldukça güvenilirdir.',
+        shells: [{ label: 'kavramsal', copy: 'which su', pre: '<span class="c"># kaba sinyal (kolay atlatılır):</span>\n<span class="c">$</span> which su        <span class="c"># /system/bin/su bulunursa şüpheli</span>\n<span class="c"># güçlü sinyal (atlatması zor):</span>\n<span class="c"># Play Integrity → MEETS_DEVICE_INTEGRITY döner mi?</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'OEM unlock neden cihazın tüm verisini siler?', opts: ['Yer açmak için', 'Kilit açmayı veri hırsızlığı aracı olmaktan çıkarmak için', 'Zorunlu olduğu için'], answer: 'Kilit açmayı veri hırsızlığı aracı olmaktan çıkarmak için',
+        ok: 'Doğru. Biri çalınan bir telefonun kilidini açıp verine erişememeli; bu yüzden kilit açma kasıtlı olarak her şeyi siler.', no: 'İpucu: çalınan bir telefonun kilidi açılabilseydi ne olurdu?' },
+      { q: 'Magisk neden /system yerine boot imajına yama yapar (systemless)?', opts: ['Daha hızlı olduğu için', '/system dm-verity ile korunduğu ve değişiklik anında yakalanacağı için', 'Zorunlu olduğu için'], answer: '/system dm-verity ile korunduğu ve değişiklik anında yakalanacağı için',
+        ok: 'Doğru. /system dm-verity karma ağacıyla korunur; ona dokunmak her okumada yakalanır. boot\'a yama bu denetimi atlamanın yoludur (ama boot da AVB kapsamındadır).', no: 'İpucu: Modül 18\'deki dm-verity /system\'i nasıl koruyordu?' },
+      { q: 'Meşru (OEM unlock) root ile zafiyet-tabanlı root arasındaki temel fark nedir?', opts: ['Hız', 'Biri görünür ve rızalı, diğeri gizli ve izinsizdir', 'Hiçbir fark yok'], answer: 'Biri görünür ve rızalı, diğeri gizli ve izinsizdir',
+        ok: 'Doğru. İkisi de aynı yetkiye ulaşır; ama meşru yol izleri açıkça bırakır (attestation düşer), saldırgan yolu bir zafiyetle gizlice girip iz bırakmamaya çalışır. Asıl tehdit ikincisidir.', no: 'İpucu: ikisi de root verir. Fark yetkide değil, görünürlük ve rızadadır.' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Android Modül 20', title: 'HAL ve Treble', desc: 'Donanım soyutlama katmanı ve vendor/sistem ayrımı: Android güncellemeleri neden hızlandı?' },
+  sources: [
+    { href: 'https://newandroidbook.com/TOC.html', text: 'Levin — Android Internals', note: 'Cilt III, Bölüm 6-7' },
+    { href: 'https://topjohnwu.github.io/Magisk/', text: 'Magisk belgeleri', note: 'systemless root' },
+    { href: 'https://source.android.com/docs/security/features/verifiedboot', text: 'AOSP — Verified Boot' },
+    { href: 'https://developer.android.com/google/play/integrity', text: 'Play Integrity API' }
+  ],
+  pageTitle: 'Rooting ve Tehdit Modeli'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

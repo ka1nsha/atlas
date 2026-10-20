@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>ARM64 Temelleri</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: 64-bit işaretçi diyagramı */
+.ptrbox { display: grid; gap: 6px; margin-top: 4px; }
+.ptr64 { display: flex; border: 1.5px solid var(--line); border-radius: var(--r); overflow: hidden; font-family: var(--f-mono); min-width: 0; }
+.pac-seg, .addr-seg { padding: 10px 12px; min-width: 0; overflow-wrap: anywhere; }
+.pac-seg { flex: 0 0 34%; border-right: 1.5px solid var(--line); display: grid; gap: 2px; }
+.addr-seg { flex: 1 1 auto; display: grid; gap: 2px; }
+.ptr64 .lbl { font-size: 10.5px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.ptr64 .val { font-size: 13px; font-weight: 700; }
+.ptr64.bare .pac-seg { background: var(--sunk); }
+.ptr64.bare .pac-seg .val { color: var(--muted); }
+.ptr64.signed .pac-seg { background: var(--ok-soft); } .ptr64.signed .pac-seg .val { color: var(--ok); }
+.ptr64.authed .pac-seg { background: var(--ok-soft); } .ptr64.authed .pac-seg .val { color: var(--ok); }
+.ptr64.tampered .pac-seg { background: var(--bad-soft); } .ptr64.tampered .pac-seg .val { color: var(--bad); }
+.ptr64.tampered .addr-seg .val { color: var(--bad); text-decoration: line-through; }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'macos',
+  crumbs: 'macos › arm64 temelleri › modül 19',
+  eyebrow: 'Modül 19 · macOS / iOS · Apple Silicon güvenliği',
+  titleHTML: 'ARM64 temelleri: <code>PAC</code>, PAN ve MTE',
+  lede: 'Apple Silicon\'un çekirdek güvenliği büyük ölçüde donanıma gömülüdür. Bu modülde istisna seviyelerini (exception levels) ve işaretçi kimlik doğrulamanın (pointer authentication, PAC) bir dönüş adresini nasıl koruduğunu adım adım izleyeceksin. Bu, ofansif korumalar modülünün donanım tarafıdır.',
+  meta: ['~18 dk', 'ön koşul: işaretçiler, ROP kavramı', 'bağlam: ARMv8.3+'],
+  intuition: {
+    paras: [
+      'ARM64\'te ayrıcalık, <strong>istisna seviyeleriyle (exception levels, EL)</strong> katmanlanır: uygulamalar EL0\'da, çekirdek EL1\'de, hypervisor EL2\'de, güvenli monitör EL3\'te çalışır. x86\'daki ring 3 / ring 0 ayrımının ARM karşılığıdır.',
+      'Saldırganların en sevdiği hedef işaretçilerdir: bir dönüş adresini (return address) ya da fonksiyon işaretçisini değiştirip kontrol akışını ele geçirmek (ROP/JOP) exploit\'lerin kalbidir. Apple Silicon buna donanımla karşılık verir: <strong>PAC</strong> işaretçilere kriptografik bir imza koyar, <strong>PAN</strong> çekirdeğin kullanıcı belleğine dalmasını engeller, <strong>MTE</strong> ise belleği etiketleyerek use-after-free ve taşmaları yakalar.'
+    ],
+    ideas: [
+      { b: 'İmzalı işaretçi', span: 'PAC, işaretçinin kullanılmayan üst bitlerine bir anahtarla imza (signature) yazar; bozulursa doğrulama tutmaz.' },
+      { b: 'Çekirdek dokunamaz', span: 'PAN (Privileged Access Never): çekirdek, izin verilmedikçe kullanıcı belleğini okuyup yazamaz — klasik bir exploit yolunu kapatır.' },
+      { b: 'Etiketli bellek', span: 'MTE (Memory Tagging): her ayırmaya (allocation) bir etiket verilir; yanlış etiketle erişim anında yakalanır.' }
+    ]
+  },
+  lab: {
+    intro: 'Bir fonksiyonun dönüş adresi (x30/LR) girişte PAC ile imzalanır, çıkışta doğrulanır. Saldırgan adresi değiştirirse imza tutmaz ve işlem çöker. Sağda istisna seviyelerini ve işaretçinin durumunu izle.',
+    codeLabel: 'arm64 (temsilî)', cmd: 'fonksiyon çağrısı',
+    foot: 'Register değerleri ve imza bitleri temsilîdir. PAC/PAN/MTE ARMv8.3/8.1/8.5 ile gelir; Apple M1+ ve A12+ bunları kullanır.',
+    code: [
+      { t: '<span class="cm">; fonksiyon girişi</span>' },
+      { t: '<span class="f">pacia</span>  x30, sp     <span class="cm">; LR’yi SP bağlamıyla imzala</span>' },
+      { t: '<span class="cm">; ... fonksiyon gövdesi ...</span>' },
+      { t: '<span class="cm">; fonksiyon çıkışı</span>' },
+      { t: '<span class="f">autia</span>  x30, sp     <span class="cm">; kullanmadan önce doğrula</span>', danger: true },
+      { t: '<span class="k">ret</span>                <span class="cm">; x30’a dön</span>' }
+    ],
+    steps: [
+      { el: 'EL0', title: 'İstisna seviyeleri', ptr: null, term: ['uygulama EL0’da çalışıyor'],
+        text: 'Donanım dört ayrıcalık katmanı sunar: EL0 (kullanıcı/user), EL1 (çekirdek/kernel), EL2 (hypervisor), EL3 (güvenli monitör/secure monitor). Bir sistem çağrısı EL0’dan EL1’e geçiştir. Korumaların çoğu bu sınırda uygulanır.' },
+      { el: 'EL1', title: 'Korunmasız dönüş adresi', pc: 1,
+        ptr: { state: 'bare', pac: '00000000', addr: '0x0001_8a3c_d040', note: 'x30 (LR) bir fonksiyon dönüş adresi tutuyor; üst bitler boş. Saldırgan yığında (stack) bunu ezebilirse kontrol akışını kaçırır.' },
+        term: ['x30 = 0x0001_8a3c_d040  (imzasız)'] ,
+        text: 'Fonksiyon çağrıldığında dönüş adresi x30 (LR) register’ında durur. Korumasızken bu değer saldırganın hedefidir: yığında üzerine yazarsa, fonksiyon dönünce onun seçtiği adrese atlanır.' },
+      { el: 'EL0', title: 'PAC imzası eklenir', pc: 1,
+        ptr: { state: 'signed', pac: '93a4c0d4', addr: '0x0001_8a3c_d040', note: 'pacia, adres + SP + gizli anahtardan bir imza üretip işaretçinin kullanılmayan üst bitlerine yazar.' },
+        term: ['pacia x30, sp', 'x30 = 0x93a4_c0d4 | adres  (imza eklendi)'],
+        text: '<code>pacia</code> komutu, dönüş adresini bir bağlam (burada SP) ve çekirdeğin bildiği gizli bir anahtarla imzalar (sign). İmza, işaretçinin sanal adres için kullanılmayan üst bitlerine yerleşir. Artık işaretçi hem adresi hem kriptografik imzasını taşır.' },
+      { el: 'EL0', title: 'Doğrulama: imza tutar', pc: 4,
+        ptr: { state: 'authed', pac: '93a4c0d4', addr: '0x0001_8a3c_d040', note: 'autia imzayı yeniden hesaplayıp karşılaştırır; tutarsa üst bitleri temizler ve adres kullanılır.' },
+        term: ['autia x30, sp', 'imza geçerli → ret 0x0001_8a3c_d040'],
+        text: 'Fonksiyon dönmeden <code>autia</code> imzayı doğrular (authenticate): adres ve bağlamdan imzayı yeniden üretip işaretçidekiyle karşılaştırır. Değişmemişse imza tutar, üst bitler temizlenir ve <code>ret</code> doğru adrese döner.' },
+      { el: 'EL0', title: 'Saldırgan adresi değiştirir', pc: 4,
+        ptr: { state: 'tampered', pac: '93a4c0d4', addr: '0xffff_dead_beef', note: 'Adres değişti ama saldırgan geçerli imzayı anahtarı bilmeden üretemez; autia bozuk bir işaretçi döndürür.' },
+        term: ['autia x30, sp', 'imza GEÇERSİZ → bozuk adres → çeviride hata (translation fault)', 'çöküş (crash)'],
+        text: 'Saldırgan dönüş adresini kendi hedefiyle değiştirir. Ama geçerli imzayı anahtarı bilmeden üretemez. <code>autia</code> doğrulamayı geçemez ve kasıtlı olarak bozuk bir işaretçi üretir; kullanıldığında çeviri hatası (translation fault) oluşur ve işlem çöker. ROP/JOP zincirleri böylece kırılır.' },
+      { el: 'EL1', title: 'PAN ve MTE', ptr: null,
+        term: ['PAN: çekirdek kullanıcı belleğine erişemez', 'MTE: yanlış etiketli erişim yakalandı'],
+        text: 'İki koruma daha: <strong>PAN</strong> (Privileged Access Never), EL1’deki çekirdeğin EL0 kullanıcı belleğini doğrudan okuyup yazmasını engeller — saldırganların çekirdeği kendi verilerine yönlendirme yolunu kapatır. <strong>MTE</strong> (Memory Tagging) her ayırmaya 4-bitlik bir etiket verir; işaretçi ve bellek etiketi uyuşmazsa (use-after-free, taşma) erişim anında yakalanır. Üçü birlikte Apple Silicon’ın donanım savunma katmanıdır.' }
+    ],
+    render: function (s, stateEl, u) {
+      var levels = [['EL3', 'Güvenli monitör (secure monitor)'], ['EL2', 'Hypervisor'], ['EL1', 'Çekirdek (kernel)'], ['EL0', 'Kullanıcı (user)']];
+      var ladder = '<p class="lab-label">İstisna seviyeleri (exception levels)</p><div class="boxgrid">' +
+        levels.map(function (l) {
+          var hi = s.el === l[0] ? ' hi' : '';
+          return '<div class="box' + hi + '"><b>' + l[0] + '</b><span>' + u.esc(l[1]) + '</span></div>';
+        }).join('') + '</div>';
+      var ptr = '';
+      if (s.ptr) {
+        var p = s.ptr;
+        var pill = p.state === 'bare' ? 'imzasız' : p.state === 'signed' ? 'imzalandı' : p.state === 'authed' ? 'doğrulandı ✓' : 'imza geçersiz ✗';
+        ptr = '<p class="lab-label" style="margin-top:14px">İşaretçi (x30 / dönüş adresi)</p><div class="ptrbox">' +
+          '<div class="ptr64 ' + p.state + '" id="pacPtr">' +
+            '<div class="pac-seg"><span class="lbl">PAC imza biti · ' + pill + '</span><span class="val">' + u.esc(p.pac) + '</span></div>' +
+            '<div class="addr-seg"><span class="lbl">sanal adres (virtual address)</span><span class="val">' + u.esc(p.addr) + '</span></div>' +
+          '</div>' +
+          '<p class="note">' + u.esc(p.note) + '</p></div>';
+      }
+      stateEl.innerHTML = ladder + ptr;
+      if (s.ptr && s.ptr.state === 'tampered') ATLAS.flash(document.getElementById('pacPtr'), true);
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: EL, PAC, PAN ve MTE donanımda nasıl çalışır?",
+    html: `<p class="lead">Apple Silicon'un güvenliği büyük ölçüde ARM64 mimarisinin kendisine gömülüdür: ayrıcalık exception level'larla katmanlanır, işaretçiler pointer authentication ile imzalanır, kernel ile user bellek sınırı PAN ile donanımda zorlanır ve bellek hataları memory tagging ile daha oluşurken yakalanır. Bu bölüm Apple'ın pointer authentication belgesine ve ARM mimari referansına dayanır; alıntılar İngilizce verildiği gibi bırakılmıştır.</p>
+
+<h3>1. Exception level'lar: ayrıcalığın katmanları</h3>
+<p>ARM64'te çalışma, dört <strong>exception level</strong>'a (EL) bölünür. Her seviye bir altındakinden daha ayrıcalıklıdır ve kendi stack pointer'ına, sistem register'larına ve adres çevirisine sahiptir:</p>
+<div class="deflist">
+<div><dt>EL0</dt><dd>User mode. Uygulama kodu burada çalışır; doğrudan donanıma veya kernel belleğine erişemez. x86'daki ring 3 karşılığı.</dd></div>
+<div><dt>EL1</dt><dd>Kernel mode. XNU kernel'i burada çalışır. Bir system call, EL0'dan EL1'e kontrollü bir geçiştir (<code>svc</code> komutu).</dd></div>
+<div><dt>EL2</dt><dd>Hypervisor. Apple Silicon'da kernel'in bütünlüğünü korumak için kullanılır: kernel (EL1) bile kendi sayfa tablosu izinlerini keyfî değiştiremez, çünkü daha ayrıcalıklı bir katman onu kısıtlar.</dd></div>
+<div><dt>EL3</dt><dd>Secure monitor. En ayrıcalıklı katman; secure/non-secure dünya geçişlerini yönetir. Apple'ın güven kökü (boot ROM, SEP ile birlikte) bu seviyenin altında konumlanır.</dd></div>
+</div>
+<p>Bu katmanlı yapı ofansif açıdan kritiktir: bir EL0 exploit'i ancak bir sonraki sınırı (EL0→EL1) aşabilirse kernel'i ele geçirir; EL1 ele geçse bile EL2/EL3 bazı garantileri (örn. sayfa izinleri, PPL) ayakta tutmaya devam eder. Savunma, her sınırı ayrı bir çitle donanımda zorlar.</p>
+
+<h3>2. İstisna işleme: vector table ve bağlam register'ları</h3>
+<p>Bir system call, interrupt ya da hata (fault) olduğunda CPU bir <strong>exception</strong> alır ve çalışmayı o anki EL'den (ya da bir üst EL'e geçerek) <strong>exception vector table</strong>'daki ilgili girişe dallandırır. Vektör tablosunun adresi <code>VBAR_ELn</code> register'ında durur. Exception alındığında donanım üç register doldurur:</p>
+<div class="deflist">
+<div><dt>ESR_ELn</dt><dd>Exception Syndrome Register. İstisnanın <em>nedenini</em> kodlar: hangi sınıf (system call, data abort, instruction abort, PAC failure…) ve ayrıntıları.</dd></div>
+<div><dt>ELR_ELn</dt><dd>Exception Link Register. İstisnadan dönülecek adres — yani kesilen komutun konumu. <code>eret</code> buraya döner.</dd></div>
+<div><dt>SPSR_ELn</dt><dd>Saved Program Status Register. İstisna anındaki işlemci durumu (bayraklar, önceki EL, interrupt maskeleri) burada saklanır ve dönüşte geri yüklenir.</dd></div>
+</div>
+<p>Bir translation fault — örneğin geçersiz bir işaretçiye erişim — tam olarak bu yolla bir data abort'a dönüşür; ESR nedeni taşır, kernel handler'ı devreye girer ve çoğu durumda süreç öldürülür. PAC'ın bir saldırıyı çökerttiği an da budur: bozuk işaretçiye erişim bir fault üretir.</p>
+
+<h3>3. Donanım page table ve bellek izinleri</h3>
+<p>Her EL'in kendi adres çevirisi vardır; sanal adresten fiziksele çeviri çok seviyeli page table'larla yapılır ve çeviri register'ları (<code>TTBR0_EL1</code> user alanı, <code>TTBR1_EL1</code> kernel alanı) tabanları tutar. Her page table girişi yalnızca eşlemeyi değil, <strong>izinleri</strong> de taşır: okunabilir mi, yazılabilir mi, çalıştırılabilir mi (XN — execute-never), hangi EL'den erişilebilir. W^X (bir sayfa aynı anda hem yazılabilir hem çalıştırılabilir olamaz) bu izin bitleriyle donanımda zorlanır. Apple Silicon'da bu izinleri kernel'in bile keyfî gevşetememesi, PPL ve EL2 gibi katmanların işidir (ileri modüllerin konusu).</p>
+
+<h3>4. PAN — Privileged Access Never</h3>
+<p>Klasik bir kernel exploit kalıbı, kernel'i (EL1) saldırganın kontrol ettiği user (EL0) belleğine yönlendirmektir (x86 dünyasındaki ret2usr'ın akrabası). <strong>PAN</strong> bunu donanımda keser: PAN biti etkinken, EL1 kodu EL0'a ait sayfalara doğrudan erişmeye kalkarsa bir fault alır. Kernel'in user belleğiyle alışverişi, ancak izinin açıkça verildiği kontrollü kopyalama yollarından (örn. <code>copyin</code>/<code>copyout</code>) geçmek zorunda kalır. Böylece "kernel yanlışlıkla saldırgan verisini çalıştırır/okur" sınıfı büyük ölçüde kapanır. PAN, ARMv8.1 ile gelir ve x86'daki SMAP'in karşılığıdır.</p>
+
+<h3>5. PAC — Pointer Authentication Code</h3>
+<p>Pointer authentication, bir işaretçiye kriptografik bir imza ekler ve kullanılmadan önce bu imzayı doğrular. İmza, işaretçinin sanal adres için kullanılmayan üst bitlerine sığar — yani ayrı bir yer gerekmez.</p>
+<div class="manpage src-apple"><div class="ref">pointer authentication</div><p class="orig">Pointer authentication works by offering a special CPU instruction to add a cryptographic signature — or PAC — to unused high-order bits of a pointer before storing the pointer. Another instruction removes and authenticates the signature after reading the pointer back from memory.</p><p>İmza, işaretçi belleğe yazılmadan önce <code>pacia</code> gibi bir komutla eklenir; geri okunduğunda <code>autia</code> gibi bir komutla doğrulanıp sökülür. Yazma ile okuma arasında işaretçi değiştirilmişse imza artık tutmaz.</p></div>
+<p>Doğrulama başarısız olduğunda CPU işaretçiyi sessizce "düzeltmez"; bilinçli olarak geçersiz kılar:</p>
+<div class="manpage src-apple"><div class="ref">pointer authentication</div><p class="orig">Any change to the stored value between the write and the read invalidates the signature. The CPU interprets authentication failure as memory corruption and sets a high-order bit in the pointer, making the pointer invalid and causing the app to crash.</p><p>Saldırgan dönüş adresini değiştirse bile geçerli imzayı üretemediği için doğrulama tutmaz; işaretçi geçersizleşir ve kullanıldığında süreç çöker. ROP/JOP zincirleri tam burada kırılır.</p></div>
+
+<h3>6. PAC anahtarları ve bağlam (diversification)</h3>
+<p>İmza yalnızca adresin değil; bir <strong>key</strong>'in ve isteğe bağlı bir <em>salt</em>/bağlam değerinin de fonksiyonudur. Anahtar CPU'da tutulur ve user alanına açılmaz; bu yüzden saldırgan, anahtarı bilmeden geçerli bir imza <em>hesaplayamaz</em>. Apple, bağlamı işaretçi türüne göre çeşitlendirir (diversification) — böylece bir bağlamda geçerli bir imzalı işaretçi başka bir bağlama kopyalanamaz:</p>
+<div class="manpage src-apple"><div class="ref">pointer authentication</div><p class="orig">Return addresses are signed with a key that’s unique per process, using a salt derived from the stack pointer.
+Function pointers are signed with a key that’s fixed across all processes, allowing sharing of library code between processes.
+Virtual method table entries are signed with a key that’s shared across all apps, using a salt derived from the method signature.</p><p>Return address'ler sürece özel bir anahtar ve stack pointer'dan türetilmiş bir salt ile; function pointer'lar paylaşılabilir kütüphane kodu için süreçler arası sabit bir anahtarla; C++ vtable girişleri ise method signature'dan türetilmiş bir salt ile imzalanır. Böylece bir slot'tan çalınan imzalı işaretçi başka bir slot'ta işe yaramaz.</p></div>
+<p>Apple bu şemayı donanımda daha da sertleştirmeye devam eder; yeni nesillerde return address korumasını güçlendiren bir eklenti (PAuth_LR) <em>"closes off additional classes of return-oriented programming (ROP) attacks that reuse existing stack frames"</em> — yani var olan stack frame'leri yeniden kullanan ROP sınıflarını da kapatır.</p>
+
+<h3>7. MTE ve BTI: hatayı ve dallanmayı hedefleyen katmanlar</h3>
+<p>PAC kontrol akışını, PAN kernel/user sınırını korur; son iki donanım katmanı farklı aşamaları hedefler:</p>
+<div class="deflist">
+<div><dt>MTE</dt><dd>Memory Tagging Extension (ARMv8.5). Bellek küçük granüllere bölünür ve her allocation'a 4-bitlik bir <em>tag</em> verilir; işaretçinin üst bitlerinde de aynı tag taşınır. Her erişimde donanım işaretçinin tag'i ile belleğin tag'ini karşılaştırır. Uyuşmazsa bir tag check fault doğar. <strong>use-after-free</strong> (bellek free'de yeniden etiketlenir) ve <strong>buffer overflow</strong> (komşu allocation farklı tag taşır) gibi hatalar böylece daha oluşurken yakalanır — merdivenin ilk basamağı hedeflenir.</dd></div>
+<div><dt>BTI</dt><dd>Branch Target Identification (ARMv8.5). Dolaylı dallar (indirect branch) yalnızca açıkça işaretlenmiş hedeflere (<code>bti</code> landing pad) atlayabilir. Rastgele bir komut ortasına sıçrayarak gadget zinciri kurmayı (özellikle JOP) zorlaştırır — PAC'ı tamamlayan bir control-flow integrity katmanıdır.</dd></div>
+</div>
+<p class="prose"><em>Not:</em> MTE/BTI'nin verbatim mimari tanımları ARM Architecture Reference Manual'da yer alır; burada mekanizma Apple Platform Security ve ARM belgelerinden <strong>özetlenmiştir</strong>, birebir alıntı verilmemiştir.</p>
+
+<h3>8. Ofansif korumalar modülüyle bağ</h3>
+<p>Ofansif izlekteki <strong>korumalar</strong> modülü (Modül 4) bu katmanları sömürü boru hattının üstüne yerleştirir: NX/ASLR/canary/RELRO büyük ölçüde yazılım korumalarıydı; burada gördüğün PAC, PAN, MTE ve BTI ise aynı basamakları <em>silikonun içinde</em> savunur. Donanımda zorlanan bir koruma, bir yazılım kontrolünden çok daha zor aşılır — ama hiçbiri mutlak değildir: bir signing gadget PAC'ı, olasılıksal bir tag çarpışması MTE'yi aşındırabilir. Katmanlar bu yüzden birlikte durur.</p>`
+  },
+  underHood: {
+    heading: 'Üç donanım koruması',
+    html: '<p class="prose">Bu korumalar yazılım değil, CPU’nun kendisi tarafından uygulanır; bu yüzden aşılması bir yazılım hatasından çok daha zordur. Her biri sömürü boru hattının (exploitation pipeline) farklı bir aşamasını hedefler.</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Koruma</th><th>Ne yapar</th><th>Neyi zorlaştırır</th></tr></thead><tbody>' +
+      '<tr><td><b>PAC</b><br><span class="mono">ARMv8.3</span></td><td>İşaretçilere anahtarla kriptografik imza ekler; kullanımdan önce doğrular</td><td>Kontrol akışı ele geçirme (control-flow hijack), ROP/JOP</td></tr>' +
+      '<tr><td><b>PAN</b><br><span class="mono">ARMv8.1</span></td><td>Çekirdeğin (EL1) kullanıcı belleğine (EL0) doğrudan erişimini engeller</td><td>Çekirdeğin saldırgan verisine yönlendirilmesi (ret2usr benzeri)</td></tr>' +
+      '<tr><td><b>MTE</b><br><span class="mono">ARMv8.5</span></td><td>Her ayırmaya ve işaretçiye bir etiket (tag) verir; uyuşmazsa hata üretir</td><td>Use-after-free, tampon taşması (buffer overflow)</td></tr>' +
+      '<tr><td><b>BTI</b><br><span class="mono">ARMv8.5</span></td><td>Dolaylı dalların yalnızca işaretli hedeflere (landing pad) atlamasına izin verir</td><td>JOP gadget zincirleri</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px">Apple, PAC’ı yalnızca dönüş adreslerinde değil; fonksiyon işaretçilerinde, C++ vtable girişlerinde ve çekirdek veri yapılarındaki kritik işaretçilerde de kullanır. Bu, ofansif izlekteki korumalar modülünün (Modül 4) donanım tarafıdır: orada ASLR/NX/CFI yazılım korumalarıydı; burada imza ve etiket silikonun içinde.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Bir ikilide PAC komutlarını ara', p: 'Apple Silicon için derlenmiş bir ikilide pacia/autia gibi komutları görebilirsin. (Bu konteynerde macOS araçları yok; çıktı temsilîdir.)',
+        shells: [{ label: 'terminal (macOS) · temsilî', copy: 'otool -tv ./program | grep -E "pac|aut|bti"', pre: '<span class="c">$</span> otool -tv ./program | grep -E "pac|aut"\n<span class="c"># temsilî</span>\n0000000100003f40  <span class="y">pacibsp</span>\n0000000100003f80  <span class="y">retab</span>' }] },
+      { h3: '2. PAC fikrini kavramsal doğrula', p: 'İmza, "adres + bağlam + gizli anahtar"ın bir fonksiyonudur. Anahtar çekirdekte; saldırgan onu bilmeden geçerli imza üretemez. Bu yüzden rastgele bir adres yazmak işe yaramaz — imza alanı tutmaz.',
+        shells: [{ label: 'kavram', copy: 'imza = PAC(adres, bağlam, anahtar)', pre: '<span class="c"># doğrulama:</span>\nautia:  PAC(adres, sp, anahtar) == işaretçideki_imza ?\n        <span class="g">evet</span> → adres kullanılır\n        <span class="hi">hayır</span> → bozuk işaretçi → çöküş' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'PAC imzası işaretçinin neresinde saklanır?', opts: ['Ayrı bir register\'da', 'Sanal adresin kullanılmayan üst bitlerinde', 'Yığında (stack)'], answer: 'Sanal adresin kullanılmayan üst bitlerinde',
+        ok: 'Doğru. Sanal adresler 64 bitin tamamını kullanmaz; PAC imzayı bu boş üst bitlere yazar, böylece ayrı yer gerekmez.', no: 'İpucu: işaretçi 64 bit ama sanal adres tüm bitleri kullanmaz. Boşluk nerede?' },
+      { q: 'Saldırgan bir dönüş adresini değiştirirse autia ne yapar?', opts: ['Adresi düzeltir', 'Bozuk bir işaretçi üretir, kullanınca çöker', 'İmzayı yeniden hesaplar ve kabul eder'], answer: 'Bozuk bir işaretçi üretir, kullanınca çöker',
+        ok: 'Doğru. Geçerli imza anahtarsız üretilemez; autia doğrulamayı geçemez ve kasıtlı bozuk işaretçi döndürür, bu da çeviri hatasına yol açar.', no: 'İpucu: saldırgan gizli anahtarı bilmiyor; imza tutmazsa autia ne üretir?' },
+      { q: 'PAN (Privileged Access Never) neyi engeller?', opts: ['Kullanıcının çekirdek belleğine erişimini', 'Çekirdeğin kullanıcı belleğine doğrudan erişimini', 'İki uygulamanın birbirinin belleğine erişimini'], answer: 'Çekirdeğin kullanıcı belleğine doğrudan erişimini',
+        ok: 'Doğru. PAN, EL1 çekirdeğinin EL0 kullanıcı belleğine izinsiz dalmasını engeller; bu, saldırganın çekirdeği kendi verisine yönlendirme yolunu kapatır.', no: 'İpucu: adı "Privileged Access Never" — ayrıcalıklı olan (çekirdek) neye erişemez?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · macOS Modül 20', title: 'Kernel heap ve kalloc', desc: 'Çekirdek bellek ayırıcısı (kalloc zone\'ları) nasıl çalışır ve hangi bug sınıfları burada doğar?' },
+  sources: [
+    { href: 'https://www.antid0te.com/training/kernel-internals.html', text: 'Antid0te — Kernel Internals', note: 'PAC/PAN/MTE, PPL' },
+    { href: 'https://developer.apple.com/documentation/security/preparing-your-app-to-work-with-pointer-authentication', text: 'Apple — Pointer Authentication' },
+    { href: 'https://support.apple.com/guide/security/welcome/web', text: 'Apple Platform Security' },
+    { href: 'https://developer.arm.com/documentation/', text: 'ARM Architecture Reference Manual', note: 'ARMv8-A' }
+  ],
+  pageTitle: 'ARM64 Temelleri'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

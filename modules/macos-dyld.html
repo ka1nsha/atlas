@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>dyld ve Paylaşılan Önbellek</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+.imgmap { display: grid; gap: 8px; }
+.binds { display: grid; gap: 4px; margin-top: 4px; }
+.bindrow { display: grid; grid-template-columns: 1fr auto; gap: 8px; font-family: var(--f-mono); font-size: 11.5px; border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; background: var(--surface); }
+.bindrow.resolved { border-color: var(--ok); } .bindrow.resolved .to { color: var(--ok); font-weight: 700; }
+.bindrow .to { color: var(--muted); }
+.slidechip { font-family: var(--f-mono); font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--track-soft); color: var(--track); justify-self: start; }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'macos',
+  crumbs: 'macos › dyld › modül 4',
+  eyebrow: 'Modül 4 · macOS / iOS · Dinamik bağlama',
+  titleHTML: '<code>dyld</code>: program çalışmadan önce kim çalışır?',
+  lede: 'Bir Mach-O çalıştırılabilir dosyası tek başına çalışamaz; printf gibi çağırdığı her şey başka kütüphanelerdedir. Çekirdek programın kendisine değil, önce dinamik bağlayıcı (dynamic linker) dyld\'e atlar. Bu modülde dyld\'in bir süreci nasıl çalışmaya hazırladığını adım adım izleyeceğiz.',
+  meta: ['~18 dk', 'ön koşul: Mach-O modülü', 'bağlam: XNU, dyld4'],
+  intuition: {
+    paras: [
+      'Mach-O modülünde bir dosyanın <code>LC_LOAD_DYLINKER</code> ve <code>LC_LOAD_DYLIB</code> yükleme komutları (load commands) taşıdığını görmüştük. İşte bunlar burada devreye girer: çekirdek Mach-O görüntüsünü belleğe eşler, ama kontrolü programın <code>main</code>\'ine değil, <code>LC_LOAD_DYLINKER</code>\'ın işaret ettiği <code>/usr/lib/dyld</code>\'e verir.',
+      'dyld süreç adına üç iş yapar: bağımlı kütüphaneleri (dylib) bulup yüklemek, ASLR kaydırmasını telafi etmek için görüntü içi işaretçileri düzeltmek (rebase), ve dış sembolleri (printf gibi) gerçek adreslerine bağlamak (bind). Hepsi bitince programın giriş noktasına (entry point) atlar.',
+      'Apple bir hız numarası kullanır: tüm sistem kütüphaneleri açılışta tek bir büyük dosyada, <strong>dyld shared cache</strong>\'te önceden birleştirilir. Böylece her uygulama yüzlerce dylib\'i diskten tek tek açmak yerine bu hazır önbellekten paylaşır.'
+    ],
+    ideas: [
+      { b: 'Önce dyld', span: 'Çekirdek kontrolü programa değil dyld\'e verir. Program çalışmadan önce bağlama (linking) tamamlanmalı.' },
+      { b: 'rebase + bind', span: 'rebase: ASLR slide kadar iç işaretçileri düzelt. bind: dış sembolleri çöz. Lazy binding ilk çağrıda yapılır.' },
+      { b: 'Paylaşılan önbellek', span: 'Sistem dylib\'leri tek bir shared cache\'te birleşik ve paylaşımlı; uygulama başlatma hızının sırrı budur.' }
+    ]
+  },
+  lab: {
+    intro: 'Minik bir program <code>printf</code> çağırıyor. Sağda sürecin adres uzayına (address space) yüklenen görüntüleri (image), ASLR kaydırmasını (slide) ve sembol bağlama (binding) tablosunu izle.',
+    codeLabel: 'merhaba.c + Mach-O load command\'leri', cmd: './merhaba',
+    foot: 'otool/DYLD çıktıları temsilîdir; gerçek değerler cihaz ve SIP ayarına göre değişir.',
+    code: [
+      { t: '<span class="cm">// merhaba.c</span>' },
+      { t: '<span class="pp">#include</span> <span class="s">&lt;stdio.h&gt;</span>' },
+      { t: '<span class="t">int</span> <span class="f">main</span>(<span class="t">void</span>) {' },
+      { t: '    <span class="f">printf</span>(<span class="s">"merhaba, dyld\\n"</span>);  <span class="cm">// dış sembol</span>' },
+      { t: '    <span class="k">return</span> <span class="n">0</span>;' },
+      { t: '}' },
+      { t: '' },
+      { t: '<span class="cm">// --- Mach-O load command\'leri (otool -l) ---</span>' },
+      { t: '<span class="t">LC_LOAD_DYLINKER</span>  /usr/lib/dyld' },
+      { t: '<span class="t">LC_LOAD_DYLIB</span>     /usr/lib/libSystem.B.dylib' },
+      { t: '<span class="t">LC_MAIN</span>           entryoff 0x3f80' }
+    ],
+    steps: [
+      { pc: [10, 11], title: 'Çekirdek Mach-O\'yu eşler', term: ['exec: merhaba eşlendi (slide 0x10c000)'],
+        text: 'Çekirdek çalıştırılabilir Mach-O\'nun __TEXT ve __DATA segmentlerini sanal belleğe eşler. Ama program daha çalışmaz: <code>LC_MAIN</code> giriş noktasını söyler, <code>LC_LOAD_DYLINKER</code> ise önce kime atlanacağını.',
+        images: [{ n: 'merhaba (çalıştırılabilir)', k: 'main', st: 'eşlendi' }], slide: '0x10c000', binds: [], note: 'Görüntü belleğe geldi ama henüz hiçbir kod çalışmadı.' },
+      { pc: 9, title: 'dyld devralır', term: ['dyld başladı'],
+        text: 'Çekirdek kontrolü programın main\'ine değil, <code>/usr/lib/dyld</code>\'e verir. Bundan sonra süreci çalışmaya hazırlama işi dyld\'indir.',
+        images: [{ n: 'merhaba (çalıştırılabilir)', k: 'main', st: 'eşlendi' }, { n: 'dyld (dinamik bağlayıcı)', k: 'dyld', st: 'çalışıyor', active: true }], slide: '0x10c000', binds: [], note: 'dyld artık süreç adına bağlama (linking) yapacak.' },
+      { pc: 10, title: 'Bağımlılıklar yüklenir', term: ['libSystem shared cache\'ten geldi'],
+        text: '<code>LC_LOAD_DYLIB</code> komutları gezilir. libSystem ve bağımlıları diskten tek tek açılmaz; çoğu zaten <strong>dyld shared cache</strong>\'te birleşiktir ve oradan paylaşılır.',
+        images: [{ n: 'merhaba', k: 'main', st: 'eşlendi' }, { n: 'dyld', k: 'dyld', st: 'çalışıyor', active: true }, { n: 'libSystem.B.dylib', k: 'cache', st: 'shared cache' }], slide: '0x10c000', binds: [], note: 'Sistem kütüphaneleri tek büyük önbellekten, paylaşımlı (shared) gelir.' },
+      { pc: [], title: 'rebase: ASLR\'yi telafi et', term: ['rebase: iç işaretçiler +0x10c000 kaydırıldı'],
+        text: 'ASLR nedeniyle görüntü rastgele bir adrese yüklendi (slide = 0x10c000). Görüntü içindeki mutlak işaretçiler bu kayma kadar düzeltilir (yeniden konumlama / rebase). Modern dyld\'de bu çoğunlukla sayfalar ilk okunduğunda yapılır.',
+        images: [{ n: 'merhaba', k: 'main', st: 'rebase edildi' }, { n: 'dyld', k: 'dyld', st: 'çalışıyor', active: true }, { n: 'libSystem.B.dylib', k: 'cache', st: 'shared cache' }], slide: '0x10c000', slideHi: true, binds: [], note: 'İç işaretçiler artık doğru; sıra dış sembollerde.' },
+      { pc: 4, title: 'bind: sembolleri çöz', term: ['bind: printf → libSystem\'de çözüldü'],
+        text: 'Programın çağırdığı dış semboller (printf) gerçek adreslerine bağlanır ve bir tabloya (GOT benzeri) yazılır. <strong>Lazy binding</strong>: pek çok sembol ilk çağrıldığı ana kadar ertelenir; o an dyld\'in stub\'ı araya girer.',
+        images: [{ n: 'merhaba', k: 'main', st: 'bağlanıyor' }, { n: 'dyld', k: 'dyld', st: 'çalışıyor', active: true }, { n: 'libSystem.B.dylib', k: 'cache', st: 'shared cache' }],
+        slide: '0x10c000', binds: [{ s: 'printf', to: 'libSystem +0x4a120', ok: true }, { s: 'exit', to: 'libSystem +0x51c08', ok: true }], note: 'Dış semboller çözüldü; program artık çağrı yapabilir.' },
+      { pc: 3, title: 'main\'e atla', term: ['merhaba, dyld'],
+        text: 'Hazırlık biter. dyld, <code>LC_MAIN</code>\'in gösterdiği giriş noktasına atlar. Programın kendi kodu ancak şimdi çalışmaya başlar — ve printf anında hazırdır.',
+        images: [{ n: 'merhaba (çalışıyor)', k: 'main', st: 'main()', active: true }, { n: 'dyld', k: 'dyld', st: 'beklemede' }, { n: 'libSystem.B.dylib', k: 'cache', st: 'shared cache' }],
+        slide: '0x10c000', binds: [{ s: 'printf', to: 'libSystem +0x4a120', ok: true }], note: 'Program çalışıyor; dyld arka planda lazy binding için hazır bekler.' }
+    ],
+    render: function (s, stateEl, u) {
+      var cls = { main: 'box hi', dyld: 'box warn', cache: 'box good', dylib: 'box' };
+      var imgs = s.images.map(function (im) {
+        return '<div class="' + (cls[im.k] || 'box') + (im.active ? '' : '') + '"><b>' + u.esc(im.n) + '</b><span class="mono">' + u.esc(im.st) + '</span></div>';
+      }).join('');
+      var binds = s.binds.length
+        ? '<p class="lab-label" style="margin-top:14px">Sembol bağlama (binding)</p><div class="binds">' + s.binds.map(function (b) {
+            return '<div class="bindrow ' + (b.ok ? 'resolved' : '') + '"><span>' + u.esc(b.s) + '</span><span class="to">→ ' + u.esc(b.to) + '</span></div>';
+          }).join('') + '</div>'
+        : '';
+      stateEl.innerHTML =
+        '<p class="lab-label">Adres uzayı: yüklenen görüntüler (images)</p>' +
+        '<div class="imgmap boxgrid">' + imgs + '</div>' +
+        '<div style="margin-top:10px"><span class="slidechip' + (s.slideHi ? '' : '') + '">ASLR slide = ' + u.esc(s.slide) + '</span></div>' +
+        binds +
+        (s.note ? '<p class="note" style="margin-top:12px">' + u.esc(s.note) + '</p>' : '');
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: dyld bir programı nasıl çalışır hale getirir?",
+    html: `<p class="lead">Mach-O dosyası diske yazıldığında henüz çalışmaya hazır değildir: bağımlı kütüphaneleri eksiktir, adresleri ASLR yüzünden sabit değildir ve symbol'leri çözülmemiştir. Bu boşluğu dynamic linker (dyld) doldurur. Modern macOS/iOS'ta dyld, başlatma hızının ve çalışma-anı güvenliğinin merkezindedir.</p>
+
+<h3>1. dyld devralır</h3>
+<p>Kernel, execve sırasında Mach-O'yu belleğe map eder ama doğrudan programın entry point'ine atlamaz. Mach-O'daki <code>LC_LOAD_DYLINKER</code> load command bir dynamic linker yolu tutar (<code>/usr/lib/dyld</code>); kernel önce onu yükler ve kontrolü ona verir. dyld'nin modern uygulaması (dyld4) programı çalıştırılabilir hale getirmek için gereken tüm adımları kendi user space'inde yürütür.</p>
+
+<h3>2. Bağımlı dylib'lerin yüklenmesi ve aranması</h3>
+<p>Her Mach-O, ihtiyaç duyduğu kütüphaneleri <code>LC_LOAD_DYLIB</code> load command'leriyle listeler. dyld bu dependency graph'ı rekürsif olarak gezer ve her dylib'i yükler. Arama yolları sabit değildir; değişkenlerle ifade edilir:</p>
+<div class="deflist">
+<div><dt>@executable_path</dt><dd>Ana çalıştırılabilir dosyanın bulunduğu dizin. App bundle'ları için idealdir.</dd></div>
+<div><dt>@loader_path</dt><dd>O an yükleyen Mach-O'nun (plugin veya framework) dizini. İç içe bileşenlerde kullanılır.</dd></div>
+<div><dt>@rpath</dt><dd>Çalıştırılabilir dosyanın tanımladığı bir dizi arama yolu (<code>LC_RPATH</code>). En esnek ve en yaygın olanı.</dd></div>
+</div>
+
+<h3>3. Rebase ve bind: adresleri yerine oturtmak</h3>
+<p>ASLR gereği, bir image her açılışta rastgele bir adrese (<strong>slide</strong>) yüklenir. Bu yüzden iki düzeltme gerekir. <strong>Rebase</strong>, image'in kendi içindeki mutlak işaretçilere slide değerini ekler. <strong>Bind</strong>, başka kütüphanelerdeki symbol'leri çözer (örn. <code>printf</code>'in gerçek adresini bulup yazar). Eskiden bu bilgi, dyld'nin yorumladığı opcode tabanlı rebase/bind tablolarında tutulurdu; modern sistemler <strong>chained fixups</strong> kullanır — düzeltmeler doğrudan verinin içinde zincirlenir, ayrı tablo gerekmez, hem daha kompakt hem daha hızlıdır.</p>
+<p>Bind iki zamanlı olabilir: <strong>non-lazy binding</strong> başlangıçta hemen çözülür; <strong>lazy binding</strong> ise bir fonksiyon ilk kez çağrıldığında stub üzerinden çözülür, böylece hiç kullanılmayan symbol'ler için maliyet ödenmez.</p>
+
+<h3>4. dyld shared cache</h3>
+<p>Sistemdeki her uygulama aynı temel kütüphaneleri (libSystem, Foundation, UIKit...) yükler. Bunları her seferde ayrı ayrı yüklemek ve bind etmek savurganlıktır. Çözüm <strong>dyld shared cache</strong>'tir: tüm sistem dylib'leri tek bir büyük dosyada, önceden birbirine linklenmiş (rebase/bind yapılmış) halde birleştirilir. Bir uygulama açıldığında bu dev image doğrudan map edilir — kütüphaneler neredeyse bedava gelir ve read-only kısımları tüm process'ler arasında fiziksel olarak paylaşılır. iOS'ta sistem dylib'lerinin tekil dosyaları artık diskte bulunmaz; yalnızca cache içinde yaşarlar.</p>
+<div class="manpage src-apple"><div class="ref">dyld · DYLD_SHARED_CACHE_DIR</div><p class="orig">This is a directory containing dyld shared cache files.</p><p>Shared cache dosyaları diskte ayrı bir dizinde tutulur; dyld açılışta uygun cache'i seçip adres uzayına map eder.</p></div>
+
+<h3>5. Interposing ve DYLD_INSERT_LIBRARIES</h3>
+<p>dyld, bir fonksiyon çağrısını başka bir uygulamaya yönlendirmeye izin verir: bir kütüphane, var olan bir symbol'ün yerine kendi uygulamasını koyabilir (<strong>interposing</strong>). En bilinen yolu <code>DYLD_INSERT_LIBRARIES</code> ortam değişkenidir — program kendi kütüphanelerini yüklemeden önce belirtilen kütüphaneler yüklenir.</p>
+<div class="manpage src-apple"><div class="ref">dyld · DYLD_INSERT_LIBRARIES</div><p class="orig">This is a colon separated list of additional dynamic libraries to load before the ones specified in the program.</p><p>Bu mekanizma hata ayıklama ve profilleme için güçlüdür ama aynı zamanda bir saldırı yüzeyidir. Bu yüzden <strong>SIP</strong> altında ve <strong>hardened runtime</strong> ile imzalanmış süreçlerde (ve setuid ikililerde) dyld bu değişkeni yok sayar — imzalı kodun davranışı dışarıdan değiştirilemez.</p></div>
+
+<h3>6. Linux ld.so ile karşılaştırma</h3>
+<p>İki sistem aynı problemi çözer ama farklı tercihlerle:</p>
+<div class="deflist">
+<div><dt>shared cache</dt><dd>macOS/iOS'ta tüm sistem kütüphaneleri tek önbellekte önceden linklidir; Linux'ta her .so ayrı yüklenir (ldconfig yalnızca bir arama önbelleği tutar).</dd></div>
+<div><dt>arama yolu</dt><dd>macOS @rpath/@loader_path tabanlıdır; Linux RPATH/RUNPATH + LD_LIBRARY_PATH + /etc/ld.so.conf kullanır.</dd></div>
+<div><dt>enjeksiyon</dt><dd>DYLD_INSERT_LIBRARIES ≈ LD_PRELOAD; ikisi de imzalı/setuid süreçlerde kısıtlanır.</dd></div>
+<div><dt>namespace</dt><dd>macOS two-level namespace kullanır (symbol'ün hangi kütüphaneden geldiği kaydedilir); Linux flat namespace'e yakındır.</dd></div>
+</div>`
+  },
+  underHood: {
+    html: '<p class="prose">dyld, kullanıcı alanında (user space) çalışan ayrı bir programdır; çekirdek onu <code>LC_LOAD_DYLINKER</code> yoluyla başlatır. Modern sürüm (dyld4) hazırlık adımlarını <code>prepare</code> içinde toplar.</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">execve → load_machfile</span><span class="where">bsd/kern/mach_loader.c</span><p>Mach-O eşlenir; LC_LOAD_DYLINKER görülünce dyld de haritaya alınır ve giriş ona verilir.</p></div></li>' +
+      '<li class="boundary"><div>çekirdek → kullanıcı alanı (dyld)</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://github.com/apple-oss-distributions/dyld" target="_blank" rel="noopener">dyld start / dyld4::prepare</a><span class="where">dyld</span><p>Bağımlı dylib\'leri yükler (çoğu shared cache\'ten), görüntüleri sıraya koyar.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">rebase + bind</span><span class="where">dyld</span><p>ASLR slide kadar iç işaretçileri düzeltir; dış sembolleri çözer. Lazy semboller ilk çağrıda stub üzerinden bağlanır.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">main\'e atlama</span><span class="where">dyld</span><p>LC_MAIN giriş noktasına geçer; programın kendi kodu başlar.</p></div></li>' +
+      '</ol>' +
+      '<p class="prose" style="margin-top:14px">Linux\'ta aynı rolü <code>ld-linux.so</code> oynar; kavramlar birebir örtüşür (rebase ≈ relocation, bind ≈ PLT/GOT çözümleme). Aşağıdaki "Kendin dene" bunu Linux\'ta gerçek çıktıyla gösteriyor.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Linux\'ta dinamik bağlayıcıyı gör (gerçek)', p: 'macOS\'taki dyld\'in Linux karşılığı ld-linux. Bir programın hangi kütüphanelere bağlı olduğunu ve yükleyiciyi gör.',
+        shells: [{ label: 'terminal (gerçek çıktı)', copy: 'ldd /bin/ls', pre: '<span class="c">$</span> ldd /bin/ls\n\tlinux-vdso.so.1 (0x00007f23db9ad000)\n\tlibselinux.so.1 =&gt; /lib/x86_64-linux-gnu/libselinux.so.1 (0x...)\n\tlibc.so.6 =&gt; /lib/x86_64-linux-gnu/libc.so.6 (0x...)\n\t<span class="y">/lib64/ld-linux-x86-64.so.2</span> (0x...)  <span class="c"># yükleyici</span>' }] },
+      { h3: '2. Bağlama adımlarını izle (gerçek)', p: 'LD_DEBUG kütüphane arama ve sembol bağlama adımlarını yazdırır; dyld\'in yaptığının Linux\'taki birebir karşılığı.',
+        shells: [{ label: 'terminal (gerçek çıktı)', copy: 'LD_DEBUG=libs /bin/ls >/dev/null', pre: '<span class="c">$</span> LD_DEBUG=libs /bin/ls &gt;/dev/null\n   find library=libselinux.so.1 [0]; searching\n    search cache=/etc/ld.so.cache\n     trying file=/lib/x86_64-linux-gnu/libselinux.so.1' }] },
+      { h3: '3. macOS tarafı (temsilî)', p: 'macOS\'ta bağımlılıklar otool -L ile, bağlama adımları DYLD_PRINT_LIBRARIES ile görülür (SIP imzalı ikililerde ortam değişkenini sınırlar).',
+        shells: [{ label: 'terminal · macOS (temsilî)', copy: 'otool -L ./merhaba', pre: '<span class="c">$</span> otool -L ./merhaba\n./merhaba:\n\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0)\n<span class="c"># DYLD_PRINT_LIBRARIES=1 ./merhaba  → yüklenen her dylib\'i listeler</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Çekirdek, çalıştırılabilir bir Mach-O\'yu eşledikten sonra kontrolü ilk kime verir?', opts: ['Programın main\'ine', 'dyld\'e', 'libSystem\'e'], answer: 'dyld\'e',
+        ok: 'Doğru. LC_LOAD_DYLINKER /usr/lib/dyld\'i işaret eder; program çalışmadan önce bağlama tamamlanmalı, bu yüzden önce dyld çalışır.', no: 'İpucu: printf daha bağlanmadan main çalışamaz. Önce kim hazırlık yapmalı?' },
+      { q: 'rebase adımı neyi düzeltir?', opts: ['Dış sembol adreslerini', 'ASLR kaydırması (slide) nedeniyle iç işaretçileri', 'Dosya izinlerini'], answer: 'ASLR kaydırması (slide) nedeniyle iç işaretçileri',
+        ok: 'Doğru. Görüntü rastgele adrese yüklendiği için içindeki mutlak işaretçiler slide kadar düzeltilir. Dış semboller ise bind\'in işi.', no: 'İpucu: dış semboller bind\'in işi. rebase görüntünün KENDİ içindeki neyi düzeltir?' },
+      { q: 'dyld shared cache ne işe yarar?', opts: ['Diski şifreler', 'Sistem dylib\'lerini tek büyük, paylaşımlı önbellekte birleştirir', 'Çöp toplar'], answer: 'Sistem dylib\'lerini tek büyük, paylaşımlı önbellekte birleştirir',
+        ok: 'Doğru. Yüzlerce sistem kütüphanesi önceden birleştirilip paylaşılır; uygulama başlatma hızının ve bellek tasarrufunun sırrı budur.', no: 'İpucu: neden her uygulama yüzlerce dylib\'i diskten tek tek açmak zorunda kalmıyor?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · macOS Modül 5', title: 'GCD ve dispatch', desc: 'Grand Central Dispatch blokları ve kuyrukları thread havuzuna nasıl dağıtır?' },
+  sources: [
+    { href: 'https://newosxbook.com/toc1.html', text: 'Levin — OS Internals Cilt I', note: 'Bölüm 7: dyld' },
+    { href: 'https://github.com/apple-oss-distributions/dyld', text: 'apple-oss-distributions/dyld', note: 'dyld kaynağı' },
+    { href: 'https://man7.org/linux/man-pages/man8/ld.so.8.html', text: 'man ld.so', note: 'Linux karşılığı' },
+    { href: 'https://developer.apple.com/documentation/os/dynamic-library-identification', text: 'Apple — dinamik kütüphaneler' }
+  ],
+  pageTitle: 'dyld ve Paylaşılan Önbellek'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

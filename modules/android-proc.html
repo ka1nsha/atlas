@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Linux Gözüyle Uygulama</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: bellek metrik çubukları ve bölge listesi */
+.mem { display: grid; gap: 8px; }
+.mem-row { display: grid; grid-template-columns: 112px 1fr auto; gap: 10px; align-items: center; min-width: 0; }
+.mem-row .ml { font-family: var(--f-mono); font-size: 12px; color: var(--muted); }
+.mem-row .track-bar { background: var(--sunk); border-radius: 6px; height: 16px; overflow: hidden; }
+.mem-row .fill { height: 100%; background: var(--track); opacity: .35; border-radius: 6px; }
+.mem-row.on .fill { opacity: 1; }
+.mem-row.on .ml { color: var(--fg); font-weight: 700; }
+.mem-row .mv { font-family: var(--f-mono); font-size: 12px; white-space: nowrap; }
+.mem-row .fill.shared { background: var(--warn); }
+.mem-row .fill.priv { background: var(--track); }
+.split { display: flex; height: 100%; }
+.regions { display: grid; gap: 5px; margin-top: 4px; }
+.reg { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center; font-family: var(--f-mono); font-size: 11.5px; border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; background: var(--surface); min-width: 0; }
+.reg .rn { overflow-wrap: anywhere; } .reg .rp { color: var(--muted); }
+.reg .rt { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 999px; }
+.reg .rt.sh { background: var(--warn-soft); color: var(--warn); } .reg .rt.pv { background: var(--track-soft); color: var(--track); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'android',
+  crumbs: 'android › linux gözüyle uygulama › modül 6',
+  eyebrow: 'Modül 6 · Android · Süreç ve bellek',
+  titleHTML: 'Bir uygulama aslında bir <code>Linux süreci</code>dir',
+  lede: 'Android uygulaması kapağın altında sıradan bir Linux sürecidir: kendi PID\'si, kendi UID\'si ve /proc altında incelenebilen bir bellek haritası vardır. Bu modülde bir uygulamayı /proc üzerinden inceleyecek ve Android\'de en kritik bellek ölçüsü olan PSS\'in neden Zygote paylaşımıyla ilgili olduğunu göreceksin.',
+  meta: ['~15 dk', 'ön koşul: süreç, sanal bellek', 'bağlam: AOSP + Linux'],
+  intuition: {
+    paras: [
+      'Android, Java framework\'ü ve ART ile üstte ne kadar farklı görünürse görünsün, her uygulama çekirdek gözünde bir Linux sürecidir. <code>ps</code> onu listeler, <code>/proc/PID</code> altında durumu okunur, kendi bellek alanı ve kimliği vardır. Güvenlik modelinin temeli de budur: her uygulamaya ayrı bir UID verilir, böylece biri diğerinin verisine Linux izinleriyle erişemez.',
+      'Bellek ölçmek burada incelik ister. Zygote\'tan (Modül 4) miras alınan framework sayfaları onlarca uygulamada ortaktır. "Bu uygulama ne kadar bellek kullanıyor?" sorusunun dürüst cevabı, bu paylaşımı hesaba katan <strong>PSS</strong>\'tir.'
+    ],
+    ideas: [
+      { b: 'Süreç = uygulama', span: 'Her uygulama kendi PID ve UID\'siyle bir Linux sürecidir; /proc altında şeffaftır.' },
+      { b: 'Dört bellek ölçüsü', span: 'VSS (sanal), RSS (fiziksel), PSS (paylaşımı bölen), USS (yalnız özel). Doğru soru hangisini istediğin.' },
+      { b: 'PSS paylaşımı böler', span: 'Zygote framework sayfaları N uygulamada ortaksa, her birine payı 1/N olarak yazılır.' }
+    ]
+  },
+  lab: {
+    intro: 'Bir uygulama sürecini (com.ornek.app) /proc üzerinden inceliyoruz. Sağda sürecin kimliğini, bellek haritasını ve dört bellek ölçüsünü birlikte izle. Değerler bir uygulama için temsilîdir; gerçek /proc çıktısı aşağıda.',
+    codeLabel: 'inceleme', cmd: 'adb shell',
+    foot: 'Metrik değerleri bir Android uygulaması için temsilîdir. Aşağıdaki "Kendin dene" bölümündeki çıktılar bu ortamda gerçek üretilmiştir — Android uygulaması da aynı /proc arayüzünü kullanır.',
+    code: [
+      { t: '<span class="cm"># uygulama sürecini bul</span>' },
+      { t: 'ps -A | grep com.ornek.app' },
+      { t: '' },
+      { t: '<span class="cm"># bellek haritası</span>' },
+      { t: 'cat /proc/<span class="n">4120</span>/maps' },
+      { t: '' },
+      { t: '<span class="cm"># paylaşımı bölen özet (PSS)</span>' },
+      { t: 'cat /proc/<span class="n">4120</span>/smaps_rollup' },
+      { t: '' },
+      { t: '<span class="cm"># kimlik ve thread sayısı</span>' },
+      { t: 'cat /proc/<span class="n">4120</span>/status' }
+    ],
+    steps: [
+      { pc: 2, title: 'Uygulama = süreç', focus: ['pid'],
+        text: 'Uygulama, PID 4120 ile çalışan sıradan bir süreç. En önemlisi: kendi UID\'si var (10234). Android her uygulamaya ayrı bir UID verir; bu, uygulamaların birbirinin dosyalarına erişememesini sağlayan Linux-tabanlı kum havuzudur (sandbox).',
+        proc: { pid: 4120, ppid: 620, uid: '10234 (u0_a234)', threads: 18 },
+        show: 'proc',
+        term: ['4120 620 u0_a234 com.ornek.app'] },
+      { pc: 5, title: 'Bellek haritası (/proc/maps)', focus: ['maps'],
+        text: 'maps dosyası sürecin tüm bellek bölgelerini listeler: uygulama kodu, paylaşılan kütüphaneler (libart, libc), Zygote\'tan gelen boot.art/boot.oat görüntüleri, Dalvik yığını (heap) ve yığıt (stack). Paylaşılan (sh) bölgeler diğer uygulamalarla ortaktır.',
+        proc: { pid: 4120, ppid: 620, uid: '10234 (u0_a234)', threads: 18 },
+        show: 'maps' },
+      { pc: 5, title: 'VSS vs RSS', focus: ['vss', 'rss'],
+        text: 'VSS (sanal) sürecin ayırttığı tüm adres alanıdır — çoğu hiç fiziksel belleğe dokunmaz, bu yüzden yanıltıcıdır. RSS (yerleşik) gerçekten RAM\'de olan sayfalardır, ama paylaşılan kütüphaneleri TAMAMEN bu sürece sayar; aynı libart iki uygulamada da tam sayılırsa toplam şişer.',
+        proc: { pid: 4120, ppid: 620, uid: '10234 (u0_a234)', threads: 18 },
+        show: 'bars' },
+      { pc: 8, title: 'PSS vs USS', focus: ['pss', 'uss'],
+        text: 'PSS (oransal) paylaşılan sayfaları onları paylaşan süreç sayısına böler: libart 10 uygulamada ortaksa, her birine 1/10\'u yazılır. Tüm uygulamaların PSS toplamı gerçek RAM kullanımına eşittir — bu yüzden Android bu ölçüyü kullanır. USS (özel) yalnızca bu sürece ait, başka kimseyle paylaşılmayan bellektir; uygulamayı kapatınca geri kazanılacak miktar budur.',
+        proc: { pid: 4120, ppid: 620, uid: '10234 (u0_a234)', threads: 18 },
+        show: 'bars' },
+      { pc: 11, title: 'Kimlik ve thread\'ler (/proc/status)', focus: ['pid'],
+        text: 'status dosyası sürecin UID\'sini, ebeveynini (PPID 620 = Zygote!) ve thread sayısını verir. PPID\'nin Zygote olması, bu sürecin Zygote\'tan fork edildiğini ve framework belleğini onunla paylaştığını doğrular — PSS\'in RSS\'ten neden küçük olduğunun sebebi.',
+        proc: { pid: 4120, ppid: 620, uid: '10234 (u0_a234)', threads: 18 },
+        show: 'proc',
+        term: ['Uid: 10234 10234 10234 10234', 'Threads: 18', 'PPid: 620'] }
+    ],
+    render: function (s, stateEl, u) {
+      var VSS = 1400, RSS = 182, PSS = 96, USS = 64; // temsilî (MB)
+      var shared = RSS - USS;
+      var procCard =
+        '<p class="lab-label">Süreç</p><div class="box' + (s.focus.indexOf('pid') >= 0 ? ' hi' : '') + '">' +
+        '<b>com.ornek.app</b>' +
+        '<span class="mono">PID ' + s.proc.pid + ' · PPID ' + s.proc.ppid + ' (Zygote)</span>' +
+        '<span class="mono">UID ' + s.proc.uid + '</span>' +
+        '<span class="mono">Thread: ' + s.proc.threads + '</span></div>';
+
+      var html = procCard;
+
+      if (s.show === 'maps') {
+        var regs = [
+          ['/data/app/.../base.apk', 'r--p', 'sh'],
+          ['/apex/.../libart.so', 'r-xp', 'sh'],
+          ['/system/framework/boot.art', 'r--p', 'sh'],
+          ['/apex/.../libc.so', 'r-xp', 'sh'],
+          ['[anon:dalvik-main space]', 'rw-p', 'pv'],
+          ['[stack]', 'rw-p', 'pv']
+        ].map(function (r) {
+          return '<div class="reg"><span class="rn">' + u.esc(r[0]) + '</span><span class="rp">' + r[1] + '</span>' +
+            '<span class="rt ' + r[2] + '">' + (r[2] === 'sh' ? 'paylaşılan' : 'özel') + '</span></div>';
+        }).join('');
+        html += '<p class="lab-label" style="margin-top:14px">Bellek bölgeleri (/proc/' + s.proc.pid + '/maps)</p><div class="regions">' + regs + '</div>' +
+          '<p class="note" style="margin-top:8px">Paylaşılan (sh) bölgeler Zygote ve diğer uygulamalarla ortak; özel (pv) bölgeler yalnız bu uygulamanın.</p>';
+      } else {
+        function bar(key, label, val, extra) {
+          var on = s.focus.indexOf(key) >= 0;
+          var w = Math.max(2, Math.round(val / VSS * 100));
+          var fill;
+          if (key === 'pss' || key === 'uss') {
+            // PSS/USS: özel + paylaşımdan pay
+            fill = '<div class="fill priv" style="width:100%"></div>';
+          } else fill = '<div class="fill" style="width:100%"></div>';
+          return '<div class="mem-row' + (on ? ' on' : '') + '"><span class="ml">' + label + '</span>' +
+            '<div class="track-bar" style="width:' + w + '%; min-width:6px">' + fill + '</div>' +
+            '<span class="mv">' + val + ' MB' + (extra ? ' ' + extra : '') + '</span></div>';
+        }
+        // RSS çubuğunda paylaşılan/özel ayrımı
+        function rssBar() {
+          var on = s.focus.indexOf('rss') >= 0;
+          var w = Math.round(RSS / VSS * 100);
+          var privPct = Math.round(USS / RSS * 100);
+          return '<div class="mem-row' + (on ? ' on' : '') + '"><span class="ml">RSS</span>' +
+            '<div class="track-bar" style="width:' + w + '%"><div class="split">' +
+            '<div class="fill priv" style="width:' + privPct + '%"></div>' +
+            '<div class="fill shared" style="width:' + (100 - privPct) + '%"></div></div></div>' +
+            '<span class="mv">' + RSS + ' MB</span></div>';
+        }
+        html += '<p class="lab-label" style="margin-top:14px">Bellek ölçüleri (temsilî)</p><div class="mem">' +
+          bar('vss', 'VSS', VSS) + rssBar() + bar('pss', 'PSS', PSS) + bar('uss', 'USS', USS) +
+          '</div>' +
+          '<p class="note" style="margin-top:8px"><span style="color:var(--warn)">■</span> paylaşılan (Zygote/kütüphane) &nbsp; <span style="color:var(--track)">■</span> özel. ' +
+          'RSS paylaşılanı tam sayar; PSS (' + PSS + ') payını böler; USS (' + USS + ') yalnız özeldir.</p>';
+      }
+      stateEl.innerHTML = html;
+      if (s.show === 'bars') { var hiFill = stateEl.querySelector('.mem-row.on'); if (hiFill) ATLAS.flash(hiFill, false); }
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: bir uygulamanın gerçek bellek ayak izi",
+    html: `<p class="lead">Android bir uygulamayı özel bir şey sanmak kolaydır, ama kernel için o sadece bir Linux process'tir: kendi UID'si vardır, <code>/proc/&lt;pid&gt;</code> altında görünür ve aynı araçlarla incelenir. İşin inceliği bellekte: Zygote'tan gelen paylaşım yüzünden "bu uygulama ne kadar RAM kullanıyor?" sorusunun tek bir doğru cevabı yoktur. PSS tam da bu yüzden icat edilmiştir.</p>
+
+<h3>1. Uygulama = process</h3>
+<p>Her uygulama kendi UID'siyle (örn. <code>u0_a234</code>) çalışan bir process'tir; sandbox'ı bu UID kurar. <code>/proc/&lt;pid&gt;/status</code> UID'yi, thread sayısını ve <code>VmRSS</code>'i; <code>/proc/&lt;pid&gt;/maps</code> tüm memory mapping'leri (kod, native kütüphaneler <code>.so</code>, heap, stack) gösterir. Yani bir uygulamayı incelemek için özel Android aracı şart değil — Linux process araçları birebir geçerlidir.</p>
+
+<h3>2. Dört ölçü: VSS, RSS, PSS, USS</h3>
+<p>Bellek kullanımı tek sayı değildir çünkü sayfalar paylaşılabilir ve diske yazılı (file-backed) olabilir. Dört ayrı soruya dört ayrı cevap:</p>
+<div class="deflist">
+<div><dt>VSS</dt><dd>Virtual set size: process'in ayırdığı tüm virtual address space. Çoğu fiziksel belleğe hiç dokunmaz (reserve edilmiş ama kullanılmamış). Neredeyse hiç işe yaramaz, yanıltıcıdır.</dd></div>
+<div><dt>RSS</dt><dd>Resident set size: o an RAM'de olan sayfalar — ama shared pages'in TAMAMI bu process'e sayılır. İki uygulama aynı framework'ü paylaşsa bile her ikisinin RSS'i framework'ün tamamını içerir, yani toplam şişer.</dd></div>
+<div><dt>PSS</dt><dd>Proportional set size: private sayfalar tam, shared sayfalar paylaşan process sayısına bölünerek sayılır. Framework'ü 10 uygulama paylaşıyorsa, her birine framework'ün 1/10'u yazılır. Tüm process'lerin PSS'i toplanınca gerçek fiziksel kullanıma yaklaşır.</dd></div>
+<div><dt>USS</dt><dd>Unique set size: yalnızca bu process'e özel (private) sayfalar. "Bu uygulamayı kapatırsam ne kadar RAM geri gelir?" sorusunun cevabı budur.</dd></div>
+</div>
+<div class="manpage"><div class="ref">5 proc_pid_smaps</div><p class="orig">Rss: the amount of the mapping that is currently resident in RAM.
+Pss: the process's proportional share of this mapping.</p><p>Kernel bu ayrımı <code>/proc/&lt;pid&gt;/smaps</code> dosyasında her mapping için ayrı ayrı verir; <code>Shared_Clean/Dirty</code> ve <code>Private_Clean/Dirty</code> satırları RSS'in paylaşımlı mı özel mi olduğunu söyler.</p></div>
+
+<h3>3. PSS neden Android'de kritik?</h3>
+<p>Çünkü Android bellek paylaşımını uç noktaya taşır: her uygulama Zygote'tan fork edilir ve framework kodu/kaynakları copy-on-write ile paylaşılır. RSS'e göre bakarsan her uygulama framework'ün tamamını "kullanıyor" görünür; oysa o RAM tek kez vardır. PSS, bu paylaşımı oransal dağıtarak dürüst bir fiziksel ayak izi (footprint) verir.</p>
+<div class="manpage src-docs"><div class="ref">android · memory</div><p class="orig">Android computes a value called the Proportional Set Size (PSS), which accounts for both dirty and clean pages that are shared with other processes—but only in an amount that's proportional to how many apps share that RAM.</p><p>Resmi tanım bunu net söylüyor: PSS, paylaşılan RAM'i kaç uygulamanın paylaştığına oranla sayar. Doküman ayrıca "bu toplam, sistemin senin fiziksel bellek ayak izin olarak gördüğü değerdir" der.</p></div>
+<div class="manpage src-docs"><div class="ref">android · zygote</div><p class="orig">This approach allows most of the RAM pages allocated for framework code and resources to be shared across all app processes.</p><p>Yani PSS olmadan toplam bellek yanlış hesaplanır: aynı framework sayfaları onlarca process'te tekrar tekrar sayılırdı.</p></div>
+
+<h3>4. clean vs dirty: neyin geri alınabileceği</h3>
+<p>Bir sayfanın <strong>dirty</strong> (değiştirilmiş) mı <strong>clean</strong> (diskten okunan, değişmemiş) mı olduğu, baskı altında ne olacağını belirler. Clean file-backed sayfalar (kod, <code>.so</code>) gerektiğinde RAM'den atılıp sonra diskten tekrar okunabilir — ucuzdur. Dirty sayfalar (heap, değiştirilmiş veri) atılamaz; ancak swap varsa sıkıştırılır/yazılır. Bu yüzden uygulamanın dirty private belleği (USS'in çekirdeği) sistemin üzerindeki asıl yüktür.</p>
+
+<h3>5. smaps_rollup, lmkd ve oom_score_adj</h3>
+<p>Her mapping'i tek tek toplamak yerine <code>/proc/&lt;pid&gt;/smaps_rollup</code> tüm process için tek seferde PSS/RSS/USS verir — <code>dumpsys meminfo</code> bunu kullanır. Bellek azaldığında <strong>lmkd</strong> (Low Memory Killer Daemon) devreye girer: her process'in <code>/proc/&lt;pid&gt;/oom_score_adj</code> değerine bakar (foreground uygulama düşük, arka plan/boş process yüksek skor) ve en harcanabilir olanı öldürür. PSS ve oom_score_adj birlikte, Android'in sınırlı RAM'de hangi uygulamayı hayatta tutacağına nasıl karar verdiğini anlatır.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">Bu dört ölçü tek bir soruya farklı cevaplardır: "bu süreç ne kadar bellek kullanıyor?" Paylaşım olduğu için tek bir doğru sayı yoktur; hangisini istediğin, soruya bağlıdır.</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Ölçü</th><th>Anlamı</th><th>Ne zaman bakılır</th></tr></thead><tbody>' +
+      '<tr><td><b>VSS</b><br><span class="mono" style="font-size:11px">virtual set size</span></td><td>Ayrılan tüm sanal adres alanı; çoğu fiziksel belleğe dokunmaz</td><td>Neredeyse hiç; yanıltıcıdır</td></tr>' +
+      '<tr><td><b>RSS</b><br><span class="mono" style="font-size:11px">resident set size</span></td><td>RAM\'de bulunan sayfalar; paylaşılanları tam sayar</td><td>Kaba bakış; toplamı gerçeği aşar</td></tr>' +
+      '<tr><td><b>PSS</b><br><span class="mono" style="font-size:11px">proportional set size</span></td><td>Paylaşılan sayfaları paylaşan süreç sayısına böler</td><td>Android\'in tercihi; toplamı gerçek RAM\'e eşit</td></tr>' +
+      '<tr><td><b>USS</b><br><span class="mono" style="font-size:11px">unique set size</span></td><td>Yalnız bu sürece ait, paylaşılmayan bellek</td><td>Uygulamayı kapatınca kazanılacak miktar</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px">Çekirdek bu sayıları <code>/proc/PID/smaps</code> içindeki her bölge için ayrı ayrı tutar; <code>smaps_rollup</code> hepsini toplar. lmkd (low memory killer daemon) bir uygulamayı öldürmeye karar verirken bu bellek baskısına ve uygulamanın önceliğine (oom_score_adj) bakar — bu, Modül 8\'in konusu.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Kendi sürecini /proc\'tan incele (gerçek)', p: 'Android uygulaması da tam olarak bu arayüzü kullanır. Aşağıdaki çıktı bu ortamda gerçek üretildi: RSS ile PSS arasındaki fark, paylaşılan kütüphane sayfalarından (libc) geliyor.',
+        shells: [{ label: 'terminal · gerçek çıktı', copy: 'cat /proc/self/smaps_rollup', pre: '<span class="c">$</span> cat /proc/self/status | grep -E \'Vm|Rss|Threads|Uid\'\nUid:\t0\t0\t0\t0\nThreads:\t1\nVmSize:\t    3700 kB\nVmRSS:\t    1968 kB\n\n<span class="c">$</span> cat /proc/self/smaps_rollup\nRss:                1956 kB\n<span class="y">Pss:                 649 kB</span>   <span class="c"># paylaşım bölündü</span>\nShared_Clean:       1548 kB\nPrivate_Clean:       240 kB\nPrivate_Dirty:       168 kB   <span class="c"># USS ≈ 408 kB</span>' }] },
+      { h3: '2. Uygulamanın bellek dökümü', p: 'Android\'de bir uygulamanın ayrıntılı bellek dökümü; Dalvik, .so ve .art için paylaşılan/özel sütunlarına bak.',
+        shells: [{ label: 'adb (temsilî)', copy: 'adb shell dumpsys meminfo com.ornek.app', pre: '<span class="c">$</span> adb shell dumpsys meminfo com.ornek.app\n<span class="c"># TOTAL PSS satırı Android\'in uygulamaya yazdığı bellektir</span>' }] },
+      { h3: '3. UID kum havuzunu gör', p: 'Her uygulamanın ayrı UID\'si, Linux dosya izinleriyle zorlanan izolasyonun temelidir.',
+        shells: [{ label: 'adb (temsilî)', copy: 'adb shell ps -A -o PID,USER,NAME | grep com.', pre: '<span class="c">$</span> adb shell ps -A -o PID,USER,NAME | grep com.\n 4120 u0_a234 com.ornek.app\n 4377 u0_a088 com.android.settings   <span class="c"># farklı UID</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Tüm çalışan uygulamaların bellek kullanımını toplamak istiyorsun; gerçek RAM kullanımına hangi ölçünün toplamı eşittir?', opts: ['VSS', 'RSS', 'PSS'], answer: 'PSS',
+        ok: 'Doğru. PSS paylaşılan sayfaları süreçler arasında böldüğü için toplamı çift saymaz ve gerçek fiziksel RAM kullanımına eşit olur.', no: 'İpucu: RSS paylaşılan libart\'ı her uygulamada tam sayar, toplam şişer. Hangisi payını böler?' },
+      { q: 'Bir uygulamanın PSS\'i RSS\'inden neden küçüktür?', opts: ['Ölçüm hatası', 'Zygote\'tan paylaşılan sayfalar paya bölünür', 'VSS sayılmaz'], answer: 'Zygote\'tan paylaşılan sayfalar paya bölünür',
+        ok: 'Doğru. libart ve framework sayfaları Zygote fork\'uyla onlarca uygulamada ortaktır; RSS bunları tam, PSS ise 1/N olarak sayar.', no: 'İpucu: fark, diğer uygulamalarla ORTAK olan sayfalardan gelir. Bu sayfalar nereden?' },
+      { q: 'Android uygulamalarını birbirinden yalıtan temel mekanizma nedir?', opts: ['Her uygulamaya ayrı UID', 'Ayrı CPU çekirdeği', 'Şifreleme'], answer: 'Her uygulamaya ayrı UID',
+        ok: 'Doğru. Her uygulama kendi UID\'siyle çalışır; Linux dosya izinleri biri diğerinin verisine erişmesini engeller. Kum havuzunun (sandbox) temeli budur.', no: 'İpucu: /proc/PID/status\'taki bir alan. Linux izinleri neye göre çalışır?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Android Modül 7', title: 'Loglama ve izleme', desc: 'logd, statsd, ptrace ve eBPF ile bir uygulamanın davranışı nasıl gözlemlenir?' },
+  sources: [
+    { href: 'https://newandroidbook.com/TOC.html', text: 'Levin — Android Internals', note: 'Cilt I, Bölüm 11' },
+    { href: 'https://man7.org/linux/man-pages/man5/proc.5.html', text: 'man 5 proc', note: '/proc arayüzü' },
+    { href: 'https://developer.android.com/topic/performance/memory-overview', text: 'Android — Bellek genel bakış', note: 'PSS/USS' },
+    { href: 'https://source.android.com/docs/core/perf/lmkd', text: 'AOSP — lmkd' }
+  ],
+  pageTitle: 'Linux Gözüyle Uygulama'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

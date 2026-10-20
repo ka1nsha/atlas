@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Kimlik Doğrulama ve Şifreleme</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: üç bölge (normal dünya · TEE · şifreli depolama) */
+.lanes { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; align-items: stretch; }
+@media (max-width: 680px) { .lanes { grid-template-columns: 1fr; } }
+.lane { border: 1.5px solid var(--line); border-radius: var(--r); padding: 12px; display: grid; gap: 8px; align-content: start; min-width: 0; background: var(--surface); }
+.lane.tee { border-color: var(--track); background: var(--track-soft); }
+.lane.store { border-color: var(--warn); }
+.lane .lh { font-family: var(--f-mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; font-weight: 700; }
+.lane.normal .lh { color: var(--muted); }
+.lane.tee .lh { color: var(--track); }
+.lane.store .lh { color: var(--warn); }
+.lane.dim { opacity: .45; }
+.lane.active { box-shadow: 0 0 0 2px var(--track) inset; }
+.lane .item { border: 1px solid var(--line); border-radius: 7px; padding: 6px 8px; font-size: 12.5px; background: var(--bg); }
+.lane .item.key { border-color: var(--track); font-weight: 600; }
+.lane .item.locked { border-color: var(--warn); color: var(--warn); font-weight: 600; }
+.lane .item.open { border-color: var(--ok); color: var(--ok); font-weight: 600; }
+.lane .item.muted { color: var(--muted); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'android',
+  crumbs: 'android › kimlik doğrulama ve şifreleme › modül 17',
+  eyebrow: 'Modül 17 · Android · Kimlik doğrulama ve şifreleme',
+  titleHTML: 'Parolanın <code>anahtara</code> dönüşmesi',
+  lede: 'Telefonun kilidini açtığın parola, aslında /data bölümünün şifresini çözen anahtarı serbest bırakır. Ama bu anahtar hiçbir zaman Android\'in göreceği yerde durmaz: parola doğrulama ve anahtar açma işi güvenli dünyada (TEE) yapılır. Bu modül, bir parola girişinin veriyi nasıl eriştirdiğini adım adım izler.',
+  meta: ['~16 dk', 'ön koşul: TrustZone/TEE', 'bağlam: Android şifreleme'],
+  intuition: {
+    paras: [
+      'Bir telefon kaybolduğunda tek savunma, diskin şifreli olmasıdır. Ama şifre bir anahtar ister ve o anahtar bir yerde durmalıdır. Çözüm: anahtarı kullanıcının parolasına ve cihazın donanım köküne bağlamak. Parola bilinmeden ve o cihazda olunmadan anahtar türetilemez (key derivation).',
+      'İki bileşen bu işi paylaşır. <strong>Gatekeeper</strong> parolayı güvenli dünyada (TEE) doğrular ve her yanlış denemede gecikme dayatır (kaba kuvveti — brute force — yavaşlatır). <strong>Keystore</strong> ise uygulama anahtarlarını TEE ya da ayrı bir yongada (StrongBox) tutar. <strong>Dosya bazlı şifreleme (file-based encryption, FBE)</strong> her kullanıcı ve dosya için ayrı anahtar kullanır; böylece tek parola tüm diski değil, ilgili sınıfı açar.'
+    ],
+    ideas: [
+      { b: 'Anahtar parolaya bağlı', span: 'Anahtar; kullanıcı parolası + donanım kök anahtarı birlikte türetilir. Parola yoksa, doğru cihaz yoksa anahtar yok.' },
+      { b: 'Doğrulama TEE\'de', span: 'Gatekeeper parolayı güvenli dünyada denetler ve yanlış denemelere gecikme koyar. Android ham parola doğrulamasını görmez.' },
+      { b: 'Dosya dosya şifre', span: 'FBE her sınıf için ayrı anahtar kullanır; kilit açılmadan bazı dosyalar (Credential Encrypted) hiç çözülemez.' }
+    ]
+  },
+  lab: {
+    intro: 'Kullanıcı kilit ekranına parolasını girer. Sağda üç bölgeyi izle: normal dünya (Android), güvenli dünya (TEE: Gatekeeper + Keystore) ve şifreli depolama (/data). Ham anahtarın normal dünyaya hiç geçmediğine, yalnızca çözülmüş verinin eriştiğine dikkat et.',
+    codeLabel: 'kilit açma akışı (temsilî)', cmd: 'kilit ekranı: parola girildi',
+    foot: 'Bileşen adları (Gatekeeper, Weaver, keymaster) ve akış temsilîdir; cihaza/Android sürümüne göre değişir.',
+    code: [
+      { t: '<span class="cm">// normal dünya (Android, kilitli)</span>' },
+      { t: 'parola = <span class="f">kilitEkranı</span>();        <span class="cm">// kullanıcı girer</span>' },
+      { t: '<span class="f">gatekeeperDoğrula</span>(parola);      <span class="cm">// → SMC ile TEE\'ye</span>' },
+      { t: '' },
+      { t: '<span class="cm">// güvenli dünya (TEE)</span>' },
+      { t: 'ok = <span class="f">parolaEşleşti</span>(parola);    <span class="cm">// gecikmeli, kaba kuvvete karşı</span>' },
+      { t: 'sınıfAnahtarı = <span class="f">türet</span>(parola, kökAnahtar);' },
+      { t: '<span class="f">keystoreAç</span>(sınıfAnahtarı);      <span class="cm">// FBE sınıf anahtarları</span>' },
+      { t: '' },
+      { t: '<span class="cm">// şifreli depolama</span>' },
+      { t: '<span class="f">fsCryptAnahtarEkle</span>(sınıfAnahtarı);  <span class="cm">// /data çözülür</span>' }
+    ],
+    steps: [
+      { pc: [1, 2], title: 'Kilitli: parola girilir', zone: 'normal',
+        text: 'Cihaz kilitli; /data\'nın <strong>kimlik bilgisiyle şifreli (Credential Encrypted, CE)</strong> kısmı hâlâ şifreli ve okunamaz. Kullanıcı kilit ekranına parolasını girer. Android bu parolayı doğrulamaz — yalnızca güvenli dünyaya iletir.',
+        normal: [{ t: 'kilit ekranı: parola alındı', c: '' }, { t: 'Android /data CE\'yi göremiyor', c: 'muted' }],
+        tee: [{ t: 'Gatekeeper (bekliyor)', c: 'muted' }, { t: 'donanım kök anahtarı', c: 'key' }],
+        store: [{ t: '/data (CE) — ŞİFRELİ', c: 'locked' }] },
+      { pc: 3, title: 'SMC: güvenli dünyaya geç', zone: 'gate',
+        text: 'Parola, <code>SMC</code> komutuyla güvenli dünyaya (TEE) iletilir. Ham parola normal dünya belleğinden hızla silinir; doğrulama kararı artık Android\'in elinde değildir.',
+        normal: [{ t: 'parola → SMC ile TEE\'ye', c: '' }],
+        tee: [{ t: 'Gatekeeper uyanıyor', c: '' }, { t: 'donanım kök anahtarı', c: 'key' }],
+        store: [{ t: '/data (CE) — ŞİFRELİ', c: 'locked' }] },
+      { pc: 5, title: 'Gatekeeper doğrular (gecikmeli)', zone: 'tee',
+        text: 'Gatekeeper, parolayı güvenli dünyada saklanan doğrulayıcıyla (verifier) karşılaştırır. Yanlışsa artan bir <strong>gecikme (throttling)</strong> dayatır: birkaç yanlış denemeden sonra her deneme saniyelerce bekletilir. Bu, çalınan bir cihazda parolayı kaba kuvvetle (brute force) denemeyi pratikte imkânsız kılar.',
+        normal: [{ t: 'bekliyor…', c: 'muted' }],
+        tee: [{ t: 'Gatekeeper: parola doğru ✓', c: 'open' }, { t: 'deneme sayacı (güvenli)', c: 'key' }, { t: 'donanım kök anahtarı', c: 'key' }],
+        store: [{ t: '/data (CE) — ŞİFRELİ', c: 'locked' }] },
+      { pc: [6, 7], title: 'Anahtar türetilir ve açılır', zone: 'tee',
+        text: 'Doğrulama geçince TEE, parola ile donanım kök anahtarını birleştirip <strong>sınıf anahtarlarını (class keys)</strong> türetir/açar. Ham anahtarlar yalnızca güvenli dünyada var olur. Keystore\'daki uygulama anahtarları da aynı şekilde bu sınıra kilitlidir — uygulama imzalatabilir ama anahtarı asla göremez.',
+        normal: [{ t: 'bekliyor…', c: 'muted' }],
+        tee: [{ t: 'türet(parola, kökAnahtar)', c: '' }, { t: 'CE sınıf anahtarı (açık)', c: 'key' }, { t: 'Keystore anahtarları (açık)', c: 'key' }],
+        store: [{ t: '/data (CE) — ŞİFRELİ', c: 'locked' }] },
+      { pc: [10, 11], title: '/data çözülür', zone: 'store',
+        text: 'Sınıf anahtarı, çekirdeğin fscrypt (dosya bazlı şifreleme) alt sistemine verilir. Anahtar çekirdek anahtar halkasına (keyring) eklenir; artık /data\'nın CE kısmındaki dosyalar okundukça şeffafça çözülür. Dikkat: anahtar çekirdeğe girer ama uygulamalara hiçbir zaman ham olarak dağıtılmaz.',
+        normal: [{ t: 'bekliyor…', c: 'muted' }],
+        tee: [{ t: 'sınıf anahtarı → fscrypt', c: '' }, { t: 'ham anahtarlar (TEE\'de kalır)', c: 'key' }],
+        store: [{ t: '/data (CE) — ÇÖZÜLDÜ', c: 'open' }] },
+      { pc: 0, title: 'Cihaz açık, veri erişilebilir', zone: 'normal',
+        text: 'Android artık kullanıcının dosyalarına, uygulamalarına ve Keystore hizmetlerine erişebilir. Ama güvence korunur: ham anahtarlar güvenli dünyadan hiç çıkmadı, parola orada doğrulandı ve gecikme ile korundu. Cihaz tekrar kilitlenince CE anahtarları bellekten atılır ve döngü baştan başlar.',
+        normal: [{ t: 'Android açık', c: 'open' }, { t: 'uygulamalar + dosyalar erişilebilir', c: '' }, { t: 'elde: yalnızca çözülmüş veri', c: 'key' }],
+        tee: [{ t: 'ham anahtarlar (hâlâ TEE\'de)', c: 'key' }],
+        store: [{ t: '/data (CE) — açık (bu oturum)', c: 'open' }] }
+    ],
+    render: function (s, stateEl, u) {
+      function lane(kind, title, items, state) {
+        var its = items.map(function (it) {
+          return '<div class="item' + (it.c ? ' ' + it.c : '') + '">' + u.esc(it.t) + '</div>';
+        }).join('');
+        return '<div class="lane ' + kind + (state ? ' ' + state : '') + '"><span class="lh">' + title + '</span>' + its + '</div>';
+      }
+      var nState = s.zone === 'normal' ? 'active' : (s.zone === 'tee' || s.zone === 'store' ? 'dim' : '');
+      var tState = s.zone === 'tee' || s.zone === 'gate' ? 'active' : '';
+      var sState = s.zone === 'store' ? 'active' : '';
+      stateEl.innerHTML =
+        '<p class="lab-label">Normal dünya · Güvenli dünya (TEE) · Şifreli depolama</p>' +
+        '<div class="lanes">' +
+          lane('normal', 'Normal dünya (Android)', s.normal, nState) +
+          lane('tee', 'Güvenli dünya (TEE)', s.tee, tState) +
+          lane('store', 'Depolama (/data)', s.store, sState) +
+        '</div>' +
+        '<p class="note" style="margin-top:12px">🔑 çerçeveli kutular ham anahtar/sırdır ve güvenli dünyadan çıkmaz. Kilitli kutu şifreli, yeşil kutu çözülmüş veridir.</p>';
+    }
+  },
+  deepDive: {
+    heading: 'Derinlemesine: anahtarlar nerede, veri nasıl korunur?',
+    html: `<p class="lead">Android'in şifreleme güvenliği tek bir ilkeye dayanır: hassas sır (anahtar, parola doğrulaması) normal dünyadan — yani Android'in, uygulamaların ve hatta çekirdeğin görebildiği yerden — uzak tutulur. Bu bölüm Keystore, Gatekeeper ve file-based encryption'ın bu ilkeyi nasıl uyguladığını AOSP belgelerine dayanarak açar.</p>
+
+<h3>1. Hardware-backed Keystore: anahtarı kullan ama görme</h3>
+<p>Keystore, uygulamaların kriptografik anahtarlar üretip kullanmasını sağlar; ama asıl numara, anahtarın uygulamanın (hatta Android'in) eline hiç geçmemesidir. Anahtar, TEE veya StrongBox içinde üretilir ve orada kalır. Uygulamaya verilen şey bir <strong>keyblob</strong>'tur: anahtarın yalnızca o güvenli donanımın çözebileceği şifreli bir sarmalı.</p>
+<div class="manpage src-aosp"><div class="ref">keystore · key blobs</div><p class="orig">encrypted so Keystore can store them but not use or reveal them.</p><p>Yani Keystore keyblob'u saklar ama içindeki ham anahtarı ne kullanabilir ne de açığa çıkarabilir. Gerçek kriptografik işlem (imzalama, şifreleme) için keyblob güvenli donanıma gönderilir; iş orada yapılır, sonuç geri döner. Uygulama "bununla imzala" der, anahtarı asla görmez.</p></div>
+<div class="manpage src-aosp"><div class="ref">keystore · trusted boundary</div><p class="orig">HAL implementations don't perform any sensitive operations in user space, or even in kernel space.</p><p>Hassas işlemler user space'te — hatta kernel space'te — yapılmaz; tamamı güvenli dünyaya devredilir. Bu, Android çekirdeği tamamen ele geçirilse bile saldırganın ham anahtarları çıkaramaması demektir: güven sınırı çekirdeğin de üstündedir.</p></div>
+<h4>Key attestation</h4>
+<p>Bir anahtarın gerçekten güvenli donanımda üretildiğini uzaktan kanıtlamak gerekir (örn. banka uygulaması). Key attestation bunu yapar:</p>
+<div class="manpage src-aosp"><div class="ref">keystore · attestation</div><p class="orig">provides public key certificates that contain a detailed description of the key</p><p>Donanım, anahtarı ve özelliklerini (nerede üretildi, dışa çıkarılabilir mi, hangi koşullarda kullanılabilir) tanımlayan, üretici köküne zincirlenmiş bir sertifika verir. Sunucu bu zinciri doğrulayınca anahtarın StrongBox/TEE'de olduğundan emin olur. StrongBox ise ayrı bir güvenlik yongasıdır: AOSP onu "device-unique attestation in StrongBox" olarak ayrı bir yetenek sayar.</p></div>
+
+<h3>2. Gatekeeper: parolayı doğrula, kaba kuvveti yavaşlat</h3>
+<p>Parola/PIN doğrulaması Android'de olsaydı, cihazı ele geçiren biri belleği okuyup sınırsız deneme yapabilirdi. Bunun yerine Gatekeeper, doğrulamayı güvenli dünyada (TEE) yapar ve iki şeyi garanti eder: (1) ham parola doğrulayıcısı güvenli dünyadan çıkmaz; (2) yanlış denemelere <strong>throttling</strong> (artan gecikme) uygular. Birkaç yanlış denemeden sonra her deneme saniyelerce — sonra dakikalarca — bekletilir, böylece 6 haneli bir PIN bile kaba kuvvetle pratikte kırılamaz. Deneme sayacının kendisi, saldırganın sıfırlayamaması için güvenli donanımda (bazı cihazlarda ayrı Weaver yongasında) tutulur.</p>
+
+<h3>3. File-based encryption (FBE): tek anahtar değil, çok anahtar</h3>
+<p>Eski tam disk şifrelemesi (full-disk encryption) tüm /data'yı tek anahtarla şifreliyordu; bu, "her şey ya kilitli ya açık" demekti ve Direct Boot gibi özellikleri imkânsız kılıyordu. FBE farklıdır:</p>
+<div class="manpage src-aosp"><div class="ref">fbe · per-file keys</div><p class="orig">File-based encryption allows different files to be encrypted with different keys that can be unlocked independently.</p><p>Farklı dosyalar farklı anahtarlarla şifrelenir ve bu anahtarlar birbirinden bağımsız açılabilir. Böylece cihaz, bazı verileri (telefon, alarm) kilit açılmadan kullanılabilir tutarken en hassas verileri parolaya kilitli tutabilir.</p></div>
+<h4>İki şifreleme sınıfı: CE vs DE</h4>
+<div class="deflist">
+<div><dt>Credential Encrypted (CE)</dt><dd>Varsayılan konum. Yalnızca kullanıcı cihazı en az bir kez kilit açtıktan sonra erişilebilir — en hassas veri buradadır (mesajlar, fotoğraflar, uygulama verisi).</dd></div>
+<div><dt>Device Encrypted (DE)</dt><dd>Direct Boot sırasında, kullanıcı kilit açmadan önce erişilebilir. Alarm, erişilebilirlik hizmetleri, gelen çağrı gibi temel işlevler buraya yazar.</dd></div>
+</div>
+<div class="manpage src-aosp"><div class="ref">fbe · credential encrypted</div><p class="orig">Credential Encrypted (CE) storage, which is the default storage location and only available after the user has unlocked the device.</p><p>CE deposu varsayılandır ve ancak kullanıcı kilidi açtıktan sonra erişilir olur. Bu yüzden telefonu yeniden başlattığında ilk kilit açışından önce bazı uygulamalar "veriniz henüz hazır değil" davranışı gösterir: CE anahtarları henüz türetilmemiştir. İlk kilit açış, CE sınıf anahtarını parolaya bağlar.</p></div>
+
+<h3>4. Metadata encryption: boşluğu kapatmak</h3>
+<p>FBE dosya içeriklerini ve adlarını şifreler, ama dizin yapısı, dosya boyutları, varlık/yokluk gibi metadata'nın bir kısmı kilit açılmadan görünür olabilir. Metadata encryption bu boşluğu kapatır:</p>
+<div class="manpage src-aosp"><div class="ref">fbe · metadata encryption</div><p class="orig">these directories aren't truly unencrypted but rather are protected by the metadata encryption key</p><p>Görünüşte "şifresiz" olan bu dizinler aslında ayrı bir metadata encryption key ile korunur; bu anahtar donanım köküne bağlıdır ve açılışta kullanılabilir. Böylece disk fiziksel olarak sökülse bile dosya sistemi yapısı okunamaz. FBE (içerik, kullanıcıya bağlı) + metadata encryption (yapı, cihaza bağlı) birlikte tam kapsama verir.</p></div>
+
+<h3>5. Zincirin özü: bildiğin + sahip olduğun</h3>
+<p>Tüm sistem tek bir denklemde toplanır: şifre çözme anahtarı, <strong>kullanıcının bildiği</strong> (parola/PIN) ile <strong>cihazın sahip olduğu</strong> (donanım kök anahtarı, dışa çıkarılamaz) birleşiminden türetilir. İkisinden biri eksikse anahtar üretilemez — ne parolasız başka bir cihazda, ne de doğru cihazda parolasız. Modern Android'de bu türetme "synthetic password" denen bir ara katmanla yapılır: parola doğrudan anahtarı açmaz, önce Gatekeeper token'ına, o da donanım köküyle gerçek anahtara bağlanır; böylece kullanıcı parolasını değiştirdiğinde tüm dosyaların yeniden şifrelenmesi gerekmez. TrustZone modülündeki iki-dünya sınırı, burada tüm veri gizliliğinin dayandığı temeldir.</p>`
+  },
+  underHood: {
+    heading: 'Bileşenler: hangi dünyada, neyi korur',
+    html: '<p class="prose">Android\'in kimlik doğrulama ve şifreleme yığını, güvenli dünya (TEE) ile normal dünya arasında paylaşılır. Roller yongadan bağımsız aynıdır:</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Bileşen</th><th>Nerede çalışır</th><th>Neyi korur</th></tr></thead><tbody>' +
+      '<tr><td><b>Kilit ekranı / biyometrik</b></td><td>Normal dünya</td><td>Kullanıcı girdisini toplar; kararı kendi vermez, TEE\'ye iletir</td></tr>' +
+      '<tr><td><b>Gatekeeper</b></td><td>Güvenli dünya (TEE)</td><td>Parola/PIN doğrular, yanlış denemelere gecikme (throttling) dayatır</td></tr>' +
+      '<tr><td><b>Weaver</b></td><td>Ayrı yonga (varsa)</td><td>Deneme sayacını ve sırrı StrongBox\'ta tutar (Gatekeeper\'ın donanım kökü)</td></tr>' +
+      '<tr><td><b>Keystore / keymaster</b></td><td>Güvenli dünya / StrongBox</td><td>Uygulama anahtarları; imzalar/şifreler ama ham anahtarı vermez</td></tr>' +
+      '<tr><td><b>fscrypt (FBE)</b></td><td>Çekirdek (normal dünya)</td><td>Dosyaları sınıf anahtarlarıyla şeffafça şifreler/çözer</td></tr>' +
+      '<tr><td><b>vold / fsck</b></td><td>Normal dünya (daemon)</td><td>Depolamayı bağlar, anahtar yönetimini düzenler (anahtarın kendisini görmeden)</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px">İki şifreleme sınıfı önemlidir: <strong>Credential Encrypted (CE)</strong> dosyalar yalnızca kullanıcı en az bir kez kilit açtıktan sonra erişilebilir (en hassas veri). <strong>Device Encrypted (DE)</strong> dosyalar ise açılıştan hemen sonra, kilit açılmadan erişilebilir (alarm, telefon gibi temel işlevler). Bu yüzden telefon yeniden başlatıldığında ilk kilit açışından önce bazı uygulamalar sınırlı çalışır — CE verileri henüz çözülmemiştir.</p>' +
+      '<p class="prose">Tüm zincirin özü tek cümlede: <em>anahtar, kullanıcının bildiği (parola) ile cihazın sahip olduğu (donanım kök anahtarı) birleşiminden türetilir ve ham hâli güvenli dünyadan hiç çıkmaz.</em> TrustZone modülünde gördüğümüz iki-dünya sınırı, burada tüm veri gizliliğinin temeli olur.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Şifreleme türünü gör', p: 'Cihazın dosya bazlı mı yoksa eski tam disk şifrelemesi mi kullandığını ve FBE ayrıntılarını özellik (property) üzerinden görebilirsin.',
+        shells: [{ label: 'adb (temsilî)', copy: 'adb shell getprop ro.crypto.type', pre: '<span class="c">$</span> adb shell getprop ro.crypto.type\nfile   <span class="c"># "file" = FBE (dosya bazlı); "block" = eski tam disk</span>\n<span class="c">$</span> adb shell getprop ro.crypto.volume.filenames_mode\naes-256-cts' }] },
+      { h3: '2. Anahtar güvenli donanımda mı?', p: 'Keystore anahtarının TEE mi yoksa StrongBox (ayrı yonga) tarafından mı korunduğu güvenlik seviyesinden anlaşılır. Bu, anahtarın normal bellekten ne kadar uzak olduğunu söyler.',
+        shells: [{ label: 'adb (temsilî)', copy: 'adb shell dumpsys android.security.keystore', pre: '<span class="c">$</span> adb shell dumpsys | grep -i securitylevel\n<span class="c"># SecurityLevel: TRUSTED_ENVIRONMENT  → TEE</span>\n<span class="c"># SecurityLevel: STRONGBOX          → ayrı güvenlik yongası</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Kilit açma parolası doğrudan neyi yapar?', opts: ['Diski formatlar', 'Şifre çözme anahtarının türetilmesini/açılmasını sağlar', 'Android\'e kaydedilir'], answer: 'Şifre çözme anahtarının türetilmesini/açılmasını sağlar',
+        ok: 'Doğru. Parola, donanım kök anahtarıyla birleşerek sınıf anahtarlarını türetir/açar; böylece /data çözülebilir. Parola bir "kapı", anahtar onun ardındaki sırdır.', no: 'İpucu: disk şifreli ve bir anahtar ister. Parola o anahtarla ne yapar?' },
+      { q: 'Parola doğrulaması nerede ve neden gecikmeli yapılır?', opts: ['Android\'de, hız için', 'Güvenli dünyada (TEE), kaba kuvveti yavaşlatmak için', 'Bulutta'], answer: 'Güvenli dünyada (TEE), kaba kuvveti yavaşlatmak için',
+        ok: 'Doğru. Gatekeeper TEE\'de doğrular ve yanlış denemelere artan gecikme koyar; çalınan cihazda parolayı deneyerek bulmayı imkânsız kılar.', no: 'İpucu: doğrulama Android\'de olsaydı, cihazı ele geçiren sınırsız deneyebilirdi. Nerede olmalı?' },
+      { q: 'Yeniden başlatmadan sonra, ilk kilit açışından ÖNCE hangi veri erişilemez?', opts: ['Device Encrypted (DE)', 'Credential Encrypted (CE)', 'Hiçbiri'], answer: 'Credential Encrypted (CE)',
+        ok: 'Doğru. CE verileri kullanıcı en az bir kez kilit açana kadar şifreli kalır; DE verileri (alarm, telefon) açılışta erişilebilir. Bu yüzden ilk açılışta bazı uygulamalar kısıtlı çalışır.', no: 'İpucu: en hassas veri kullanıcı kimliğine (parolaya) bağlıdır. Hangi sınıf buydu?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Android Modül 18', title: 'Bütünlük ve attestation', desc: 'Verified Boot, dm-verity ve Play Integrity cihazın kurcalanmadığını nasıl kanıtlar?' },
+  sources: [
+    { href: 'https://newandroidbook.com/TOC.html', text: 'Levin — Android Internals', note: 'Cilt III, Bölüm 3-4' },
+    { href: 'https://source.android.com/docs/security/features/encryption/file-based', text: 'AOSP — File-Based Encryption' },
+    { href: 'https://source.android.com/docs/security/features/keystore', text: 'AOSP — Hardware-backed Keystore' },
+    { href: 'https://source.android.com/docs/security/features/authentication', text: 'AOSP — Gatekeeper ve Authentication' }
+  ],
+  pageTitle: 'Kimlik Doğrulama ve Şifreleme'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

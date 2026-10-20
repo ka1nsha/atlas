@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Zamanlayıcı ve EEVDF</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: çalıştırılabilir kuyruk (run queue) */
+.rq { display: grid; gap: 8px; }
+.task { border: 1.5px solid var(--line); border-radius: 10px; padding: 9px 11px; display: grid; gap: 6px; background: var(--surface); min-width: 0; }
+.task.sel { border-color: var(--track); background: var(--track-soft); }
+.task.run { border-color: var(--ok); }
+.task-h { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.task-h b { font-family: var(--f-display); font-size: 15px; }
+.task.sel .task-h b { color: var(--track); }
+.task-h .tn { font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.task .pick { font-family: var(--f-mono); font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 999px; background: var(--track-soft); color: var(--track); }
+.task.run .pick { background: var(--ok-soft); color: var(--ok); }
+.metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.metric { background: var(--sunk); border-radius: 6px; padding: 5px 7px; min-width: 0; }
+.metric .ml { font-family: var(--f-mono); font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.metric .mv { font-family: var(--f-mono); font-size: 13px; color: var(--fg); }
+.task.sel .metric .mv { color: var(--track); }
+.vrbar { height: 6px; border-radius: 3px; background: var(--sunk); overflow: hidden; }
+.vrbar i { display: block; height: 100%; background: var(--muted); }
+.task.sel .vrbar i { background: var(--track); }
+.elig { font-family: var(--f-mono); font-size: 11px; }
+.elig.yes { color: var(--ok); } .elig.no { color: var(--warn); }
+.avgline { font-family: var(--f-mono); font-size: 12px; color: var(--muted); border-top: 1px dashed var(--line); padding-top: 8px; margin-top: 2px; }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+// Gerçek değerler: bu konteynerde /proc/self/sched + nice ile ölçüldü (çekirdek 6.18).
+// nice 0 → se.load.weight = 1048576 ; nice 10 → 112640 ; se.slice = 1.4 ms.
+var NICE0 = 1048576;
+var TASKS0 = [
+  { name: 'A', nice: 0, weight: 1048576 },
+  { name: 'B', nice: 0, weight: 1048576 },
+  { name: 'C', nice: 10, weight: 112640 }
+];
+
+var MODULE = {
+  track: 'linux',
+  crumbs: 'linux › zamanlayıcı › modül 6',
+  eyebrow: 'Modül 6 · Linux · Zamanlayıcı',
+  titleHTML: 'CPU\'yu kim alır? <code>EEVDF</code> zamanlayıcı',
+  lede: 'Onlarca süreç aynı anda çalışmak isterken bir çekirdek (core) tek seferde yalnızca birini çalıştırır. Zamanlayıcı (scheduler) sırayı kime vereceğine karar verir. Bu modülde birkaç görevin CPU\'yu adil biçimde paylaşmasını, EEVDF\'in sanal çalışma zamanı (vruntime) ve sanal son tarih (virtual deadline) ile kararını adım adım izleyeceksin.',
+  meta: ['~18 dk', 'ön koşul: süreçler', 'çekirdek: Linux 6.6+ (EEVDF)'],
+  intuition: {
+    paras: [
+      'Bir CPU çekirdeği aynı anda tek bir görev (task) çalıştırır. Çalıştırılabilir (runnable) durumdaki görevler bir <strong>çalıştırılabilir kuyrukta (run queue)</strong> bekler; zamanlayıcı her an birini seçip çalıştırır, bir süre sonra durdurup (önalım / preemption) bir başkasını seçer. Göz açıp kapayana dek binlerce kez.',
+      'Linux 6.6\'dan beri varsayılan zamanlayıcı <strong>EEVDF</strong> (Earliest Eligible Virtual Deadline First). Her görevin bir <strong>sanal çalışma zamanı (vruntime)</strong> vardır: görev çalıştıkça artar, ama ağırlığına (weight) ters orantılı olarak. Yüksek öncelikli (düşük nice) görevin ağırlığı büyüktür, bu yüzden vruntime\'ı yavaş artar ve daha sık seçilir. EEVDF ayrıca her göreve bir <strong>sanal son tarih (virtual deadline)</strong> atar ve uygun (eligible) görevler arasından son tarihi en yakın olanı seçer — bu, gecikmeye duyarlı işleri öne alır.'
+    ],
+    ideas: [
+      { b: 'vruntime adaleti ölçer', span: 'En düşük vruntime\'lı görev "en az pay almış" demektir; sistem herkesin vruntime\'ını eşitlemeye çalışır.' },
+      { b: 'Ağırlık (weight) nice\'tan gelir', span: 'nice 0 → ağırlık 1048576; nice 10 → 112640. Bu konteynerde /proc/self/sched ile ölçülen gerçek değerler.' },
+      { b: 'Son tarih (deadline) seçer', span: 'EEVDF, uygun görevler içinden sanal son tarihi en erken olanı çalıştırır; kısa slice isteyen etkileşimli işler öne geçer.' }
+    ]
+  },
+  lab: {
+    intro: 'Kuyrukta üç görev var: A ve B (nice 0), C (nice 10, düşük öncelik). Her görevin vruntime\'ını, ağırlığını ve sanal son tarihini (deadline) izle; zamanlayıcının neden o görevi seçtiğini gör. Değerler bu konteynerdeki gerçek ağırlıklara dayanıyor.',
+    codeLabel: 'EEVDF (kavramsal)', cmd: 'scheduler: pick_next_task()',
+    foot: 'Ağırlık ve slice değerleri bu konteynerde ölçüldü (gerçek). vruntime sayıları gösterim içindir.',
+    code: [
+      { t: '<span class="cm">// her göreve sanal son tarih (virtual deadline)</span>' },
+      { t: 'vd = vruntime + slice * NICE0_W / weight;' },
+      { t: '' },
+      { t: '<span class="cm">// uygun (eligible): vruntime &lt;= ortalama (lag &gt;= 0)</span>' },
+      { t: 'elig = tasks.<span class="f">filter</span>(t =&gt; t.lag &gt;= <span class="n">0</span>);' },
+      { t: '' },
+      { t: '<span class="cm">// en erken sanal son tarihli seçilir</span>' },
+      { t: 'pick = <span class="f">min</span>(elig, t =&gt; t.vd);' },
+      { t: '<span class="f">run</span>(pick, slice);' },
+      { t: '' },
+      { t: '<span class="cm">// çalıştıkça vruntime ağırlığa ters orantılı artar</span>' },
+      { t: 'pick.vruntime += delta * NICE0_W / pick.weight;' },
+      { t: '<span class="cm">// slice bitince / daha iyi aday: önalım (preemption)</span>' }
+    ],
+    steps: [
+      { pc: null, title: 'Görevler kuyruğa girer', avg: '0.0',
+        text: 'Üç görev de çalıştırılabilir (runnable) durumda kuyruğa girer. Başlangıçta hepsinin vruntime\'ı eşit (0). A ve B nice 0 (ağırlık 1.048.576), C nice 10 (ağırlık 112.640) — C\'nin ağırlığı yaklaşık 9 kat düşük.',
+        tasks: [
+          { n: 'A', nice: 0, w: '1.048.576', vr: 0.0, vd: 1.4, elig: true, state: 'bekliyor' },
+          { n: 'B', nice: 0, w: '1.048.576', vr: 0.0, vd: 1.4, elig: true, state: 'bekliyor' },
+          { n: 'C', nice: 10, w: '112.640', vr: 0.0, vd: 13.0, elig: true, state: 'bekliyor' }
+        ] },
+      { pc: [1, 7], title: 'Son tarihler hesaplanır', avg: '0.0',
+        text: 'EEVDF her göreve bir sanal son tarih (virtual deadline) verir: vd = vruntime + slice × ağırlık oranı. Düşük ağırlıklı C\'nin son tarihi çok daha uzakta (13.0), çünkü aynı dilimi (slice) hak etmek için daha çok "sanal zaman" harcar. En erken son tarih A ve B\'de.',
+        tasks: [
+          { n: 'A', nice: 0, w: '1.048.576', vr: 0.0, vd: 1.4, elig: true, state: 'uygun (eligible)' },
+          { n: 'B', nice: 0, w: '1.048.576', vr: 0.0, vd: 1.4, elig: true, state: 'uygun (eligible)' },
+          { n: 'C', nice: 10, w: '112.640', vr: 0.0, vd: 13.0, elig: true, state: 'uygun (eligible)' }
+        ] },
+      { pc: [7, 8], title: 'A seçilir ve çalışır', avg: '0.0', sel: 'A',
+        text: 'Uygun görevler içinden sanal son tarihi en erken olan seçilir: A. A bir dilim (slice ≈ 1.4 ms) boyunca CPU\'da çalışır. Diğerleri kuyrukta bekler.',
+        tasks: [
+          { n: 'A', nice: 0, w: '1.048.576', vr: 0.0, vd: 1.4, elig: true, state: 'ÇALIŞIYOR', run: true },
+          { n: 'B', nice: 0, w: '1.048.576', vr: 0.0, vd: 1.4, elig: true, state: 'bekliyor' },
+          { n: 'C', nice: 10, w: '112.640', vr: 0.0, vd: 13.0, elig: true, state: 'bekliyor' }
+        ] },
+      { pc: [11, 12], title: 'vruntime artar, önalım', avg: '0.5', sel: 'B',
+        text: 'A dilimini tüketince vruntime\'ı artar (1.4). Artık A en fazla pay almış görev; ortalamanın üstüne çıktı, geçici olarak uygun değil (lag &lt; 0). Zamanlayıcı A\'yı durdurur (önalım / preemption) ve sırayı eşit vruntime\'lı B\'ye verir.',
+        tasks: [
+          { n: 'A', nice: 0, w: '1.048.576', vr: 1.4, vd: 2.8, elig: false, state: 'önalındı (preempted)' },
+          { n: 'B', nice: 0, w: '1.048.576', vr: 0.0, vd: 1.4, elig: true, state: 'ÇALIŞIYOR', run: true, sel: true },
+          { n: 'C', nice: 10, w: '112.640', vr: 0.0, vd: 13.0, elig: true, state: 'bekliyor' }
+        ] },
+      { pc: 11, title: 'Düşük öncelik az pay alır', avg: '1.4', sel: 'C',
+        text: 'A ve B birer dilim aldıktan sonra sıra C\'ye gelir. Ama C çalıştığında, düşük ağırlığı yüzünden vruntime\'ı aynı CPU süresi için çok daha hızlı artar (1.4 ms CPU → ~13 vruntime). Sonuç: C aynı gerçek sürede A ve B\'den kat kat az CPU alır. nice işte bu şekilde pay dağıtır.',
+        tasks: [
+          { n: 'A', nice: 0, w: '1.048.576', vr: 1.4, vd: 2.8, elig: true, state: 'bekliyor' },
+          { n: 'B', nice: 0, w: '1.048.576', vr: 1.4, vd: 2.8, elig: true, state: 'bekliyor' },
+          { n: 'C', nice: 10, w: '112.640', vr: 0.0, vd: 13.0, elig: true, state: 'ÇALIŞIYOR', run: true, sel: true }
+        ] },
+      { pc: [7, 11], title: 'Denge kurulur', avg: '2.1', sel: 'A',
+        text: 'Döngü sürer: en düşük vruntime\'lı (en az pay almış) uygun görev hep öne geçer. Zaman içinde A ve B\'nin vruntime\'ı birbirine yakın kalır; C geri kalır ama yine de aç kalmaz (starvation yok), çünkü sonunda o da en düşük vruntime\'lı olur. Adalet böyle sağlanır.',
+        term: ['nr_switches: 3  (A→B→C→A ...)', 'A,B ≈ eşit pay · C ≈ 1/9 pay'],
+        tasks: [
+          { n: 'A', nice: 0, w: '1.048.576', vr: 1.4, vd: 2.8, elig: true, state: 'ÇALIŞIYOR', run: true, sel: true },
+          { n: 'B', nice: 0, w: '1.048.576', vr: 1.4, vd: 2.8, elig: true, state: 'bekliyor' },
+          { n: 'C', nice: 10, w: '112.640', vr: 13.0, vd: 26.0, elig: false, state: 'bekliyor (geride)' }
+        ] }
+    ],
+    render: function (s, stateEl, u) {
+      var maxvr = 13.0;
+      var rows = s.tasks.map(function (t) {
+        var cls = 'task' + (t.run ? ' run' : (t.sel ? ' sel' : ''));
+        var pct = Math.max(4, Math.min(100, (t.vr / maxvr) * 100));
+        var pick = t.run ? '<span class="pick">ÇALIŞIYOR</span>' : (s.sel === t.n && !t.run ? '<span class="pick">seçildi</span>' : '');
+        return '<div class="' + cls + '"><div class="task-h"><b>Görev ' + t.n + '</b><span class="tn">nice ' + t.nice + '</span>' + pick + '</div>' +
+          '<div class="metrics">' +
+            '<div class="metric"><div class="ml">vruntime</div><div class="mv">' + t.vr.toFixed(1) + '</div></div>' +
+            '<div class="metric"><div class="ml">ağırlık</div><div class="mv">' + t.w + '</div></div>' +
+            '<div class="metric"><div class="ml">son tarih</div><div class="mv">' + t.vd.toFixed(1) + '</div></div>' +
+          '</div>' +
+          '<div class="vrbar"><i style="width:' + pct + '%"></i></div>' +
+          '<div><span class="elig ' + (t.elig ? 'yes' : 'no') + '">' + (t.elig ? '● uygun (eligible)' : '○ şimdilik uygun değil (lag<0)') + '</span> · <span class="tn">' + u.esc(t.state) + '</span></div>' +
+          '</div>';
+      }).join('');
+      stateEl.innerHTML =
+        '<p class="lab-label">Çalıştırılabilir kuyruk (run queue)</p><div class="rq">' + rows + '</div>' +
+        '<p class="avgline">ortalama vruntime (adalet ölçütü): ' + s.avg + ' · slice ≈ 1.4 ms</p>';
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: scheduler nasıl karar verir?",
+    html: `<p class="lead">Scheduler, çalışmaya hazır onlarca thread arasından her an birini seçmek zorundadır. Bu seçim hem adalet (fairness), hem düşük gecikme (latency), hem de verim (throughput) arasında bir dengedir. Linux bunu farklı scheduling class'lar ve 2024'te CFS'in yerini alan EEVDF algoritmasıyla çözer. Bu bölüm man sayfalarına dayanır.</p>
+
+<h3>1. Scheduling class'lar: her thread aynı kurala tabi değil</h3>
+<p>Her thread bir scheduling policy'ye bağlıdır. Real-time policy'ler (FIFO, RR) her zaman normal policy'lerin önüne geçer; yani tek bir SCHED_FIFO thread'i, ne kadar nice olursa olsun tüm normal thread'leri aç bırakabilir.</p>
+<div class="manpage"><div class="ref">7 sched · DESCRIPTION</div><p class="orig">The scheduler is the kernel component that decides which runnable thread will be executed by the CPU next.</p><p>Scheduler, bir sonraki CPU'yu hangi runnable thread'in alacağına karar veren çekirdek bileşenidir. Hangi thread'in "hazır" olduğu, hangi policy'de olduğu ve önceliği bu kararı belirler.</p></div>
+<div class="deflist">
+<div><dt>SCHED_OTHER</dt><dd>Varsayılan zaman paylaşımlı (time-sharing) policy; kaynakta adı SCHED_NORMAL. Tüm sıradan uygulamalar burada. nice değeriyle ayarlanır, EEVDF yönetir.</dd></div>
+<div><dt>SCHED_FIFO</dt><dd>Static priority'li, time slice'sız real-time policy. Bir kez CPU'yu alınca kendi bırakana veya daha yüksek priority'li biri gelene kadar koşar.</dd></div>
+<div><dt>SCHED_RR</dt><dd>FIFO'nun round-robin hâli: aynı priority'deki thread'ler sırayla bir time quantum kadar koşar.</dd></div>
+<div><dt>SCHED_BATCH</dt><dd>CPU-yoğun toplu işler için; scheduler thread'i hep CPU-intensive sayar, interaktif olmadığını varsayar.</dd></div>
+<div><dt>SCHED_IDLE</dt><dd>Son derece düşük öncelik; yalnızca sistem tamamen boştayken koşacak işler için.</dd></div>
+<div><dt>SCHED_DEADLINE</dt><dd>EDF tabanlı; her işe (runtime, deadline, period) verilir. Diğer hepsinden yüksek önceliklidir, gerçek zamanlı garantiler içindir.</dd></div>
+</div>
+<div class="manpage"><div class="ref">7 sched · SCHED_FIFO</div><p class="orig">SCHED_FIFO is a simple scheduling algorithm without time slicing.</p><p>SCHED_FIFO time slice kullanmaz: thread CPU'yu bırakana, uyumaya geçene veya daha yüksek priority'li bir thread hazır olana kadar koşar. Bu yüzden yanlış kullanılan bir real-time thread sistemi kilitleyebilir.</p></div>
+
+<h3>2. nice ve weight: adaletin ağırlığı</h3>
+<p>Normal thread'lerde öncelik, nice değeriyle ifade edilir. nice doğrudan bir pay değil, bir <em>weight</em>'e çevrilir; CPU payı thread'in weight'inin toplam weight'e oranıdır. Her nice adımı payı yaklaşık %10 oynatır.</p>
+<div class="manpage"><div class="ref">2 nice · DESCRIPTION</div><p class="orig">nice() adds inc to the nice value for the calling thread. The range of the nice value is +19 (low priority) to -20 (high priority).</p><p>nice() çağıran thread'in nice değerine <code>inc</code> ekler. Aralık +19 (düşük öncelik) ile -20 (yüksek öncelik) arasındadır. Negatif değer vermek (daha yüksek öncelik) ayrıcalık ister (CAP_SYS_NICE).</p></div>
+
+<h3>3. CFS'ten EEVDF'e: vruntime, lag ve virtual deadline</h3>
+<p>Yıllarca normal thread'leri CFS yönetti: her thread'in bir <strong>vruntime</strong>'ı (weight'e göre ölçeklenmiş, "ne kadar koştu") vardı ve scheduler hep en düşük vruntime'lı thread'i seçerdi — böylece herkes adil pay alırdı. Linux 6.6 (2023–2024) bunu <strong>EEVDF</strong> (Earliest Eligible Virtual Deadline First) ile değiştirdi.</p>
+<p>EEVDF iki kavram ekler: <strong>lag</strong> (bir thread hak ettiği paydan ne kadar geride/ileride) ve her thread'e bir <strong>virtual deadline</strong>. Scheduler, lag'i pozitif olan (yani hak ettiğinden az almış, "eligible") thread'ler arasından virtual deadline'ı en erken olanı seçer. Bu, gecikmeye duyarlı (latency-sensitive) kısa işlerin uzun CPU-yoğun işlerin önüne daha öngörülebilir biçimde geçmesini sağlar.</p>
+
+<h3>4. Preemption: thread'in CPU'su ne zaman elinden alınır?</h3>
+<p>Bir thread CPU'yu iki şekilde bırakır. <strong>Voluntary</strong>: kendisi bloklanır (I/O bekler, uyur, kilit bekler). <strong>Involuntary (preemption)</strong>: scheduler onu zorla durdurur — ya time slice'ı bitmiştir, ya daha uygun bir thread hazır olmuştur. Her scheduler tick'inde (<code>CONFIG_HZ</code>, tipik 250/1000 Hz) çekirdek yeniden değerlendirme yapar.</p>
+<p>Modern çekirdek "fully preemptible" olabilir: yalnızca user space değil, çekirdek kodunun kendisi de (bazı kritik bölümler hariç) preempt edilebilir — bu düşük gecikme için önemlidir.</p>
+
+<h3>5. Real-time ve priority tersliği</h3>
+<p>Real-time policy'lerde static priority 1–99 arasıdır ve mutlaktır: yüksek priority düşüğü tamamen aç bırakabilir.</p>
+<div class="manpage"><div class="ref">7 sched · SCHED_DEADLINE</div><p class="orig">SCHED_DEADLINE threads are the highest priority (user controllable) threads in the system; if any SCHED_DEADLINE thread is runnable, it will preempt any thread scheduled under one of the other policies.</p><p>SCHED_DEADLINE thread'leri sistemdeki en yüksek öncelikli (kullanıcı denetimli) thread'lerdir; biri hazırsa diğer tüm policy'lerin önüne geçer. Bu güç, yanlış kullanımda sistemin geri kalanını aç bırakma riski taşır — bu yüzden çekirdek bir "RT throttling" sınırı uygular.</p></div>
+<p>Buradaki klasik tuzak <em>priority inversion</em>: düşük priority'li bir thread bir kilidi tutarken, yüksek priority'li bir thread o kilidi bekler ve orta priority'li thread'ler ikisini de geçer. Çözüm priority inheritance'tır (kilidi tutan geçici olarak yükseltilir).</p>
+
+<h3>6. Çok çekirdek: per-CPU run queue ve load balancing</h3>
+<p>Her CPU'nun kendi run queue'su vardır (kilit çekişmesini azaltmak için). Bu yüzden ikinci bir sorun doğar: bir CPU dolarken diğeri boş kalabilir. <strong>Load balancing</strong>, çekirdeğin thread'leri periyodik olarak CPU'lar arasında taşıyarak yükü dengelemesidir. Taşıma ucuz değildir (cache sıcaklığı kaybolur), bu yüzden çekirdek <em>CPU affinity</em>'ye (<code>taskset</code>, <code>sched_setaffinity</code>) ve NUMA yerelliğine saygı gösterir.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">Zamanlayıcı her zamanlayıcı tikinde (tick) ve her uyku/uyanmada çalışır. Görev seçimi ve bağlam değişimi (context switch) çekirdekte <code>kernel/sched/</code> altında yapılır; EEVDF mantığı <code>fair.c</code> içindedir.</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/scheduler_tick" target="_blank" rel="noopener">sched_tick()</a><span class="where">kernel/sched/core.c</span><p>Zamanlayıcı saat tiki; o an çalışan görevin hesabını işler, gerekirse yeniden zamanlama (reschedule) işaretler.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/task_tick_fair" target="_blank" rel="noopener">task_tick_fair()</a><span class="where">kernel/sched/fair.c</span><p>Çalışan görevin vruntime ve lag hesabını günceller; dilimi (slice) bitti mi bakar.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/pick_eevdf" target="_blank" rel="noopener">pick_eevdf()</a><span class="where">kernel/sched/fair.c</span><p>Uygun (eligible) görevler içinden sanal son tarihi en erken olanı seçer. EEVDF\'in kalbi.</p></div></li>' +
+      '<li class="boundary"><div>seçim yapıldı · görevi CPU\'ya al</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/context_switch" target="_blank" rel="noopener">context_switch()</a><span class="where">kernel/sched/core.c</span><p>Eski görevin yazmaç/yığın durumunu kaydeder, yeninin adres uzayına (mm) ve yazmaçlarına geçer. nr_switches burada artar.</p></div></li>' +
+      '</ol>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Kendi vruntime ve ağırlığına bak', p: 'Bir sürecin zamanlayıcı durumu /proc altında. se.vruntime, se.slice ve se.load.weight satırlarına dikkat et.',
+        shells: [{ label: 'terminal · gerçek çıktı', copy: 'cat /proc/self/sched | grep -E "vruntime|slice|load.weight"', pre: '<span class="c">$</span> cat /proc/self/sched | grep -E "vruntime|slice|load.weight"\nse.vruntime        : 138.827085\nse.slice           : <span class="y">1400000</span>      <span class="c"># 1.4 ms (ns)</span>\nse.load.weight     : <span class="y">1048576</span>     <span class="c"># nice 0</span>' }] },
+      { h3: '2. nice ağırlığı nasıl değiştirir?', p: 'nice değerini artır (önceliği düşür) ve load.weight\'in düştüğünü gör. Ağırlık düştükçe görev daha az CPU payı alır.',
+        shells: [{ label: 'terminal · gerçek çıktı', copy: 'for n in 0 10 19; do printf "nice %-2s " $n; nice -n $n cat /proc/self/sched | awk "/load.weight/{print \\$3}"; done', pre: '<span class="c">$</span> for n in 0 10 19; do nice -n $n cat /proc/self/sched | awk \'/load.weight/{print}\'; done\nnice 0  se.load.weight : <span class="y">1048576</span>\nnice 10 se.load.weight : <span class="y">112640</span>\nnice 19 se.load.weight : <span class="y">15360</span>' }] },
+      { h3: '3. Zamanlama politikalarını (policy) listele', p: 'SCHED_OTHER (varsayılan, EEVDF) dışında gerçek zamanlı (real-time) politikalar da var: FIFO ve RR 1–99 önceliğiyle her zaman öne geçer.',
+        shells: [{ label: 'terminal · gerçek çıktı', copy: 'chrt -m', pre: '<span class="c">$</span> chrt -m\nSCHED_OTHER min/max priority : 0/0\nSCHED_FIFO  min/max priority : 1/99\nSCHED_RR    min/max priority : 1/99\nSCHED_BATCH min/max priority : 0/0\nSCHED_IDLE  min/max priority : 0/0' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'İki görevden hangisi bir sonraki dilimde (slice) öne geçmeye adaydır?', opts: ['Yüksek vruntime\'lı', 'Düşük vruntime\'lı', 'Rastgele biri'], answer: 'Düşük vruntime\'lı',
+        ok: 'Doğru. Düşük vruntime = en az pay almış. EEVDF uygun görevler içinden en geride kalanı öne alarak adaleti kurar.', no: 'İpucu: vruntime "ne kadar pay aldın"ı ölçer. Kime borçluyuz?' },
+      { q: 'nice değerini artırmak (ör. 0→10) bir görevin CPU payını ne yapar?', opts: ['Artırır', 'Azaltır', 'Değiştirmez'], answer: 'Azaltır',
+        ok: 'Doğru. Yüksek nice → düşük ağırlık (1048576 → 112640) → vruntime daha hızlı artar → daha seyrek seçilir. "nice" olmak az pay almaktır.', no: 'İpucu: ölçtüğümüz ağırlık nice 10\'da düşmüştü. Düşük ağırlık ne demek?' },
+      { q: 'EEVDF\'te "sanal son tarih (virtual deadline)" neye yarar?', opts: ['Görevi öldürmeye', 'Gecikmeye duyarlı işleri öne almaya', 'Belleği boşaltmaya'], answer: 'Gecikmeye duyarlı işleri öne almaya',
+        ok: 'Doğru. Kısa dilim isteyen etkileşimli görevin son tarihi daha yakın olur; EEVDF onu öne alır. CFS\'e göre temel yeniliği budur.', no: 'İpucu: "deadline" bir işin ne kadar acil olduğunu kodlar.' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Linux Modül 7', title: 'Sinyaller', desc: 'Çekirdek bir sürece asenkron olarak nasıl haber yollar? Sinyal teslimi ve handler\'a atlama.', href: 'linux-signals.html' },
+  sources: [
+    { href: 'https://man7.org/linux/man-pages/man7/sched.7.html', text: 'man 7 sched', note: 'politikalar ve nice' },
+    { href: 'https://lwn.net/Articles/925371/', text: 'LWN: An EEVDF CPU scheduler for Linux', note: 'EEVDF tasarımı' },
+    { href: 'https://elixir.bootlin.com/linux/latest/source/kernel/sched/fair.c', text: 'kernel/sched/fair.c', note: 'pick_eevdf, Elixir' },
+    { href: 'https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-sched.pdf', text: 'OSTEP: Scheduling', note: 'ücretsiz temel' }
+  ],
+  pageTitle: 'Zamanlayıcı ve EEVDF'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

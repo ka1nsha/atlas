@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Sömürü Primitifleri</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: yetenek merdiveni (capability ladder) */
+.ladder { display: grid; gap: 8px; }
+.rung { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 10px 12px; display: grid; grid-template-columns: 26px 1fr; gap: 10px; align-items: start; min-width: 0; opacity: .5; transition: opacity .2s; }
+.rung .mk { font-family: var(--f-mono); font-size: 13px; font-weight: 700; color: var(--muted); }
+.rung .rb { display: grid; gap: 2px; min-width: 0; }
+.rung .rt { font-family: var(--f-display); font-weight: 700; font-size: 15px; }
+.rung .re { font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.rung .rd { font-size: 12.5px; color: var(--muted); }
+.rung.done { opacity: 1; border-color: var(--ok); background: var(--ok-soft); }
+.rung.done .mk { color: var(--ok); }
+.rung.cur { opacity: 1; border-color: var(--track); background: var(--track-soft); }
+.rung.cur .mk { color: var(--track); }
+.guard-note { margin-top: 12px; border: 1px solid var(--ok); background: var(--ok-soft); border-radius: var(--r); padding: 8px 10px; font-size: 12.5px; }
+.guard-note b { color: var(--ok); font-family: var(--f-mono); font-size: 11px; }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var RUNGS = [
+  { t: 'Bir bellek hatası (bug)', en: 'memory-corruption bug', d: 'Elde tetiklenebilir bir UAF, taşma veya OOB var; ama henüz yalnızca bir çökme (crash).' },
+  { t: 'Bilgi sızıntısı', en: 'info leak', d: 'Bir pointer/adres okunur; sabit bir ofset çıkarılarak modül tabanı bulunur. ASLR aşıldı.' },
+  { t: 'Keyfi okuma', en: 'arbitrary read', d: 'İstenen herhangi bir adresteki bellek okunabilir. Yapılar, anahtarlar, hedefler görünür.' },
+  { t: 'Keyfi yazma', en: 'arbitrary write', d: 'İstenen herhangi bir adrese yazılabilir. Artık veri değil, programın durumu kontrol edilir.' },
+  { t: 'Kontrol akışı ele geçirme', en: 'control-flow hijack', d: 'Bir fonksiyon işaretçisi / GOT / vtable hedeflenir; yürütme saldırganın seçtiği yere gider.' }
+];
+
+var MODULE = {
+  track: 'offensive',
+  crumbs: 'ofansif › primitifler › modül 3',
+  eyebrow: 'Ofansif izlek · Modül 3 · Sömürü',
+  titleHTML: 'Bir hatayı yeteneğe çevirmek: <code>primitifler</code>',
+  lede: 'Tek bir bellek hatası (bug) tek başına nadiren yeter. Gerçek bir sömürü, hatayı adım adım daha güçlü yeteneklere (primitive) çevirir: önce bilgi sızıntısı (info leak), sonra keyfi okuma/yazma (arbitrary read/write), en sonunda kontrol akışı ele geçirme (control-flow hijack). Bu merdiveni tırmanmak, savunmanın neyi neden durdurduğunu da gösterir.',
+  meta: ['~20 dk', 'ön koşul: UAF modülü', 'bağlam: kavramsal'],
+  ethic: '<b>İlke.</b> Bu modül mekanizmayı ve kamuya açık kavramları öğretir; çalışır ya da silahlandırılmış exploit kodu içermez. Kod parçaları kasıtlı olarak sözde-koddur (pseudo-code). Tüm deneyler <b>kendi makinende, kasıtlı zafiyetli örneklerde</b> yapılır. Saldırıyı anlamak, savunmayı anlamanın ön koşuludur.',
+  intuition: {
+    paras: [
+      'Bir exploit yazmak tek bir sihirli an değildir; bir <strong>yetenek merdivenidir (capability ladder)</strong>. Her basamakta saldırganın elindeki güç biraz daha artar, ve her yeni yetenek bir sonrakini mümkün kılar. Bir çökme (crash) ile tam kontrol arasındaki mesafeyi kapatan şey bu zincirdir.',
+      'Bu yüzden savunma da bu merdiven üzerinden okunur: her koruma (mitigation) belirli bir basamağı tırmanmayı pahalılaştırır ya da imkânsız kılar. ASLR sızıntıyı zorunlu kılar; CFI/PAC kontrol akışı ele geçirmeyi kırar. Hangi korumanın hangi basamağı kestiğini bilmek, hem saldırganın hem savunmacının haritasıdır.'
+    ],
+    ideas: [
+      { b: 'Zincir, tek atış değil', span: 'Bug → sızıntı → okuma → yazma → kontrol. Her halka bir sonrakini açar; zayıf halka tüm zinciri durdurur.' },
+      { b: 'Okuma yazmadan önce gelir', span: 'Önce adresleri öğrenmek (leak) gerekir; nereye yazacağını bilmeden keyfi yazma işe yaramaz.' },
+      { b: 'Korumalar basamak keser', span: 'ASLR sızıntıyı, DEP/NX kod enjeksiyonunu, CFI/PAC kontrol akışını hedefler. Katmanlı savunma her basamağı pahalılaştırır.' }
+    ]
+  },
+  lab: {
+    intro: 'Aşağıdaki sözde-kod (pseudo-code), bir hatanın kademeli olarak nasıl güçlendiğini gösterir. Her adımda sağdaki merdivende saldırganın ulaştığı yeteneği ve o basamağı hangi korumanın savunduğunu izle.',
+    codeLabel: 'primitifler (sözde-kod)', cmd: '# kavramsal akış',
+    foot: 'Bu kod kavramsaldır (pseudo-code), çalıştırılabilir bir exploit değildir. Değerler temsilîdir.',
+    code: [
+      { t: '<span class="cm">// kavramsal primitif zinciri — silahlandırılmış kod DEĞİL</span>' },
+      { t: 'bug  = <span class="f">trigger_uaf</span>();          <span class="cm">// 1. tetiklenebilir hata</span>', danger: true },
+      { t: 'leak = <span class="f">oob_read</span>(victim);        <span class="cm">// 2. bir pointer sızdı</span>' },
+      { t: 'base = leak - <span class="n">OFFSET</span>;          <span class="cm">//    ASLR tabanı çözüldü</span>' },
+      { t: 'val  = <span class="f">arb_read</span>(base + x);      <span class="cm">// 3. keyfi okuma</span>' },
+      { t: '<span class="f">arb_write</span>(base + y, value);    <span class="cm">// 4. keyfi yazma</span>', danger: true },
+      { t: '*target_ptr = gadget;         <span class="cm">// 5. kontrol akışı</span>', danger: true },
+      { t: '<span class="cm">// -> yürütme saldırganın seçtiği yere gider</span>' }
+    ],
+    steps: [
+      { pc: 2, rung: 0, title: 'Elde bir hata var', term: ['[*] UAF tetiklendi (kavramsal)'],
+        text: 'Başlangıçta yalnızca tetiklenebilir bir bellek hatası var — örneğin önceki modüldeki use-after-free. Tek başına bu, çoğu zaman bir çökmeden (crash) ibarettir; henüz bir şey okuyup yazamıyoruz.',
+        guard: { n: 'MTE · AddressSanitizer', t: 'Belleği etiketleyerek hatanın kendisini daha oluşurken yakalar; merdivenin ilk basamağına çıkmayı bile engelleyebilir.' },
+        verdict: 'Yetenek: yalnızca çökme (crash)' },
+      { pc: [3, 4], rung: 1, title: 'Bilgi sızıntısı (info leak)', term: ['[+] sızan pointer: 0x55e3...a240', '[+] modül tabanı: 0x55e3...0000'],
+        text: 'Hatayı bir okumaya çevirip bir pointer sızdırıyoruz. Bilinen bir ofseti çıkarınca modülün bellekteki tabanı (base) ortaya çıkar. Bu an kritiktir: adresleri rastgeleleştiren ASLR, ancak böyle bir sızıntı olmadan işe yarar.',
+        guard: { n: 'ASLR · KASLR', t: 'Modül tabanını her çalıştırmada rastgeleleştirir. Bir sızıntı olmadan saldırgan nereye yazacağını bilemez; bu yüzden leak bu merdivenin kilit basamağıdır.' },
+        verdict: 'Yetenek: bellek düzeni biliniyor (ASLR aşıldı)' },
+      { pc: 5, rung: 2, title: 'Keyfi okuma (arbitrary read)', term: ['[+] arb_read(base+0x40) = 0x00007fff...', '[+] hedef yapı okunuyor'],
+        text: 'Artık istediğimiz adresi okuyabiliyoruz. Bu, programın iç yapılarını, başka pointer’ları ve bir sonraki adımda yazacağımız hedefleri görünür kılar. Keyfi okuma (arbitrary read), keyfi yazmanın gözüdür.',
+        guard: { n: 'PAN · SMAP', t: 'Çekirdek bağlamında, çekirdeğin kullanıcı belleğini gelişigüzel okumasını engeller; keyfi okumanın kapsamını daraltır.' },
+        verdict: 'Yetenek: istenen adres okunabiliyor' },
+      { pc: 6, rung: 3, title: 'Keyfi yazma (arbitrary write)', term: ['[+] arb_write(base+0x8, controlled)', '[+] program durumu değiştirildi'],
+        text: 'Okuma ile öğrendiğimiz adreslere artık yazabiliyoruz. Bu noktada veriyi değil, programın durumunu kontrol ediyoruz: bir bayrağı değiştirmek, bir uzunluğu büyütmek veya bir işaretçiyi (pointer) saptırmak.',
+        guard: { n: 'RELRO · __RO alanlar', t: 'GOT gibi kritik tabloları salt okunur yapar; keyfi yazmanın en kolay hedeflerini kapatır, saldırganı daha zor hedeflere iter.' },
+        verdict: 'Yetenek: istenen adrese yazılabiliyor' },
+      { pc: 7, rung: 4, title: 'Kontrol akışı ele geçirme', term: ['[+] fonksiyon işaretçisi saptırıldı', '[*] yürütme yönlendirildi (kavramsal)'],
+        text: 'Keyfi yazmayı bir fonksiyon işaretçisine, GOT girdisine veya C++ vtable’ına yöneltince, program bir sonraki çağrıda saldırganın seçtiği adrese dallanır. Kontrol akışı ele geçirme (control-flow hijack) burada tamamlanır; sonrası ROP/yük (payload) aşamasıdır.',
+        guard: { n: 'CFI · PAC · Shadow Stack', t: 'İşaretçilerin bütünlüğünü doğrular (PAC imzası) veya izinli hedefleri sınırlar (CFI). Keyfi yazma olsa bile akışı kaçırmayı doğrudan kırar.' },
+        verdict: 'Yetenek: yürütme kontrol ediliyor' }
+    ],
+    render: function (s, stateEl, u) {
+      var rungs = RUNGS.map(function (r, i) {
+        var cls = i < s.rung ? 'rung done' : (i === s.rung ? 'rung cur' : 'rung');
+        var mk = i < s.rung ? '✓' : (i === s.rung ? '▸' : (i + 1));
+        return '<div class="' + cls + '"><span class="mk">' + mk + '</span><span class="rb">' +
+          '<span class="rt">' + u.esc(r.t) + '</span><span class="re">' + u.esc(r.en) + '</span>' +
+          '<span class="rd">' + u.esc(r.d) + '</span></span></div>';
+      }).join('');
+      stateEl.innerHTML =
+        '<p class="lab-label">Yetenek merdiveni (capability ladder)</p>' +
+        '<div class="ladder">' + rungs + '</div>' +
+        '<div class="read-out"><div class="verdict breach"><span class="dot"></span><span>' + u.esc(s.verdict) + '</span></div></div>' +
+        '<div class="guard-note"><b>BU BASAMAĞI SAVUNAN KORUMA · ' + u.esc(s.guard.n) + '</b><br>' + u.esc(s.guard.t) + '</div>';
+    }
+  },
+  deepDive: {
+    heading: 'Derinlemesine: bug değil, yetenek',
+    html: `<p class="lead">Bir saldırgan bir bellek hatasını "çökme" olarak değil, bir <strong>yetenek</strong> (capability) olarak okur: bu bug bana ne <em>yaptırıyor</em>? Primitif (primitive), bir bug'ın saldırgana sağladığı bu soyut yetenektir — belirli bir exploit'ten, offset'ten veya gadget'tan bağımsız olarak. Bu bölüm tamamen kavramsaldır ve yetenekleri MITRE CWE'nin kamuya açık, savunma odaklı tanımlarıyla adlandırır; amaç bir saldırıyı kurmak değil, savunmanın neyi hedeflediğini görebilmektir.</p>
+
+<h3>1. Primitif: bug'ın soyut yeteneği</h3>
+<p>Aynı tür bug (UAF, taşma, OOB) farklı programlarda çok farklı görünür; ama saldırgana sağladıkları yetenek birkaç soyut sınıfta toplanır. Bir primitif bu yüzden "hangi CVE" değil, "bana ne okutuyor/yazdırıyor/çalıştırıyor" sorusunun yanıtıdır. Bellek-bozucu bir bug'ın (memory-corruption bug) nihai ağırlığı, tam da hangi primitife yükseltilebildiğiyle ölçülür.</p>
+<div class="manpage src-docs"><div class="ref">MITRE · CWE-416 · Use After Free</div><p class="orig">The product reuses or references memory after it has been freed. … execution of arbitrary code can be achieved.</p><p>Tek bir bug ("serbest bırakılmış belleği yeniden kullanmak") doğru koşullarda arbitrary code execution'a kadar yükselebilir. Bug ile sonuç arasındaki bu mesafeyi kapatan şey, aradaki primitif basamaklarıdır — bug kendiliğinden kod çalıştırmaz, önce bir yeteneğe çevrilir.</p></div>
+
+<h3>2. Okuma primitifleri: relative read'den arbitrary read'e</h3>
+<p>İlk ve çoğu zaman en değerli yetenek <strong>okuma</strong>dır. İki ucu vardır. Sınırlı uçta <strong>relative read</strong> / out-of-bounds read: saldırgan yalnızca bir tamponun yakınındaki belleği, kendi konumuna göreli okur. Güçlü uçta <strong>arbitrary read</strong>: saldırgan istediği mutlak adresi okur.</p>
+<div class="manpage src-docs"><div class="ref">MITRE · CWE-125 · Out-of-bounds Read</div><p class="orig">The product reads data past the end, or before the beginning, of the intended buffer. … An attacker could get secret values such as cryptographic keys, PII, memory addresses</p><p>Sınır dışı okumanın confidentiality sonucu doğrudan tanımda: saldırgan cryptographic key, PII ve <strong>memory address</strong> gibi gizli değerleri ele geçirebilir. Burada en kritik ganimet adrestir — çünkü sızan tek bir pointer, bir sonraki basamağın anahtarıdır.</p></div>
+<p>Bir adresin neden bu kadar değerli olduğunu <strong>information disclosure</strong> primitifi açıklar: modern sistemlerde ASLR/KASLR modül tabanını her çalıştırmada rastgeleleştirir, dolayısıyla saldırgan "nereye" yazacağını baştan bilemez. Sızdırılan tek bir pointer'dan sabit bir derleme-zamanı offset'i çıkararak modül tabanı hesaplanır ve rastgelelik etkisiz kalır. Bu yüzden bir info leak neredeyse her zaman zincirin <em>ilk</em> adımıdır.</p>
+<div class="manpage src-docs"><div class="ref">MITRE · CWE-200 · Exposure of Sensitive Information</div><p class="orig">The product exposes sensitive information to an actor that is not explicitly authorized to have access to that information.</p><p>Bir bilgi sızıntısı tek başına "kod çalıştırmaz"; ama yetkisiz tarafa bir adres açarak ASLR'yi işlevsiz bırakır ve sonraki keyfi okuma/yazma adımlarının hedefini belirlenebilir kılar. Savunma tarafında bu, "zararsız görünen" bir okuma bug'ının neden ciddiye alındığını açıklar.</p></div>
+
+<h3>3. Yazma primitifi: write-what-where</h3>
+<p>Okumadan sonraki basamak <strong>yazma</strong>dır. En güçlü soyut biçimi klasik adıyla <em>write-what-where</em>'dir: saldırgan hangi değeri (what) hangi adrese (where) yazacağını seçebilir. Bu noktada artık veri değil, programın durumu (state) kontrol edilir.</p>
+<div class="manpage src-docs"><div class="ref">MITRE · CWE-123 · Write-what-where Condition</div><p class="orig">Any condition where the attacker has the ability to write an arbitrary value to an arbitrary location … Even when the attacker can only modify a single byte arbitrary code execution can be possible.</p><p>Tanım, yeteneği iki serbestlik derecesiyle verir: keyfi değer (what) ve keyfi konum (where). CWE'nin altını çizdiği nokta savunma açısından çarpıcıdır: saldırgan yalnızca <strong>tek bir byte</strong> değiştirebilse bile arbitrary code execution mümkün olabilir. Bu yüzden "küçük" bir yazma bug'ı küçük bir risk değildir.</p></div>
+<p>Keyfi yazma hemen kod çalıştırmaz; bir sonraki basamağa köprüdür. Saldırgan onu, kontrol akışını yönlendiren bir hedefi üzerine yazmak için kullanır.</p>
+
+<h3>4. Control-flow hijack'e giden yol</h3>
+<p>Son basamak <strong>control-flow hijack</strong>: yürütmenin saldırganın seçtiği yere gitmesi. Yazma primitifinin doğal hedefleri, CPU'nun "bundan sonra nereye gideceğim?" kararını tutan konumlardır — bu yüzden dönüş adresi (return address), function pointer, GOT girdileri ve C++ vtable'ları klasik hedeftir: üzerlerine yazmak doğrudan bir sonraki dalı (branch) saldırgana devreder.</p>
+<p>DEP/NX saldırganın yazdığı veriyi kod olarak çalıştırmayı engelleyince, saldırgan kendi kodunu enjekte etmek yerine var olan kod parçalarını zincirler (code-reuse). Bunun kavramsal adı <strong>ROP</strong>'tur; bu modül bilinçli olarak somut gadget/offset vermez, yalnızca "bir koruma bir yolu kapatınca saldırganın başka yol araması" fikrini adlandırır.</p>
+
+<h3>5. Zincir ve her basamağı kıran koruma</h3>
+<p>Primitifler bir merdiven oluşturur: zayıf bir bug, basamak basamak daha güçlü yeteneklere çevrilir ve çoğu zaman tek bir basamak tek başına yetmez. Savunmayı anlamak, her basamağın karşısına onu hangi korumanın (mitigation) zorlaştırdığını koymaktır — çünkü her koruma tam da belirli bir primitifi hedefler.</p>
+<div class="deflist">
+<div><dt>information disclosure</dt><dd>Hedef: adres sızdırıp ASLR'yi yenmek. Onu zorlaştıran: <strong>ASLR / KASLR</strong> (tahmin edilmesi gereken entropiyi artırır).</dd></div>
+<div><dt>arbitrary read</dt><dd>Hedef: çekirdek/iç yapıları okumak. Onu zorlaştıran: <strong>PAN / SMAP</strong> (çekirdeğin kullanıcı belleğine gelişigüzel erişimini keser).</dd></div>
+<div><dt>write-what-where</dt><dd>Hedef: kritik tabloları/durumu üzerine yazmak. Onu zorlaştıran: <strong>RELRO</strong>, read-only GOT/vtable, sayfa izinleri.</dd></div>
+<div><dt>kod enjeksiyonu</dt><dd>Hedef: yazılan veriyi çalıştırmak. Onu zorlaştıran: <strong>DEP / NX, W^X</strong> (yazılabilir sayfa çalıştırılamaz).</dd></div>
+<div><dt>control-flow hijack</dt><dd>Hedef: yürütmeyi yönlendirmek. Onu zorlaştıran: <strong>CFI, PAC, shadow stack</strong> (geçerli dal hedeflerini / dönüş adreslerini doğrular).</dd></div>
+</div>
+<p>İki sonuç çıkar. Birincisi, korumalar tek tek değil <strong>katmanlı</strong> (defense in depth) anlamlıdır: biri bir basamağı kapatınca saldırgan komşu basamağa kayar, o da kapalı olmalıdır. İkincisi, en köktenci savunma merdivenin <em>ilk</em> basamağını yok etmektir — bellek-güvenli diller ve MTE gibi önlemler bug'ı bir primitife dönüşmeden, kaynağında yakalamayı hedefler.</p>`
+  },
+  underHood: {
+    heading: 'Kaputun altında: primitifler ve korumalar',
+    html: '<p class="prose">Her primitif, bir sonraki için bir ön koşuldur; ve her koruma (mitigation) tam da bir primitifi hedefler. Savunmayı anlamak, bu eşleşmeyi okumaktır:</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Primitif</th><th>Ne sağlar</th><th>Onu zorlaştıran koruma</th></tr></thead><tbody>' +
+      '<tr><td><b>Bilgi sızıntısı (info leak)</b></td><td>Adresleri öğrenir, taban hesaplanır</td><td>ASLR / KASLR</td></tr>' +
+      '<tr><td><b>Keyfi okuma (arbitrary read)</b></td><td>İç yapılar ve hedefler görünür olur</td><td>PAN / SMAP (çekirdek)</td></tr>' +
+      '<tr><td><b>Keyfi yazma (arbitrary write)</b></td><td>Program durumu kontrol edilir</td><td>RELRO, salt okunur tablolar</td></tr>' +
+      '<tr><td><b>Kod enjeksiyonu</b></td><td>Saldırgan kodunu çalıştırır</td><td>DEP / NX, W^X</td></tr>' +
+      '<tr><td><b>Kontrol akışı (control-flow hijack)</b></td><td>Yürütmeyi yönlendirir</td><td>CFI, PAC, Shadow Stack</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px">DEP/NX kod enjeksiyonunu engelleyince saldırgan var olan kod parçalarını zincirler: buna <strong>ROP (return-oriented programming)</strong> denir. Yani bir koruma bir yolu kapattığında saldırgan başka yol arar; işte bu yüzden korumalar tek tek değil, <em>katmanlı (defense in depth)</em> kullanılır. Nihai çözüm ise merdivenin ilk basamağını yok etmektir: bellek-güvenli diller ve MTE, bug’ın kendisini ortadan kaldırmayı hedefler.</p>'
+  },
+  pipeline: { intro: 'Bu modüldeki merdiven, serinin genel sömürü boru hattının (exploitation pipeline) ayrıntılı halidir. Aşağıda zincirin tamamını ve her korumanın nerede devreye girdiğini bir arada gör.' },
+  tryIt: {
+    items: [
+      { h3: '1. Kendi binary\'inde korumaları gör', p: 'checksec, bir çalıştırılabilirde hangi korumaların açık olduğunu listeler: ASLR (PIE), NX, RELRO, canary. Hangi basamakların zorlaştığını buradan okursun.',
+        shells: [{ label: 'terminal', copy: 'checksec --file=./program', pre: '<span class="c">$</span> checksec --file=./program\n<span class="c"># RELRO  STACK CANARY  NX  PIE  ...</span>\n<span class="g">Full RELRO   Canary found   NX enabled   PIE enabled</span>' }] },
+      { h3: '2. Bir adres sızdır (kendi zafiyetli programında)', p: 'Kasıtlı zafiyetli bir eğitim programında (örn. kendi yazdığın) bir pointer’ı yazdır ve her çalıştırmada ASLR yüzünden nasıl değiştiğini gör. Bu, "leak neden gerekir" sorusunu somutlaştırır.',
+        shells: [{ label: 'terminal (temsilî)', copy: 'for i in 1 2 3; do ./leak_demo; done', pre: '<span class="c">$</span> for i in 1 2 3; do ./leak_demo; done\nleak: 0x55a1<span class="y">c3d2</span>a240\nleak: 0x5631<span class="y">7f08</span>a240\nleak: 0x55f4<span class="y">9b11</span>a240   <span class="c"># taban her sefer farklı (ASLR)</span>' }] },
+      { h3: '3. gdb/pwndbg ile incele', p: 'pwndbg, bir çökmeyi (crash) ve bellek düzenini incelemek için standart araçtır. Kayıtları (register), yığını (stack) ve heap’i tek ekranda gösterir.',
+        shells: [{ label: 'terminal (temsilî)', copy: 'gdb -q ./program', pre: '<span class="c">$</span> gdb -q ./program\npwndbg> <span class="g">vmmap</span>     <span class="c"># bellek haritası ve izinler</span>\npwndbg> <span class="g">telescope $rsp</span>   <span class="c"># yığını çöz</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Bir saldırgan neden keyfi yazmadan (arbitrary write) önce bilgi sızıntısına (info leak) ihtiyaç duyar?', opts: ['Daha hızlı olduğu için', 'Nereye yazacağını bilmek için', 'Zorunlu değildir'], answer: 'Nereye yazacağını bilmek için',
+        ok: 'Doğru. ASLR adresleri rastgeleleştirir; bir sızıntı olmadan saldırgan hedef adresi bilemez, yazma körleşir. Okuma/sızıntı, yazmanın gözüdür.', no: 'İpucu: ASLR adresleri gizler. Yazmadan önce ne öğrenmek gerekir?' },
+      { q: 'DEP/NX kod enjeksiyonunu engelleyince saldırganlar hangi tekniğe yönelir?', opts: ['ROP (return-oriented programming)', 'Daha fazla RAM', 'Derleyici hatası'], answer: 'ROP (return-oriented programming)',
+        ok: 'Doğru. Veri çalıştırılamadığında saldırgan var olan kod parçalarını (gadget) zincirler. Bir koruma bir yolu kapatır, saldırgan başka yol arar.', no: 'İpucu: kod enjekte edilemiyorsa, var olan kod nasıl kullanılır?' },
+      { q: 'CFI ve PAC hangi basamağı doğrudan hedefler?', opts: ['Bilgi sızıntısı', 'Keyfi okuma', 'Kontrol akışı ele geçirme'], answer: 'Kontrol akışı ele geçirme',
+        ok: 'Doğru. CFI izinli dallanma hedeflerini sınırlar, PAC işaretçileri imzalar; keyfi yazma olsa bile kontrol akışını kaçırmayı kırarlar.', no: 'İpucu: bu korumalar işaretçi bütünlüğünü doğrular. Hangi basamak işaretçi saptırmaya dayanır?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Ofansif Modül 4', title: 'Korumalar ve neden varlar', desc: 'ASLR, DEP/NX, canary, CFI, PAC: her koruma hangi primitifi hedefler ve nasıl aşılır?' },
+  sources: [
+    { href: 'https://pwn.college/', text: 'pwn.college', note: 'uygulamalı, ücretsiz' },
+    { href: 'https://github.com/RPISEC/MBE', text: 'RPISEC — Modern Binary Exploitation' },
+    { href: 'https://www.youtube.com/@LiveOverflow', text: 'LiveOverflow', note: 'kavramsal video serileri' },
+    { href: 'https://github.com/xairy/linux-kernel-exploitation', text: 'xairy/linux-kernel-exploitation', note: 'çekirdek primitifleri' }
+  ],
+  pageTitle: 'Sömürü Primitifleri'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

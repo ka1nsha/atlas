@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Dinamik Enstrümantasyon</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'offensive',
+  crumbs: 'ofansif › dinamik enstrümantasyon › modül 13',
+  eyebrow: 'Ofansif izlek · Modül 13 · Dinamik enstrümantasyon',
+  titleHTML: 'Çalışan koda müdahale: <code>dynamic instrumentation</code>',
+  lede: 'Bir uygulama çalışırken içine girip bir fonksiyonu yakalamak (hook), argümanlarını okumak, dönüş değerini gözlemlemek — kaynak kod olmadan. Bu modül, güvenlik testinin en güçlü aracı olan dinamik enstrümantasyonun nasıl çalıştığını ve bir uygulamanın buna karşı kendini nasıl savunduğunu kavramsal olarak anlatır.',
+  meta: ['~20 dk', 'ön koşul: tersine mühendislik temeli', 'bağlam: iOS / Android / native'],
+  ethic: '<b>İlke.</b> Dinamik enstrümantasyon meşru bir güvenlik testi, hata ayıklama ve uyumluluk aracıdır. Bu modül yalnızca mekanizmayı ve savunma tarafını kavramsal olarak anlatır; çalışır bir bypass script\'i içermez. Tüm çalışma <b>kendine ait ya da açık izinli (yetkili) hedeflerde</b> yapılır.',
+  intuition: {
+    paras: [
+      'Statik analiz bir ikiliyi çalıştırmadan okur; ama bazı şeyler ancak program koşarken belli olur: şifresi çözülmüş bir değer, bir sunucudan gelen yanıt, bir dalın gerçekte hangi yöne gittiği. İşte <strong>dynamic instrumentation</strong> (dinamik enstrümantasyon) tam da bunun için vardır — çalışan bir sürecin davranışını canlı gözlemlemek ve gerekirse değiştirmek.',
+      'Temel fikir şudur: hedef sürecin içine küçük bir kod parçası (ve çoğu zaman bir script motoru) yerleştirilir. Bu parça, ilgilenilen fonksiyonun girişine bir <strong>hook</strong> (kanca) takar. Fonksiyon her çağrıldığında önce senin kodun çalışır: argümanları okur, loglar, isterse dönüş değerini gözler. Kaynak kod gerekmez; bu yüzden kapalı kaynak uygulamaları anlamakta çok güçlüdür.'
+    ],
+    ideas: [
+      { b: 'Hook: araya girmek', span: 'Bir fonksiyonun giriş/çıkışına kendi kodunu yerleştirirsin. Orijinal akış bozulmadan, çağrı sırasında gözlem yapılır.' },
+      { b: 'Tracing: akışı izlemek', span: 'Hangi fonksiyonların, hangi sırayla, hangi argümanlarla çağrıldığını canlı dökmek. Davranışın haritasını çıkarır.' },
+      { b: 'Managed runtime açıktır', span: 'Objective-C/Swift ve Java/Kotlin gibi yönetilen runtime\'lar zengin metadata taşır; bu da enstrümantasyonu kolaylaştırır.' }
+    ]
+  },
+  lab: {
+    intro: 'Bir uygulamanın <code>isPremiumUser()</code> fonksiyonunu dinamik olarak gözlediğimizi düşünelim. Amaç kavramı görmek: hook araya girer, çağrıyı yakalar, argüman ve dönüş değerini <em>okur</em>. (Bu lab gözlem akışını gösterir; bir bypass reçetesi değildir.)',
+    codeLabel: 'enstrümantasyon script taslağı', cmd: 'frida -U -f com.ornek.app -l gozlem.js',
+    foot: 'Kod temsilîdir ve gözlem amaçlıdır. Gerçek enstrümantasyon yalnızca kendine ait ya da izinli hedeflerde yapılır.',
+    code: [
+      { t: '<span class="cm">// gozlem.js — bir fonksiyonu GÖZLEMLE (hook)</span>' },
+      { t: '<span class="cm">// amaç: argüman + dönüş değerini loglamak</span>' },
+      { t: '' },
+      { t: 'var hedef = Module.getExportByName(null, "isPremiumUser");' },
+      { t: 'Interceptor.attach(hedef, {' },
+      { t: '  onEnter: function (args) {' },
+      { t: '    console.log("[+] isPremiumUser çağrıldı");' },
+      { t: '  },' },
+      { t: '  onLeave: function (retval) {' },
+      { t: '    console.log("[+] dönüş değeri =", retval);' },
+      { t: '  }' },
+      { t: '});' }
+    ],
+    steps: [
+      { pc: [1, 2], title: 'Hedefi seç', stage: 'idle', tool: 'script yüklenmedi',
+        text: 'Önce hangi fonksiyonu gözlemleyeceğimize karar veririz. Tersine mühendislik aşamasında (önceki modül) bulduğumuz sembol — burada <code>isPremiumUser</code> — enstrümantasyonun hedefi olur.',
+        term: ['$ frida -U -f com.ornek.app -l gozlem.js', '[*] Script yükleniyor...'] },
+      { pc: [4], title: 'Fonksiyonu çöz', stage: 'resolve', tool: 'Module.getExportByName',
+        text: 'Enstrümantasyon aracı, fonksiyonun bellekteki adresini sembol adından çözer. Yönetilen runtime\'larda (Obj-C/Java) bu, metod tablolarından okunur; native kodda export tablosundan.',
+        term: ['[*] isPremiumUser çözüldü:', '    0x1004a2f10'] },
+      { pc: [5, 6, 7, 8], title: 'Hook tak (onEnter)', stage: 'enter', tool: 'Interceptor.attach',
+        text: 'Interceptor fonksiyonun giriş noktasına bir hook yerleştirir. Artık fonksiyon her çağrıldığında, orijinal kod çalışmadan ÖNCE bizim <code>onEnter</code>\'ımız çalışır — argümanları burada okuruz.',
+        term: ['[*] Hook takıldı (onEnter + onLeave)', '[*] Uygulama çalışıyor, çağrı bekleniyor...'] },
+      { pc: [9, 10, 11], title: 'Çağrıyı yakala (onLeave)', stage: 'leave', tool: 'retval gözlemi',
+        text: 'Kullanıcı premium ekranına dokununca fonksiyon çağrılır. onEnter çalışır, sonra orijinal fonksiyon çalışır, sonra <code>onLeave</code> dönüş değerini gösterir. Statik analizin "ne döndürebilir"i, burada "ne döndürdü"ye döner.',
+        term: ['[+] isPremiumUser çağrıldı', '[+] dönüş değeri = 0x0', '    // bu çağrıda false döndü (gözlem)'] },
+      { pc: [], title: 'Savunma: tespit', stage: 'defense', tool: 'bütünlük kontrolü',
+        text: 'Uygulama bu müdahaleyi tespit etmeye çalışır: kendi kod bölgelerinin bütünlüğünü (integrity) sağlar, bilinen enstrümantasyon izlerini (yüklü kütüphane, açık port, bellekteki iz) arar. Bu bir <strong>duvar değil yavaşlatıcıdır</strong> — maliyeti artırır, imkânsız kılmaz.',
+        term: ['// uygulama tarafı (savunma):', '// - kod bölgesi checksum\'u değişti mi?', '// - şüpheli kütüphane haritada mı?', '// → tespit edilirse davranışı değiştir'] }
+    ],
+    render: function (s, stateEl, u) {
+      var stages = [
+        { k: 'idle', n: 'Script', d: 'hazır' },
+        { k: 'resolve', n: 'Çözümle', d: 'sembol→adres' },
+        { k: 'enter', n: 'onEnter', d: 'giriş hook' },
+        { k: 'leave', n: 'onLeave', d: 'dönüş gözlem' },
+        { k: 'defense', n: 'Savunma', d: 'tespit' }
+      ];
+      var boxes = stages.map(function (st) {
+        var on = st.k === s.stage;
+        var cls = 'box' + (on ? (s.stage === 'defense' ? ' good' : ' hi') : '');
+        return '<div class="' + cls + '"><b>' + u.esc(st.n) + '</b><span class="mono">' + u.esc(st.d) + '</span></div>';
+      }).join('');
+      var kind = (s.stage === 'defense') ? 'savunma (uygulama tarafı)' : (s.stage === 'idle' ? 'hazırlık' : 'gözlem (çalışırken)');
+      stateEl.innerHTML =
+        '<p class="lab-label">Enstrümantasyon akışı</p><div class="boxgrid"><div class="boxrow">' + boxes + '</div></div>' +
+        '<div class="read-out"><p class="lab-label" style="margin-bottom:6px">Şu anki aşama</p>' +
+        '<div class="verdict ' + (s.stage === 'defense' ? 'safe' : 'breach') + '"><span class="dot"></span><span>' + u.esc(s.tool) + ' · ' + kind + '</span></div></div>';
+    }
+  },
+  deepDive: {
+    heading: 'Derinlemesine: çalışan koda müdahalenin mekaniği',
+    html: `<p class="lead">Dinamik enstrümantasyon (dynamic instrumentation), çalışan bir sürecin davranışını — kaynak kod olmadan — gözlemlemeyi ve değiştirmeyi sağlayan tekniktir. Mobil güvenlik testinin merkezinde durur: bir uygulamanın gerçekte ne yaptığını, ağ katmanının altında, çalışma anında görürsün. Bu bölüm Frida'nın resmî belgelerine dayanır ve mekanizmayı kavramsal anlatır; amaç bir koruma kırma tarifi değil, çalışma-anı davranışını denetleyebilme becerisidir.</p>
+
+<h3>1. Enstrümantasyon nedir, neden "dinamik"?</h3>
+<p>Statik analiz ikiliyi çalıştırmadan okur (bir önceki modül). Ama şifre çözülmüş değerler, sunucu yanıtları ve koşullu dalların gerçek sonucu ancak program koşarken belli olur. Dinamik enstrümantasyon bu boşluğu doldurur: hedef sürecin içine küçük bir ajan yerleştirip canlı gözlem yapar. En yaygın araç olan Frida kendini tek cümlede şöyle tanımlar.</p>
+<div class="manpage src-docs"><div class="ref">Frida · docs</div><p class="orig">a dynamic code instrumentation toolkit — Greasemonkey for native apps.</p><p>Frida bir dynamic code instrumentation araç takımıdır; belgeler onu "native uygulamalar için Greasemonkey" diye tanımlar. Yani tarayıcıda bir sayfaya kullanıcı script'i enjekte etmek gibi, çalışan bir uygulamaya da küçük script'ler enjekte edip davranışını gözlemleyip yönlendirebilirsin — kaynak kod gerekmeden.</p></div>
+
+<h3>2. Mimari: hedefe bir script motoru enjekte etmek</h3>
+<p>Frida'nın çekirdeği native koddur ve hedef sürece bir JavaScript motoru yerleştirir; senin script'in o motorda, hedefin bellek alanına tam erişimle çalışır. Belgelerin kendi ifadesi bunu nettir.</p>
+<div class="manpage src-docs"><div class="ref">Frida · docs</div><p class="orig">Frida's core is written in C and injects QuickJS into the target processes, where your JS gets executed with full access to memory, hooking functions...</p><p>Frida'nın çekirdeği C ile yazılmıştır ve hedef süreçlere QuickJS (bir JavaScript motoru) enjekte eder; JS kodun orada, belleğe tam erişimle ve fonksiyonları hook'layarak çalışır. Script ile ana tarafın arasında çift yönlü bir iletişim kanalı (bi-directional channel) vardır — gözlem sonuçları dışarı, komutlar içeri akar.</p></div>
+<div class="deflist">
+<div><dt>frida-server</dt><dd>Jailbreak'li/root'lu bir cihazda arka planda çalışan ajan; dışarıdan (USB/ağ) gelen enstrümantasyon isteklerini karşılar. Cihazın tümünde süreçlere bağlanabilir.</dd></div>
+<div><dt>Frida Gadget</dt><dd>Jailbreak gerektirmeyen senaryoda uygulamanın içine gömülen paylaşımlı kütüphane. Ajanı sürecin kendisiyle birlikte taşır — test edilebilir yapılar için.</dd></div>
+<div><dt>QuickJS motoru</dt><dd>Hedefe enjekte edilen küçük JS motoru. Script'in burada çalışır; <code>Module</code>, <code>Interceptor</code>, <code>Memory</code> gibi API'lerle belleği ve fonksiyonları ele alır.</dd></div>
+</div>
+
+<h3>3. Hooking ve tracing: iki temel işlem</h3>
+<p>Enstrümantasyonun kalbi <strong>hook</strong>'tur: bir fonksiyonun giriş/çıkışına kendi kodunu iliştirmek. Frida'da bunu <code>Interceptor</code> yapar; API referansı işlevini tek satırda özetler.</p>
+<div class="manpage src-docs"><div class="ref">Frida · JavaScript API</div><p class="orig">Interceptor.attach(target, callbacks): intercept calls to function at target.</p><p><code>Interceptor.attach</code>, <code>target</code> adresindeki fonksiyona yapılan çağrıları yakalar (intercept eder). <code>onEnter</code> ile argümanları fonksiyon çalışmadan önce, <code>onLeave</code> ile dönüş değerini sonra okursun. <strong>Hooking</strong> belirli bir fonksiyona odaklanır; <strong>tracing</strong> ise hangi fonksiyonların hangi sırayla çağrıldığını geniş ölçekte dökerek davranışın haritasını çıkarır.</p></div>
+<p>Daha düşük seviyede, Frida'nın <code>Stalker</code> API'si bir iş parçacığını (thread) komut komut izleyebilir: <span class="mono">Stalker.follow(threadId)</span> "belirtilen thread'i izlemeye başlar". Bu, hangi kod yollarının gerçekte yürüdüğünü komut düzeyinde görmeyi sağlar — kapsam (coverage) tabanlı analiz ve fuzzing ile doğrudan bağlanır.</p>
+
+<h3>4. Neden yönetilen runtime'lar enstrümantasyona açık?</h3>
+<p>iOS'un Objective-C/Swift ve Android'in Java/Kotlin runtime'ları, çalışma anında zengin <strong>metadata</strong> taşır: sınıf adları, metod imzaları, metod tabloları. Objective-C'nin mesajlaşma modeli (<code>objc_msgSend</code>) ve ART'ın metod çözümü, bir metodu adıyla bulup araya girmeyi kolaylaştırır — native, sembolü silinmiş (stripped) C koduna göre çok daha şeffaftır.</p>
+<div class="deflist">
+<div><dt>Objective-C / Swift</dt><dd>Dinamik mesajlaşma ve runtime introspection sayesinde sınıf/metod adları çalışırken erişilebilir; metod yer değiştirme (swizzling) zaten dilin bir özelliğidir.</dd></div>
+<div><dt>Java / Kotlin (ART)</dt><dd>Yönetilen metodlar ART içinde çözülür; metod tabloları üzerinden hook takmak yapısal olarak mümkündür. Bu yüzden Android enstrümantasyonu da olgun araçlara sahiptir.</dd></div>
+</div>
+
+<h3>5. Savunma tarafı: tespit bir duvar değil, yavaşlatıcıdır</h3>
+<p>Uygulama bu müdahaleye karşı savunmasız değildir. Tipik önlemler: kendi kod bölgelerinin <strong>integrity check</strong>'i (checksum değişti mi — hook iz bırakır), bilinen enstrümantasyon araçlarının izlerini arama (yüklü kütüphane adları, açık portlar, bellekteki imzalar) ve anti-debug kontrolleri. Bunların hepsi saldırganın maliyetini artırır. Ama güvenlik mühendisliğinin değişmez ilkesi burada da geçerlidir: istemci (client) tarafında çalışan hiçbir kontrol mutlak değildir, çünkü enstrümantasyon tam da o kontrolü çalıştıran ortama müdahale edebilir. Bu yüzden client-side tespit <strong>defense in depth</strong>'in bir katmanıdır — asıl güven sunucu tarafı doğrulamasında ve en baştan hassas mantığı istemciye koymamakta olmalıdır.</p>
+<p>Savunmacı için dersin özü nettir: enstrümantasyonu imkânsız kılamazsın, ama pahalı ve gürültülü kılabilirsin; kritik kararları (yetki, ödeme, lisans) yalnızca istemciye bırakmazsın. Enstrümantasyon tespiti, jailbreak/root tespitiyle (sonraki modül) birlikte katmanlı bir caydırıcılık oluşturur.</p>`
+  },
+  underHood: {
+    heading: 'Enstrümantasyon araç kutusu',
+    html: '<p class="prose">Dinamik enstrümantasyon tek araçla değil, bir yelpazeyle yapılır. Hepsi çalışan koda farklı seviyelerden dokunur; meşru kullanımları test, hata ayıklama ve uyumluluktur.</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Araç / API</th><th>Seviye</th><th>Ne yapar</th></tr></thead><tbody>' +
+      '<tr><td>Frida <code>Interceptor</code></td><td>Fonksiyon</td><td>Giriş/çıkış hook, argüman ve dönüş gözlemi</td></tr>' +
+      '<tr><td>Frida <code>Stalker</code></td><td>Komut</td><td>Thread\'i komut komut izleme, kod kapsamı</td></tr>' +
+      '<tr><td>frida-trace</td><td>Akış</td><td>Çağrı akışını otomatik izleme (tracing)</td></tr>' +
+      '<tr><td>gdb / lldb</td><td>Süreç</td><td>Breakpoint, register/bellek inceleme</td></tr>' +
+      '<tr><td>ltrace / strace</td><td>Sınır</td><td>Kütüphane ve sistem çağrısı izleme</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px">Enstrümantasyon, tersine mühendislikle (statik harita) ve fuzzing ile (kapsam geri bildirimi) birlikte kullanılır: statik analiz hedefi bulur, enstrümantasyon canlı doğrular, Stalker kapsamı ölçer. Bu üçlü, bir güvenlik araştırmacısının temel döngüsüdür.</p>'
+  },
+  quiz: {
+    questions: [
+      { q: 'Dinamik enstrümantasyonun statik analize göre temel avantajı nedir?', opts: ['Kaynak kod gerektirir', 'Çalışma anındaki gerçek değerleri ve gidilen yolu gösterir', 'Her zaman daha hızlıdır'], answer: 'Çalışma anındaki gerçek değerleri ve gidilen yolu gösterir',
+        ok: 'Doğru. Şifre çözülmüş değerler, sunucu yanıtları ve bir dalın gerçek sonucu ancak program koşarken görünür — enstrümantasyon bunu canlı yakalar.', no: 'İpucu: statik "ne olabilir"i, dinamik neyi gösterir?' },
+      { q: 'Frida hedef sürece ne enjekte ederek script\'ini çalıştırır?', opts: ['Bir çekirdek modülü', 'Bir JavaScript motoru (QuickJS)', 'Yeni bir işletim sistemi'], answer: 'Bir JavaScript motoru (QuickJS)',
+        ok: 'Doğru. Frida\'nın C çekirdeği hedefe QuickJS enjekte eder; JS script\'in orada, belleğe tam erişimle çalışır.', no: 'İpucu: belgeler "injects QuickJS into the target processes" diyor.' },
+      { q: 'İstemci (client) tarafı enstrümantasyon tespiti neden mutlak bir savunma değildir?', opts: ['Çünkü çok yavaştır', 'Çünkü enstrümantasyon, tespiti çalıştıran ortamın kendisine müdahale edebilir', 'Çünkü yasal değildir'], answer: 'Çünkü enstrümantasyon, tespiti çalıştıran ortamın kendisine müdahale edebilir',
+        ok: 'Doğru. Kontrol, müdahale edilebilen aynı ortamda çalışır; bu yüzden tespit bir yavaşlatıcıdır. Asıl güven sunucu doğrulamasında olmalıdır.', no: 'İpucu: kontrolü kim çalıştırıyor ve o ortama kim erişebiliyor?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Ofansif izlek', title: 'Jailbreak / root tespiti ve bypass kavramları', desc: 'Enstrümantasyonun en çok karşılaştığı savunma: cihazın güven durumunu kontrol etmek. Tespit yöntemleri ve neden bunlar bir kedi-fare oyunudur.', href: 'offensive-jbdetect.html' },
+  sources: [
+    { href: 'https://frida.re/docs/home/', text: 'Frida · Dökümantasyon', note: 'dinamik enstrümantasyon araç takımı' },
+    { href: 'https://frida.re/docs/javascript-api/', text: 'Frida · JavaScript API', note: 'Interceptor, Stalker' },
+    { href: 'https://academy.8ksec.io/course/practical-mobile-application-exploitation', text: '8kSec · Practical Mobile Application Exploitation', note: 'Frida hooking/tracing' },
+    { href: 'https://www.xintra.org/courses/2-ios-reversing-exploitation-arm64', text: 'Xintra · iOS Reversing & Exploitation ARM64', note: 'anti-debug / instrumentation' }
+  ],
+  pageTitle: 'Dinamik Enstrümantasyon'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Paket Yönetimi</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: APK içeriği + kurulum hattı */
+.apk { border: 1.5px solid var(--track); border-radius: var(--r); background: var(--track-soft); overflow: hidden; }
+.apk-h { font-family: var(--f-mono); font-size: 12px; color: var(--track); font-weight: 700; padding: 7px 10px; border-bottom: 1px solid var(--track); display: flex; justify-content: space-between; gap: 8px; }
+.apk-e { font-family: var(--f-mono); font-size: 11.5px; display: flex; justify-content: space-between; gap: 8px; padding: 5px 10px; border-top: 1px solid var(--line); background: var(--surface); min-width: 0; }
+.apk-e:first-child { border-top: none; }
+.apk-e span:last-child { color: var(--muted); }
+.apk-e.hot { background: var(--track-soft); color: var(--track); font-weight: 700; }
+.apk-e.hot span:last-child { color: var(--track); }
+.pmline { display: grid; gap: 6px; margin-top: 12px; }
+.pmstep { display: grid; grid-template-columns: 26px minmax(0,1fr); gap: 8px; align-items: start; padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); min-width: 0; }
+.pmstep.on { border-color: var(--track); background: var(--track-soft); }
+.pmstep.done { opacity: .6; }
+.pmstep .ix { font-family: var(--f-mono); font-size: 11px; font-weight: 700; color: var(--muted); }
+.pmstep.on .ix { color: var(--track); }
+.pmstep b { font-family: var(--f-display); font-size: 14px; }
+.pmstep span { font-size: 12.5px; color: var(--muted); }
+.verdict-pill { font-family: var(--f-mono); font-size: 11px; padding: 2px 8px; border-radius: 999px; justify-self: start; margin-top: 2px; }
+.verdict-pill.ok { background: var(--ok-soft); color: var(--ok); }
+.verdict-pill.wait { background: var(--sunk); color: var(--muted); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'android',
+  crumbs: 'android › paket yönetimi › modül 10',
+  eyebrow: 'Modül 10 · Android · Paket yönetimi',
+  titleHTML: 'Bir <code>APK</code> nasıl kurulur?',
+  lede: 'Bir uygulama, sıkıştırılmış bir arşivden (APK) çalışan, kendi kimliği olan bir sürece dönüşene kadar bir dizi adımdan geçer: imza doğrulama (signature verification), manifest ayrıştırma, dosya kopyalama, UID atama ve kod optimizasyonu. Bu modül o yolculuğu izler.',
+  meta: ['~15 dk', 'ön koşul: DEX, kod imzalama', 'bağlam: AOSP'],
+  intuition: {
+    paras: [
+      'Bir <strong>APK</strong> (Android Package) aslında bir ZIP arşividir: içinde derlenmiş kod (<code>classes.dex</code>), insan-okunur-olmayan ikili manifest (<code>AndroidManifest.xml</code>), kaynaklar (<code>resources.arsc</code>, <code>res/</code>), yerel kütüphaneler (<code>lib/</code>) ve imza (<code>META-INF/</code> veya APK Signing Block) bulunur.',
+      'Kurulum, kullanıcı-alanındaki <code>PackageInstaller</code> ile başlar ama asıl işi ayrıcalıklı <strong>PackageManagerService (PMS)</strong> yapar. PMS önce imzayı doğrular, manifest\'i okur, sonra <strong>installd</strong> artalan sürecine (daemon) dosyaları yerleştirmesini ve uygulamaya bir UID atamasını söyler. Kod imzalama ve DEX modüllerindeki kavramlar burada birleşir.'
+    ],
+    ideas: [
+      { b: 'APK = imzalı ZIP', span: 'Tek dosyada kod, manifest, kaynaklar, kütüphaneler ve imza. İmza, kurulumdan çalışmaya kadar bütünlüğü (integrity) korur.' },
+      { b: 'İmza önce gelir', span: 'PMS, hiçbir şey kurmadan önce imzayı doğrular (v2/v3 scheme). Güncellemede yeni APK, eskisiyle aynı anahtarla imzalanmış olmalıdır.' },
+      { b: 'Her uygulama bir UID', span: 'Kurulumda uygulamaya tekil bir Linux UID verilir. Kum havuzunun (sandbox) temeli budur: her uygulama kendi UID kutusunda yaşar.' }
+    ]
+  },
+  lab: {
+    intro: 'Bir APK seçilir ve kurulum başlar. Sağda APK\'nin içeriğini ve PMS → installd kurulum hattının adımlarını izle; imza doğrulanmadan hiçbir dosya kopyalanmaz.',
+    codeLabel: 'kurulum akışı (temsilî)', cmd: 'pm install ornek.apk',
+    foot: 'Değerler ve çıktılar temsilîdir. Gerçek akış: PackageInstaller → PackageManagerService → installd.',
+    code: [
+      { t: '<span class="cm">// kullanıcı APK\'yi açar / pm install</span>' },
+      { t: 'PackageInstaller.<span class="f">install</span>(<span class="s">"ornek.apk"</span>);' },
+      { t: '' },
+      { t: '<span class="cm">// PackageManagerService</span>' },
+      { t: 'pms.<span class="f">verifySignature</span>(apk);   <span class="cm">// v2/v3 scheme</span>' },
+      { t: 'manifest = pms.<span class="f">parse</span>(apk);  <span class="cm">// izinler, bileşenler</span>' },
+      { t: 'uid = pms.<span class="f">assignUid</span>();' },
+      { t: '' },
+      { t: '<span class="cm">// installd</span>' },
+      { t: 'installd.<span class="f">createAppData</span>(pkg, uid);' },
+      { t: 'installd.<span class="f">dexopt</span>(apk);      <span class="cm">// dex2oat</span>' }
+    ],
+    steps: [
+      { pc: 2, title: 'APK seçilir', term: ['PackageInstaller: ornek.apk alındı (8.4 MB)'],
+        text: 'Kullanıcı bir APK\'yi açar veya <code>pm install</code> çalışır. PackageInstaller APK\'yi PackageManagerService\'e devreder. Henüz hiçbir şey kurulmadı; APK yalnızca bir arşiv.',
+        hot: null, step: 0, verdict: { cls: 'wait', txt: 'kurulum başlamadı' } },
+      { pc: 4, title: 'İmza doğrulanır', term: ['PMS: APK Signing Block bulundu (v3)', 'PMS: imza geçerli → sertifika A'],
+        text: 'PMS ilk iş olarak imzayı doğrular (<code>META-INF</code> / APK Signing Block, v2/v3 scheme). İmza geçersizse kurulum burada durur. Güncellemede, yeni APK eski sürümle AYNI anahtarla imzalı olmalıdır; aksi halde reddedilir.',
+        hot: 'META-INF/ (imza)', step: 1, verdict: { cls: 'ok', txt: 'imza geçerli → devam' } },
+      { pc: 5, title: 'Manifest ayrıştırılır', term: ['PMS: AndroidManifest.xml okundu', 'PMS: 3 izin, 2 activity, 1 service'],
+        text: 'PMS ikili (binary) <code>AndroidManifest.xml</code>\'i okur: uygulamanın istediği izinler (permissions), bileşenler (activity, service, receiver, provider) ve hedef SDK. Tehlikeli izinler çalışma zamanında kullanıcıya sorulmak üzere işaretlenir.',
+        hot: 'AndroidManifest.xml', step: 2, verdict: { cls: 'ok', txt: 'manifest okundu' } },
+      { pc: 6, title: 'UID atanır, dosyalar kopyalanır', term: ['PMS: uid=10234 atandı', 'installd: /data/app/.../base.apk yazıldı'],
+        text: 'PMS uygulamaya tekil bir UID (ör. 10234) verir ve installd\'e dosyaları yerleştirmesini söyler: APK <code>/data/app/</code> altına, veri dizini <code>/data/data/paket/</code> UID sahipliğiyle oluşturulur. Kum havuzu (sandbox) sınırı bu UID ile çizilir.',
+        hot: 'classes.dex', step: 3, verdict: { cls: 'ok', txt: 'uid 10234 · dosyalar yerinde' } },
+      { pc: 10, title: 'Optimize edilir ve kaydedilir', term: ['installd: dex2oat → base.odex', 'PMS: paket kaydedildi, kullanılabilir'],
+        text: 'installd, <code>dex2oat</code> ile DEX kodunu optimize eder (ART modülündeki AOT). PMS paketi kayıt veritabanına (<code>packages.xml</code>) işler. Artık uygulama başlatılabilir — Zygote\'tan fork edilip bu UID\'e specialize edilerek.',
+        hot: 'classes.dex', step: 4, verdict: { cls: 'ok', txt: 'kurulum tamam' } }
+    ],
+    render: function (s, stateEl, u) {
+      var entries = [
+        ['AndroidManifest.xml', 'izinler, bileşenler'],
+        ['classes.dex', 'derlenmiş kod'],
+        ['resources.arsc', 'kaynaklar'],
+        ['lib/arm64-v8a/', 'yerel .so'],
+        ['META-INF/ (imza)', 'v2/v3 imza bloğu']
+      ];
+      var apk = entries.map(function (e) {
+        var hot = s.hot === e[0];
+        return '<div class="apk-e' + (hot ? ' hot' : '') + '"><span>' + u.esc(e[0]) + '</span><span>' + u.esc(e[1]) + '</span></div>';
+      }).join('');
+      var steps = [
+        ['APK alındı', 'PackageInstaller'],
+        ['İmza doğrula', 'PackageManagerService'],
+        ['Manifest ayrıştır', 'PackageManagerService'],
+        ['UID + kopyala', 'installd'],
+        ['dexopt + kayıt', 'installd / PMS']
+      ];
+      var line = steps.map(function (st, i) {
+        var cls = i === s.step ? ' on' : (i < s.step ? ' done' : '');
+        return '<div class="pmstep' + cls + '"><span class="ix">' + (i + 1) + '</span><div><b>' + u.esc(st[0]) + '</b><br><span>' + u.esc(st[1]) + '</span></div></div>';
+      }).join('');
+      stateEl.innerHTML =
+        '<p class="lab-label">APK içeriği (ZIP)</p>' +
+        '<div class="apk"><div class="apk-h"><span>ornek.apk</span><span>8.4 MB</span></div>' + apk + '</div>' +
+        '<span class="verdict-pill ' + s.verdict.cls + '">' + u.esc(s.verdict.txt) + '</span>' +
+        '<p class="lab-label" style="margin-top:14px">Kurulum hattı</p><div class="pmline">' + line + '</div>';
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: APK imzalama ve kurulum güvenliği",
+    html: `<p class="lead">Paket yönetiminin kalbinde tek bir soru vardır: bu kodun gerçekten iddia ettiği kişiden geldiğine ve kurulumdan sonra değişmediğine nasıl güveniriz? Yanıt, APK signature scheme'lerinin evrimi ve installd'in en az ayrıcalık (least privilege) ilkesidir. Bu bölüm AOSP belgelerine dayanır.</p>
+
+<h3>1. APK: imzalı bir ZIP arşivi</h3>
+<p>Bir <strong>APK</strong> standart bir ZIP arşividir; <code>unzip</code> ile açılır. Özel olan, içeriği ve ona eklenen imzadır. Başlıca entry'ler:</p>
+<div class="deflist">
+<div><dt>AndroidManifest.xml</dt><dd>Binary XML olarak derlenmiş manifest: package name, istenen permission'lar, component'ler (activity/service/receiver/provider), target SDK.</dd></div>
+<div><dt>classes.dex</dt><dd>Derlenmiş DEX bytecode (bkz. DEX modülü). Büyük uygulamalarda classes2.dex, classes3.dex (multidex).</dd></div>
+<div><dt>resources.arsc</dt><dd>Derlenmiş kaynak tablosu (string, layout, drawable referansları); <code>res/</code> ham kaynakları tutar.</dd></div>
+<div><dt>lib/&lt;abi&gt;/</dt><dd>Mimariye özel native kütüphaneler (örn. <code>arm64-v8a/*.so</code>).</dd></div>
+<div><dt>META-INF/ + APK Signing Block</dt><dd>v1 imzası <code>META-INF/</code> içindedir; v2+ imzası ZIP ile central directory arasına eklenen APK Signing Block'ta durur.</dd></div>
+</div>
+
+<h3>2. İmza şemaları: v1'den v4'e evrim</h3>
+<p>İmza doğrulama (signature verification) Android güvenliğinin temel taşıdır ve dört kuşaktan geçti. Her kuşak bir öncekinin zayıflığını kapatır.</p>
+<div class="manpage src-aosp"><div class="ref">APK Signing · v1 (JAR signing)</div><p class="orig">v1 signatures don't protect some parts of the APK, such as ZIP metadata.</p><p>Orijinal şema, imzalı JAR'a dayanır: her entry tek tek hash'lenir. Zayıflığı, ZIP metadata gibi bazı kısımları korumaması ve doğrulama için her entry'nin ayrı ayrı açılıp hash'lenmesidir.</p></div>
+<div class="manpage src-aosp"><div class="ref">APK Signing · v1 maliyeti</div><p class="orig">the APK verifier must uncompress all compressed entries, consuming more time and memory.</p><p>v1 doğrulaması pahalıdır çünkü verifier tüm sıkıştırılmış entry'leri açmak zorundadır — hem yavaş hem bellek yoğun.</p></div>
+<div class="manpage src-aosp"><div class="ref">APK Signing · v2 (Android 7.0+)</div><p class="orig">The contents of the APK are hashed and signed, then the resulting APK signing block is inserted into the APK.</p><p>v2, tüm dosyayı tek bir blob olarak hash'leyip imzalar ve sonucu APK Signing Block'a koyar. Böylece <strong>whole-file hash</strong> elde edilir; doğrulama çok daha hızlıdır çünkü entry'leri tek tek açmaya gerek kalmaz.</p></div>
+<div class="manpage src-aosp"><div class="ref">APK Signing · v3 (Android 9)</div><p class="orig">v2 scheme was updated to v3 in Android 9 to include additional information in the signing block</p><p>v3, v2'nin doğrulama yöntemini korur ama signing block'a ek bilgi ekler — başlıca <strong>key rotation</strong>: bir uygulamanın imza anahtarını, eski anahtarın yenisini onayladığı bir zincirle güvenli şekilde değiştirebilmesi. v4 ise (Android 11) incremental installation için dosyanın tamamı inmeden doğrulamaya izin veren ayrı bir imza üretir.</p></div>
+<div class="deflist">
+<div><dt>v1 (JAR)</dt><dd>Entry bazlı; ZIP metadata korunmaz; yavaş. Tek başına artık yetersiz.</dd></div>
+<div><dt>v2 (Signing Block)</dt><dd>Whole-file hash; hızlı; dosyadaki her değişikliği yakalar.</dd></div>
+<div><dt>v3 (key rotation)</dt><dd>v2 + imza anahtarını zincirle değiştirebilme.</dd></div>
+<div><dt>v4 (incremental)</dt><dd>Parça parça (streaming) kurulumda doğrulama.</dd></div>
+</div>
+
+<h3>3. Bütünlük garantisi: tek bir bayt bile</h3>
+<p>v2+ şemasının gücü, korumasının kapsamındadır. İmza bloğu dışındaki herhangi bir değişiklik — kodda, kaynakta, hatta ZIP metadata'sında — imzayı geçersiz kılar.</p>
+<div class="manpage src-aosp"><div class="ref">APK Signing · integrity</div><p class="orig">Any modification to the APK, including ZIP metadata modifications, invalidates the APK signature.</p><p>Bu yüzden bir saldırgan imzalı bir APK'yi açıp içine kod ekleyemez: imza tutmaz. Ayrıca v2+ imzası "soyulmuş" (stripped) bir APK de reddedilir — yani eski v1 doğrulamasına düşürme (downgrade) denemesi engellenir.</p></div>
+
+<h3>4. Kurulum akışı ve en az ayrıcalık</h3>
+<p>Kurulumun üç aktörü vardır ve ayrıcalık dağılımı bilinçlidir. Kullanıcı-alanındaki <code>PackageInstaller</code> yalnızca onay akışını yürütür. Ayrıcalıklı <strong>PackageManagerService (PMS)</strong> kararı verir: imzayı doğrular, manifest'i ayrıştırır, UID atar, permission'ları kaydeder. Ama PMS dosya sistemine <strong>dokunmaz</strong>; bunu ayrı bir root'a yakın daemon olan <code>installd</code>'e devreder. Bu ayrım, PMS'teki bir hatanın doğrudan dosya sistemi yazmasına dönüşmesini engeller (least privilege).</p>
+<div class="deflist">
+<div><dt>PackageInstaller</dt><dd>Kullanıcı onayı + install session. En az ayrıcalıklı katman.</dd></div>
+<div><dt>PackageManagerService</dt><dd>İmza doğrulama, manifest parse, UID atama, permission kaydı. Karar verici.</dd></div>
+<div><dt>installd</dt><dd>Veri dizinlerini doğru UID/izinle oluşturur, dex2oat çalıştırır. Dosyaya dokunan tek bileşen.</dd></div>
+</div>
+
+<h3>5. İzinler: install-time vs runtime</h3>
+<p>Manifest'teki her <code>uses-permission</code> iki sınıftan birine düşer. <strong>Install-time permission</strong>'lar (normal/signature) kurulumda otomatik verilir; signature permission'lar yalnızca aynı anahtarla imzalı uygulamalara. <strong>Runtime permission</strong>'lar (dangerous — kamera, konum, kişiler) Android 6.0'dan beri çalışma anında kullanıcıya sorulur ve istenildiği an geri alınabilir. Bu, "kurulumda hepsini kabul et" modelinin terk edilmesidir.</p>
+
+<h3>6. Güncelleme güvenliği: key continuity</h3>
+<p>Bir güncelleme kurulurken PMS, yeni APK'nin imza sertifikasının mevcut sürümle eşleştiğini kontrol eder (<strong>key continuity</strong>). Eşleşmezse güncelleme reddedilir — böylece başka biri senin <code>com.ornek.app</code>'inin üzerine kötü amaçlı bir sürüm kuramaz. Ayrıca <strong>rollback protection</strong>, bilinen güvenlik açığı olan eski bir sürüme düşürmeyi engeller (v3'te sürüm damgası signing block'tadır).</p>`
+  },
+  underHood: {
+    html: '<p class="prose">Kurulum, kullanıcı-alanındaki başlatıcıdan ayrıcalıklı servise ve oradan installd artalan sürecine iner. Kaynak AOSP\'ta cs.android.com üzerinden okunabilir.</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">PackageInstaller</span><span class="where">packages/apps</span><p>Kullanıcıya onay ekranını gösterir, oturumu (session) açar, APK\'yi PMS\'e devreder.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://cs.android.com/android/platform/superproject/main/+/main:frameworks/base/services/core/java/com/android/server/pm/" target="_blank" rel="noopener">PackageManagerService</a><span class="where">services/core</span><p>İmzayı doğrular (ApkSignatureVerifier), manifest\'i ayrıştırır, UID atar, izinleri kaydeder.</p></div></li>' +
+      '<li class="boundary"><div>Binder · system_server → installd</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://cs.android.com/android/platform/superproject/main/+/main:frameworks/native/cmds/installd/" target="_blank" rel="noopener">installd</a><span class="where">frameworks/native</span><p>Ayrıcalıklı artalan süreci: veri dizinlerini doğru UID/izinle oluşturur, dex2oat ile optimize eder. PMS kendisi dosya sistemine dokunmaz.</p></div></li>' +
+      '</ol>' +
+      '<p class="prose" style="margin-top:14px">Güvenlik notu: PMS dosyaları doğrudan yazmaz; ayrıcalıklı işi installd\'e devreder (en az ayrıcalık / least privilege). İmza doğrulama her şeyden önce gelir ve güncellemede anahtar tutarlılığı (key continuity) zorunludur — bu, başka birinin senin uygulamanın üzerine kötü amaçlı bir güncelleme kurmasını engeller.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Kurulu paketleri listele', p: 'Her satır bir paket adı (package name); bu ad, UID ve veri dizini uygulamanın kimliğidir.',
+        shells: [{ label: 'adb (temsilî çıktı)', copy: 'adb shell pm list packages -U | head', pre: '<span class="c">$</span> adb shell pm list packages -U | head\npackage:com.ornek.app <span class="g">uid:10234</span>\npackage:com.android.settings uid:1000\npackage:com.android.chrome uid:10198' }] },
+      { h3: '2. Bir paketin kaydını dök', p: 'dumpsys package, PMS\'in o paket için tuttuğu her şeyi gösterir: imza, izinler, kod yolu, UID.',
+        shells: [{ label: 'adb', copy: 'adb shell dumpsys package com.ornek.app', pre: '<span class="c">$</span> adb shell dumpsys package com.ornek.app\n<span class="c"># codePath=/data/app/..., userId=10234</span>\n<span class="c"># requested/granted permissions, signatures</span>' }] },
+      { h3: '3. APK\'nin dışını incele', p: 'aapt, bir APK\'nin manifest özetini (paket adı, sürüm, izinler) imzasını doğrulamadan gösterir — statik inceleme için.',
+        shells: [{ label: 'terminal', copy: 'aapt dump badging ornek.apk', pre: '<span class="c">$</span> aapt dump badging ornek.apk\n<span class="c"># package: name=\'com.ornek.app\' versionCode=\'12\'</span>\n<span class="c"># uses-permission: android.permission.INTERNET</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Bir APK dosyası aslında nedir?', opts: ['Özel ikili biçim', 'İmzalı bir ZIP arşivi', 'Tek bir DEX dosyası'], answer: 'İmzalı bir ZIP arşivi',
+        ok: 'Doğru. APK bir ZIP\'tir: manifest, classes.dex, kaynaklar, lib ve imza içerir. unzip ile açılabilir.', no: 'İpucu: APK\'yi unzip ile açabilirsin. İçinde ne var?' },
+      { q: 'PMS kurulum sırasında imzayı ne zaman doğrular?', opts: ['Dosyaları kopyaladıktan sonra', 'Hiçbir şey kurmadan en başta', 'Uygulama ilk açıldığında'], answer: 'Hiçbir şey kurmadan en başta',
+        ok: 'Doğru. İmza geçersizse kurulum hiç başlamaz; dosyalar ancak imza doğrulandıktan sonra kopyalanır.', no: 'İpucu: geçersiz imzalı bir APK\'nin dosyaları diske yazılmalı mı?' },
+      { q: 'Dosyaları diske yazan ve UID\'e göre izin veren asıl bileşen hangisidir?', opts: ['PackageManagerService', 'installd', 'PackageInstaller'], answer: 'installd',
+        ok: 'Doğru. PMS kararı verir ama dosya sistemine dokunmaz; ayrıcalıklı işi installd yapar (en az ayrıcalık).', no: 'İpucu: PMS kararı verir ama dosyaya dokunmaz. Ayrıcalıklı işi kim yapar?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Android Modül 11', title: 'Uygulama anatomisi', desc: 'Activity, Service, Receiver, Provider ve Looper/Handler/MessageQueue nasıl çalışır?' },
+  sources: [
+    { href: 'https://newandroidbook.com/TOC.html', text: 'Levin — Android Internals', note: 'Cilt II, Bölüm 3' },
+    { href: 'https://source.android.com/docs/security/features/apksigning', text: 'AOSP — APK imzalama (v2/v3)' },
+    { href: 'https://cs.android.com/android/platform/superproject/main/+/main:frameworks/base/services/core/java/com/android/server/pm/', text: 'PackageManagerService', note: 'AOSP kaynağı' }
+  ],
+  pageTitle: 'Paket Yönetimi'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

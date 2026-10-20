@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Çekirdek Açılışı ve Panic</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: açılış zinciri */
+.chainseq { display: grid; gap: 6px; }
+.bstage { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 9px 12px; display: grid; gap: 3px; min-width: 0; opacity: .45; transition: opacity .2s, border-color .2s, background .2s; }
+.bstage.done { opacity: .85; }
+.bstage.lit { opacity: 1; border-color: var(--track); background: var(--track-soft); }
+.bstage.panic { border-color: var(--bad); background: var(--bad-soft); opacity: 1; }
+.bstage .bh { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.bstage .bh b { font-family: var(--f-display); font-size: 15px; }
+.bstage.panic .bh b { color: var(--bad); }
+.bstage .bh .mono { font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.bstage p { margin: 0; font-size: 12.5px; color: var(--muted); }
+.bstage.lit p, .bstage.panic p { color: var(--fg); }
+.barrow { text-align: center; color: var(--muted); font-size: 12px; line-height: 1; }
+.trust { font-family: var(--f-mono); font-size: 11px; color: var(--ok); font-weight: 700; }
+.bstage.panic .trust { color: var(--bad); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'macos',
+  crumbs: 'macos › çekirdek açılışı › modül 9',
+  eyebrow: 'Modül 9 · macOS / iOS · Çekirdek modu',
+  titleHTML: 'Açılıştan <code>launchd</code>\'a: XNU nasıl başlar',
+  lede: 'Bir iPhone veya Mac güç düğmesine basıldıktan sonra XNU çekirdeği nasıl belleğe gelir ve çalışmaya başlar? Her adım bir öncekinin imzasını doğrular — buna güven zinciri (chain of trust) denir. Bir de işler ters gidince ne olduğunu, yani çekirdek paniğini (kernel panic) göreceğiz.',
+  meta: ['~15 dk', 'ön koşul: temel açılış kavramı', 'bağlam: Apple Silicon / XNU'],
+  intuition: {
+    paras: [
+      'Apple Silicon (iPhone, Apple Silicon Mac) cihazlarında açılış, değiştirilemez bir ROM kodundan başlar: Boot ROM. Bu kod yalnızca Apple\'ın imzaladığı bir sonraki aşamayı (iBoot) çalıştırır. iBoot da yalnızca imzalı çekirdeği yükler. Böylece zincirin her halkası bir sonrakini doğrular; araya imzasız kod sokulamaz.',
+      'Çekirdek belleğe gelince XNU\'nun kendi başlatması başlar: önce Mach tarafı (sanal bellek, IPC), sonra BSD tarafı, en sonunda ilk kullanıcı süreci <code>launchd</code> (PID 1). Linux\'taki firmware → bootloader → kernel → init zincirinin Apple karşılığıdır; fark, Apple\'da imza doğrulamanın zorunlu ve donanımla güvence altında olmasıdır.'
+    ],
+    ideas: [
+      { b: 'Güven zinciri', span: 'Boot ROM → iBoot → çekirdek: her aşama bir sonrakinin imzasını doğrular (chain of trust). Kırılamayan kök, ROM\'dadır.' },
+      { b: 'Kernelcache', span: 'Çekirdek ve temel uzantıları tek bir imzalı pakette (kernelcache) gelir; iBoot bunu bir bütün olarak doğrulayıp yükler.' },
+      { b: 'Panic', span: 'Çekirdek düzeltilemez bir tutarsızlık görünce panic() çağırır: durur, bir panic log yazar ve cihazı yeniden başlatır.' }
+    ]
+  },
+  lab: {
+    intro: 'Güç düğmesinden ilk kullanıcı sürecine kadar olan zinciri adım adım izleyelim. Her adımda aktif aşama aydınlanır; imza doğrulayan aşamalar "güven zinciri" etiketi taşır. Son adımda zincirin bozulması, yani panic.',
+    codeLabel: 'açılış zinciri', cmd: 'power on',
+    foot: 'Sürümler, boot-args ve panic log içeriği temsilîdir; gerçek değerler cihaza/sürüme göre değişir.',
+    code: [
+      { t: '<span class="cm">// güç düğmesi → Boot ROM (değiştirilemez)</span>' },
+      { t: 'Boot ROM: iBoot imzasını doğrula → çalıştır' },
+      { t: '' },
+      { t: '<span class="cm">// iBoot</span>' },
+      { t: 'iBoot: kernelcache imzasını doğrula → belleğe yükle' },
+      { t: '' },
+      { t: '<span class="cm">// XNU</span>' },
+      { t: 'kernel_bootstrap(): Mach VM + IPC başlat' },
+      { t: 'bsd_init(): POSIX katmanı, kök dosya sistemi' },
+      { t: 'bsdinit_task(): /sbin/launchd çalıştır  <span class="cm">// PID 1</span>' }
+    ],
+    steps: [
+      { pc: 1, title: 'Boot ROM', term: ['SecureROM: iBoot imzası geçerli'],
+        text: 'Güç verilince CPU, değiştirilemez (immutable) Boot ROM\'dan başlar. Bu kod fabrikada maskelenmiştir, güncellenemez — güven zincirinin kök halkasıdır (root of trust). Tek işi: iBoot\'un imzasını Apple\'ın açık anahtarıyla doğrulayıp çalıştırmak.',
+        stages: ['bootrom'], trust: ['bootrom'] },
+      { pc: [4, 5], title: 'iBoot', term: ['iBoot: kernelcache doğrulandı, yükleniyor'],
+        text: 'iBoot, Apple\'ın ikinci aşama önyükleyicisidir (bootloader). Donanımı asgari düzeyde hazırlar, sonra çekirdek önbelleğini (kernelcache) — çekirdek + temel uzantılar tek imzalı paket — doğrular ve belleğe yükler. Kurtarma (recovery) ve DFU modları da buradadır.',
+        stages: ['bootrom', 'iboot'], trust: ['bootrom', 'iboot'] },
+      { pc: 8, title: 'XNU: Mach başlar', term: ['kernel_bootstrap: pmap + VM + IPC hazır'],
+        text: 'Çekirdek devralır. <code>kernel_bootstrap()</code> önce Mach tarafını kurar: fiziksel bellek haritası (pmap), sanal bellek yöneticisi (VM) ve IPC (port) alt sistemi. Zamanlayıcı (scheduler) de bu aşamada ayağa kalkar. Henüz "süreç" kavramı yok.',
+        stages: ['bootrom', 'iboot', 'mach'], trust: ['bootrom', 'iboot'] },
+      { pc: 9, title: 'XNU: BSD başlar', term: ['bsd_init: kök dosya sistemi bağlandı'],
+        text: '<code>bsd_init()</code> POSIX dünyasını kurar: süreç/kullanıcı kavramı, VFS ve kök dosya sisteminin bağlanması (mount), ağ yığını. Artık XNU normal Unix hizmetlerini verebilir; geriye ilk kullanıcı sürecini başlatmak kalır.',
+        stages: ['bootrom', 'iboot', 'mach', 'bsd'], trust: ['bootrom', 'iboot'] },
+      { pc: 10, title: 'launchd (PID 1)', term: ['launchd başladı: PID 1', 'sistem hazır'],
+        text: '<code>bsdinit_task()</code> ilk kullanıcı sürecini, <code>/sbin/launchd</code>\'ı çalıştırır. launchd PID 1\'dir ve tüm diğer servislerin (daemon/agent) atasıdır — Linux\'taki systemd\'nin yerini tutar. Çekirdek açılışı burada biter, kullanıcı alanı başlar.',
+        stages: ['bootrom', 'iboot', 'mach', 'bsd', 'launchd'], trust: ['bootrom', 'iboot'] },
+      { pc: null, title: 'İşler ters giderse: panic', term: ['panic(cpu 2): kernel data abort', 'panic log yazıldı → yeniden başlat'],
+        text: 'Çekirdek düzeltilemez bir tutarsızlıkla karşılaşırsa (geçersiz bellek erişimi, bozuk yapı, zorlanan bir assert) <code>panic()</code> çağrılır: tüm CPU\'lar durdurulur, bir panic log (kayıt) belleğe/diske yazılır ve cihaz yeniden başlatılır. Bu log, bir güvenlik araştırmacısı için çekirdek bug\'ının kök nedenini (root cause) bulmanın ilk adımıdır.',
+        stages: ['bootrom', 'iboot', 'mach', 'bsd', 'launchd'], panic: true }
+    ],
+    render: function (s, stateEl, u) {
+      var all = [
+        { id: 'bootrom', b: 'Boot ROM', mono: 'değiştirilemez' },
+        { id: 'iboot', b: 'iBoot', mono: 'bootloader' },
+        { id: 'mach', b: 'XNU · Mach', mono: 'kernel_bootstrap' },
+        { id: 'bsd', b: 'XNU · BSD', mono: 'bsd_init' },
+        { id: 'launchd', b: 'launchd', mono: 'PID 1' }
+      ];
+      var litId = s.stages && s.stages.length ? s.stages[s.stages.length - 1] : null;
+      var html = '<p class="lab-label">Açılış zinciri</p><div class="chainseq">';
+      all.forEach(function (st, i) {
+        var done = s.stages && s.stages.indexOf(st.id) >= 0;
+        var lit = st.id === litId && !s.panic;
+        var panic = s.panic && st.id === 'launchd';
+        var cls = 'bstage' + (panic ? ' panic' : (lit ? ' lit' : (done ? ' done' : '')));
+        var trust = s.trust && s.trust.indexOf(st.id) >= 0;
+        html += '<div class="' + cls + '"><div class="bh"><b>' + st.b + (panic ? ' → PANIC' : '') + '</b><span class="mono">' + st.mono + '</span></div>' +
+          (trust ? '<span class="trust">✓ güven zinciri (imza doğrulandı)</span>' : '') +
+          (panic ? '<p>Çekirdek durdu, panic log yazıldı, yeniden başlatılıyor.</p>' : '') + '</div>';
+        if (i < all.length - 1) html += '<div class="barrow">▼</div>';
+      });
+      html += '</div>';
+      stateEl.innerHTML = html;
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: güven zincirinden launchd'ye",
+    html: `<p class="lead">Apple Silicon bir Mac veya iPhone açıldığında, hiçbir aşama bir sonrakine körü körüne güvenmez: her katman, çalıştıracağı kodun imzasını donanıma kök salmış bir güven zinciriyle (chain of trust) doğrular. XNU en sonunda devreye girer ve ilk kullanıcı process'i launchd'yi başlatır. Bu bölüm Apple Platform Security belgelerine, Apple'ın açık kaynak XNU deposuna ve Jonathan Levin'in OS Internals serisine dayanır.</p>
+
+<h3>1. Secure boot chain: Boot ROM → iBoot → kernelcache</h3>
+<p>Açılış, yonga içine kalıcı yazılmış (immutable) Boot ROM ile başlar. Bu, güvenin donanımsal köküdür (hardware root of trust): değiştirilemez, bu yüzden güvenilir kabul edilir. Her aşama bir sonrakini çalıştırmadan önce imzasını kontrol eder; doğrulama başarısız olursa cihaz recoveryOS'a düşer.</p>
+<div class="manpage src-apple"><div class="ref">apple security · boot process</div><p class="orig">The chip executes code from the Boot ROM in the first step in the chain of trust.</p><p>Boot ROM, güven zincirinin ilk halkasıdır. Bir sonraki aşama olan iBoot'un imzasını doğrular ve ona atlar. Boot ROM salt okunur olduğu için yamalanamaz — <strong>checkm8</strong> gibi Boot ROM açıkları bu yüzden kalıcıdır (Apple yazılımla düzeltemez).</p></div>
+<div class="manpage src-apple"><div class="ref">apple security · boot process</div><p class="orig">iBoot is also responsible for verifying the root hash for the signed system volume (SSV).</p><p>iBoot, kernelcache'i doğrulayıp belleğe yükler ve ayrıca sistem birimini (signed system volume) bütünlüğüyle doğrular — çekirdeğin mount edeceği dosya sistemi tamamen integrity-verified olmalıdır.</p></div>
+
+<h3>2. kernelcache: önceden linklenmiş tek image</h3>
+<p>Masaüstü Linux'ta çekirdek ve modüller (<code>vmlinuz</code> + <code>.ko</code>) ayrı yüklenir. Apple ise XNU'yu ve gerekli kext'leri (kernel extension) tek bir <strong>kernelcache</strong> içinde önceden birbirine linkler. Bu hem hız (açılışta linkleme yok) hem güvenlik (tek image tek imza ile doğrulanır) sağlar.</p>
+<div class="deflist">
+<div><dt>kernelcache</dt><dd>XNU + statik linklenmiş kext'ler, tek imzalı image. iBoot bunu bir bütün olarak doğrular.</dd></div>
+<div><dt>boot-args</dt><dd>Çekirdeğe geçen parametreler (nvram'de tutulur). Üretim cihazlarında SIP ve secure boot bunları kısıtlar; <code>kcsuffix</code>, <code>-v</code> (verbose) gibi bayraklar yalnızca güvenlik düşürüldüğünde etkilidir.</dd></div>
+</div>
+
+<h3>3. XNU boot sequence: _start'tan launchd'ye</h3>
+<p>Çekirdek devralınca, mimariye özel giriş noktasından başlayıp ortak başlatmaya iner ve ilk kullanıcı görevini doğurur. Linux'un <code>start_kernel → init</code> yoluyla kavramsal olarak aynıdır; isimler farklıdır.</p>
+<div class="deflist">
+<div><dt>_start / vstart</dt><dd>Mimariye özel giriş (osfmk/arm64). Sayfalama (paging) ve ilk stack'i kurar.</dd></div>
+<div><dt>kernel_bootstrap()</dt><dd>osfmk/kern/startup.c — pmap, Mach VM, IPC (Mach port) ve scheduler başlatılır. Mach katmanı burada ayağa kalkar.</dd></div>
+<div><dt>bsd_init()</dt><dd>bsd/kern/bsd_init.c — POSIX katmanı: proc 0 (kernel_task), VFS, kök dosya sistemi mount, network stack.</dd></div>
+<div><dt>bsdinit_task()</dt><dd>İlk kullanıcı process'i (PID 1) olarak <strong>launchd</strong> exec edilir — Mach dünyasının "init"i.</dd></div>
+</div>
+
+<h3>4. Kernel panic: çekirdek çökerse ne olur</h3>
+<p>Bir user-space process çökerse yalnızca o process ölür. Ama çekirdeğin kendisi tutarsız bir duruma düşerse (geçersiz bellek erişimi, assertion, donanım hatası) devam etmek güvenli değildir: XNU <code>panic()</code> çağırır, sistemi durdurur ve bir <strong>panic log</strong> üretir.</p>
+<ul>
+<li><strong>panic log</strong>: panic string, backtrace, register durumu ve panicked task — bir güvenlik araştırmacısının kök nedeni bulması için gereken bilgiler (bkz. Kernel debugging modülü).</li>
+<li><strong>Jetsam/watchdog ile karışmaz</strong>: panic kernel düzeyidir; user-space'teki lmkd/Jetsam veya watchdog reboot'tan farklıdır.</li>
+<li>Apple Silicon'da panic sonrası cihaz yeniden başlar; tekrarlayan panic'ler recoveryOS'a düşürür.</li>
+</ul>
+
+<h3>5. Linux boot ile karşılaştırma</h3>
+<p>İki sistem de firmware → doğrulanmış yükleyici → çekirdek → PID 1 yolunu izler, ama güven modeli farklıdır: Linux'ta secure boot (UEFI) opsiyonel ve kullanıcı anahtarlarıyla esnetilebilirken, Apple Silicon'da güven zinciri donanıma kilitlidir ve üretim cihazında kapatılamaz. Linux'ta kernel + initramfs ayrı; Apple'da kernelcache tek imzalı bütündür. PID 1 Linux'ta systemd, XNU'da launchd'dir.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">XNU\'nun açılış kodu kaynak ağacında izlenebilir: giriş noktası mimariye göre (<code>osfmk/arm64</code> veya <code>osfmk/i386</code>) başlar, ortak başlatmaya iner ve ilk kullanıcı görevine kadar gider. Panic uygulaması da <code>osfmk/kern/debug.c</code>\'dedir.</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">iBoot</span><span class="where">kapalı kaynak</span><p>kernelcache\'i doğrular ve belleğe yükler, çekirdeğe atlar.</p></div></li>' +
+      '<li class="boundary"><div>önyükleyici sınırı · iBoot → XNU</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">_start / vstart</span><span class="where">osfmk/arm64</span><p>Mimariye özel giriş; sayfalama ve yığını kurar, ortak başlatmaya geçer.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://github.com/apple-oss-distributions/xnu" target="_blank" rel="noopener">kernel_bootstrap()</a><span class="where">osfmk/kern/startup.c</span><p>pmap, VM, IPC (Mach port) ve zamanlayıcıyı başlatır.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">bsd_init()</span><span class="where">bsd/kern/bsd_init.c</span><p>POSIX katmanı: proc 0, VFS, kök dosya sistemi, ağ.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">bsdinit_task()</span><span class="where">bsd/kern</span><p>/sbin/launchd\'ı PID 1 olarak çalıştırır; kullanıcı alanı başlar.</p></div></li>' +
+      '</ol>' +
+      '<p class="prose" style="margin-top:14px">Linux ile karşılaştırma: Linux\'ta firmware (UEFI) → GRUB → vmlinuz → <code>init</code>/systemd zinciri vardır ve imza doğrulama (Secure Boot) çoğu sistemde kapatılabilir. Apple Silicon\'da zincir ROM\'dan köklenir ve doğrulama donanımla zorunlu kılınır; bu, hem güvenlik mimarisinin hem de jailbreak araştırmasının merkezindeki farktır.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Çekirdek sürümünü sor (macOS)', p: 'Çalışan XNU\'nun sürümünü ve derleme bilgisini sysctl ile öğren.',
+        shells: [{ label: 'terminal (macOS · temsilî)', copy: 'sysctl kern.osrelease kern.version', pre: '<span class="c">$</span> sysctl kern.osrelease kern.version\nkern.osrelease: 24.0.0\nkern.version: Darwin Kernel Version 24.0.0: ... xnu-11215.1.10~2/RELEASE_ARM64_T6000' }] },
+      { h3: '2. Boot argümanlarına bak (macOS)', p: 'nvram, çekirdeğe geçirilen boot-args\'ı tutar. Araştırma/hata ayıklama için buradan ayarlanır (SIP ve imza kısıtlarıyla).',
+        shells: [{ label: 'terminal (macOS · temsilî)', copy: 'nvram boot-args', pre: '<span class="c">$</span> nvram boot-args\nboot-args\t(boş veya örn. -v  →  ayrıntılı/verbose açılış)' }] },
+      { h3: '3. Bir panic log\'u incele (macOS)', p: 'Önceki panic\'ler loglanır. Başlık satırı, hangi alt sistemin ve CPU\'nun çöktüğünü söyler — kök neden analizinin başlangıcı.',
+        shells: [{ label: 'konum (macOS · temsilî)', copy: 'ls /Library/Logs/DiagnosticReports/*.panic', pre: '<span class="c">$</span> cat *.panic | head -3\npanic(cpu 2 caller 0xfff...): <span class="hi">Kernel data abort</span> ...\nDebugger message: panic\nmacOS version: ...' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Apple Silicon\'da güven zincirinin (chain of trust) kırılamayan kök halkası nedir?', opts: ['iBoot', 'Boot ROM', 'launchd'], answer: 'Boot ROM',
+        ok: 'Doğru. Boot ROM fabrikada maskelenir, güncellenemez; zincirin kökü (root of trust) odur. iBoot ve çekirdek ondan sonra doğrulanır.', no: 'İpucu: hangisi değiştirilemez/güncellenemez? Kök orada.' },
+      { q: 'XNU açılışında ilk kullanıcı süreci (PID 1) hangisidir?', opts: ['systemd', 'launchd', 'init'], answer: 'launchd',
+        ok: 'Doğru. bsdinit_task() /sbin/launchd\'ı PID 1 olarak başlatır; tüm servislerin atasıdır. systemd ve init Linux/Unix karşılıklarıdır.', no: 'İpucu: Apple\'ın servis yöneticisi. systemd değil.' },
+      { q: 'Çekirdek düzeltilemez bir tutarsızlık görünce ne yapar?', opts: ['Hatayı yok sayar', 'panic() çağırır: durur, log yazar, yeniden başlar', 'Süreci öldürüp devam eder'], answer: 'panic() çağırır: durur, log yazar, yeniden başlar',
+        ok: 'Doğru. Kullanıcı alanında bir süreç çökebilir ama çekirdekte güven kalmadığında tek güvenli yol durup yeniden başlamaktır; panic log kök neden için kalır.', no: 'İpucu: çekirdek kendine güvenemezse çalışmaya devam edemez.' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · macOS Modül 10', title: 'Çekirdek mimarisi', desc: 'User/kernel geçişi, sistem çağrısı türleri ve Mach trap\'lerin x86-64 ile ARM64\'teki işleyişi.' },
+  sources: [
+    { href: 'https://newosxbook.com/TOC2-2.html', text: 'Levin — OS Internals Cilt II', note: 'Bölüm 8–9, çekirdek açılışı' },
+    { href: 'https://github.com/apple-oss-distributions/xnu', text: 'XNU kaynağı', note: 'osfmk/kern/startup.c, bsd_init.c' },
+    { href: 'https://support.apple.com/guide/security/welcome/web', text: 'Apple Platform Security', note: 'secure boot / güven zinciri' }
+  ],
+  pageTitle: 'Çekirdek Açılışı ve Panic'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

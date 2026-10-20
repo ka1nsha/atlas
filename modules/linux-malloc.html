@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>brk, mmap ve malloc</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'linux',
+  crumbs: 'linux › bellek ayırma › modül 5',
+  eyebrow: 'Modül 5 · Linux · Bellek ayırma',
+  titleHTML: '<code>malloc</code> belleği nereden bulur: brk ve mmap',
+  lede: 'malloc() bir sistem çağrısı (system call) değildir; bir kütüphane fonksiyonudur. Belleği çekirdekten iki yolla ister: küçük istekler için öbeği (heap) brk ile büyütür, büyük istekler için mmap ile ayrı bir bölge eşler. Bu modülde bir malloc/free dizisini adım adım izleyip gerçek brk/mmap çağrılarını kendi makinende göreceksin.',
+  meta: ['~18 dk', 'ön koşul: işaretçiler, heap kavramı', 'bağlam: Linux glibc'],
+  intuition: {
+    paras: [
+      'Bir programın sanal belleğinde öbek (heap) denen, büyüyüp küçülebilen bir bölge vardır. Çekirdek bu bölgenin yalnızca üst sınırını bilir: <strong>program break</strong>. <code>brk</code>/<code>sbrk</code> sistem çağrıları bu sınırı yukarı iter, yani öbeği büyütür.',
+      'malloc() çekirdeğe her istekte gitmez; bu yavaş olurdu. Bunun yerine bir kez büyük bir alan alır ve onu <strong>yonga</strong>lara (chunk) bölüp dağıtır. free() ile geri gelen yongaları <strong>tcache</strong>/bin listelerinde tutar ve bir sonraki uygun isteğe geri verir. Yalnızca eldeki alan yetmeyince yeniden çekirdeğe gider.',
+      'Büyük istekler (glibc\'de genelde ≥128 KB) farklı ele alınır: öbeği büyütmek yerine <code>mmap</code> ile ayrı, anonim bir bölge eşlenir. free() edildiğinde bu bölge hemen işletim sistemine geri verilir.'
+    ],
+    ideas: [
+      { b: 'İki kaynak', span: 'Küçük: brk ile büyüyen öbek (heap). Büyük: mmap ile ayrı anonim eşleme (mapping).' },
+      { b: 'Yeniden kullan', span: 'free() belleği OS\'a vermez; yongayı (chunk) tcache\'e koyar. Sonraki malloc oradan alır.' },
+      { b: 'Program break', span: 'Öbeğin üst sınırı. brk(addr) onu iter; çekirdeğin öbek hakkında bildiği tek şey bu sınırdır.' }
+    ]
+  },
+  lab: {
+    intro: 'Program dört kez malloc, bir kez free çağırır. Küçük yongaların brk bölgesinden geldiğini, free sonrası aynı yonganın tcache üzerinden geri döndüğünü ve büyük isteğin ayrı bir mmap bölgesine düştüğünü sağda izle.',
+    codeLabel: 'mallocdemo.c', cmd: './mallocdemo',
+    foot: 'Adresler bu makinedeki gerçek bir çalıştırmadan alınmıştır (kısaltıldı). Senin makinende farklı olacak.',
+    code: [
+      { t: '<span class="t">char</span> *a = <span class="f">malloc</span>(<span class="n">40</span>);   <span class="cm">// küçük → öbek (brk)</span>' },
+      { t: '<span class="t">char</span> *b = <span class="f">malloc</span>(<span class="n">40</span>);' },
+      { t: '<span class="f">printf</span>(<span class="s">"a=%p b=%p\\n"</span>, a, b);' },
+      { t: '<span class="f">free</span>(a);                 <span class="cm">// yonga tcache\'e döner</span>' },
+      { t: '<span class="t">char</span> *c = <span class="f">malloc</span>(<span class="n">40</span>);   <span class="cm">// tcache isabeti: a geri gelir</span>' },
+      { t: '<span class="t">char</span> *big = <span class="f">malloc</span>(<span class="n">200</span>*<span class="n">1024</span>); <span class="cm">// büyük → mmap</span>' }
+    ],
+    steps: [
+      { pc: 1, title: 'İlk malloc: öbek büyür', term: [],
+        text: 'Arena henüz boş. malloc, çekirdeğe <code>brk</code> ile program break\'i yukarı iterek öbeği (heap) büyütür, sonra buradan bir yonga (chunk) ayırıp döndürür. İstenen 40 bayt, hizalama (alignment) ve başlık (header) ile birlikte 48 baytlık bir yongaya yuvarlanır.',
+        brk: '0x5622adcec000', brkNote: 'brk ile itildi',
+        chunks: [{ name: 'a', addr: '0x55…f2a0', size: '48 B', state: 'kullanımda', k: '' }],
+        tcache: [], mmap: null },
+      { pc: 2, title: 'İkinci malloc: bitişik yonga', term: ['a=0x55…f2a0 b=0x55…f2d0'],
+        text: 'İkinci istek çekirdeğe gitmez; az önce büyütülen öbekte yer vardır. b yongası a\'nın hemen ardına, bitişik olarak ayrılır (0x…f2a0 → 0x…f2d0, 48 bayt arayla).',
+        brk: '0x5622adcec000', brkNote: 'değişmedi',
+        chunks: [{ name: 'a', addr: '0x55…f2a0', size: '48 B', state: 'kullanımda' }, { name: 'b', addr: '0x55…f2d0', size: '48 B', state: 'kullanımda' }],
+        tcache: [], mmap: null },
+      { pc: 4, title: 'free(a): tcache\'e döner', term: ['a=0x55…f2a0 b=0x55…f2d0'],
+        text: 'free(a) belleği işletim sistemine vermez. Yonga, boyutuna karşılık gelen tcache kutusunun (bin) başına eklenir. Öbek küçülmez; a\'nın adresi hâlâ geçerli bellektir, sadece artık "boşta" işaretlidir.',
+        brk: '0x5622adcec000', brkNote: 'değişmedi',
+        chunks: [{ name: 'a', addr: '0x55…f2a0', size: '48 B', state: 'boşta (tcache)', k: 'cow' }, { name: 'b', addr: '0x55…f2d0', size: '48 B', state: 'kullanımda' }],
+        tcache: ['0x55…f2a0'], mmap: null },
+      { pc: 5, title: 'malloc(40): tcache isabeti', term: ['a=0x55…f2a0 b=0x55…f2d0', 'c=0x55…f2a0 (a ile ayni mi? evet)'], flash: true,
+        text: 'c = malloc(40) aynı boyutta. malloc önce tcache kutusuna bakar ve oradaki yongayı — az önce free edilen a\'yı — geri verir. Bu yüzden <strong>c, a ile aynı adrestir</strong>. Çekirdeğe hiç gidilmedi; bu, tahsisin neden bu kadar hızlı olduğunun da cevabı (ve use-after-free\'in neden güvenilir çalıştığının).',
+        brk: '0x5622adcec000', brkNote: 'değişmedi',
+        chunks: [{ name: 'c (eski a)', addr: '0x55…f2a0', size: '48 B', state: 'kullanımda', k: 'fresh' }, { name: 'b', addr: '0x55…f2d0', size: '48 B', state: 'kullanımda' }],
+        tcache: [], mmap: null },
+      { pc: 6, title: 'Büyük istek: mmap', term: ['a=0x55…f2a0 b=0x55…f2d0', 'c=0x55…f2a0 (a ile ayni mi? evet)', 'big=0x7f3d…8010'], flashMmap: true,
+        text: 'big = malloc(200 KB) eşiği aşar. malloc öbeği büyütmek yerine <code>mmap</code> ile tamamen ayrı, anonim bir bölge eşler. Dikkat et: adres artık 0x7f… aralığında (paylaşılan kütüphaneler ve mmap\'lerin bölgesi), öbekten (0x55…) çok uzakta. Bu bölge free edilince doğrudan işletim sistemine geri verilir.',
+        brk: '0x5622adcec000', brkNote: 'değişmedi',
+        chunks: [{ name: 'c (eski a)', addr: '0x55…f2a0', size: '48 B', state: 'kullanımda' }, { name: 'b', addr: '0x55…f2d0', size: '48 B', state: 'kullanımda' }],
+        tcache: [], mmap: { addr: '0x7f3d…8010', size: '204 KB (≈200 KB + başlık)' } }
+    ],
+    render: function (s, stateEl, u) {
+      function pg(c) {
+        return '<div class="pg ' + (c.k || '') + '" style="margin-top:6px"><div class="pg-top"><b>' + u.esc(c.name) + '</b><span class="perm">' + u.esc(c.size) + '</span></div>' +
+          '<span class="va">' + u.esc(c.addr) + '</span><span class="map">' + u.esc(c.state) + '</span></div>';
+      }
+      var heap = '<div class="box" style="min-width:0"><b>Öbek — brk bölgesi (heap)</b><span class="mono">program break: ' + u.esc(s.brk) + ' · ' + u.esc(s.brkNote) + '</span>' +
+        s.chunks.map(pg).join('') + '</div>';
+      var mmap = s.mmap
+        ? '<div class="box good" id="mmapBox" style="min-width:0"><b>mmap bölgesi (anonim eşleme)</b><span class="mono">' + u.esc(s.mmap.addr) + '</span><span>' + u.esc(s.mmap.size) + ' · öbekten ayrı, free\'de hemen OS\'a döner</span></div>'
+        : '<div class="box" style="min-width:0;opacity:.6"><b>mmap bölgesi</b><span>henüz yok — büyük istek gelince belirecek</span></div>';
+      var tcache = s.tcache.length
+        ? '<div class="freelist" style="margin-top:10px"><span class="fl-h">tcache[48] →</span><span class="bin">' + s.tcache.join(' → ') + ' → NULL</span></div>'
+        : '<div class="freelist empty" style="margin-top:10px"><span class="fl-h">tcache[48] →</span><span class="bin">boş</span></div>';
+      stateEl.innerHTML =
+        '<p class="lab-label">Sanal bellek yerleşimi</p><div class="boxgrid"><div class="boxrow">' + heap + mmap + '</div></div>' + tcache;
+      if (s.flash) ATLAS.flash(stateEl.querySelector('.pg.fresh'), false);
+      if (s.flashMmap) ATLAS.flash(document.getElementById('mmapBox'), false);
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: malloc belleği nasıl yönetir?",
+    html: `<p class="lead">malloc() tek satırlık bir çağrı gibi görünür ama altında küçük bir bellek yönetim sistemi çalışır: çekirdekten toptan alınan belleği parçalara böler, geri gelenleri listeler, yeniden kullanır. Bu bölüm bu sistemin iç yapısını ve glibc'nin tasarım kararlarını man sayfalarına dayanarak açar.</p>
+
+<h3>1. İki bellek kaynağı: brk ve mmap</h3>
+<p>Çekirdeğin bir process'in heap'i hakkında bildiği tek şey onun üst sınırıdır: <strong>program break</strong>. brk ve sbrk bu sınırı hareket ettirir.</p>
+<div class="manpage"><div class="ref">2 brk · DESCRIPTION</div><p class="orig">brk() and sbrk() change the location of the program break, which defines the end of the process's data segment. Increasing the program break has the effect of allocating memory to the process; decreasing the break deallocates memory.</p><p>Yani heap "büyütmek" demek, program break'i yukarı itmek demektir. glibc küçük istekleri karşılamak için bunu kullanır: bir kez büyük bir blok alır, sonra o bloğu kendi içinde dağıtır. Çekirdeğe her malloc'ta gitmek yavaş olurdu.</p></div>
+<p>Büyük istekler farklı ele alınır. Belirli bir eşiği aşan tahsisler heap'e sığdırılmaya çalışılmaz; doğrudan çekirdekten ayrı bir bölge istenir.</p>
+<div class="manpage"><div class="ref">3 malloc · NOTES</div><p class="orig">When allocating blocks of memory larger than MMAP_THRESHOLD bytes, the glibc malloc() implementation allocates the memory as a private anonymous mapping using mmap(2). MMAP_THRESHOLD is 128 kB by default, but is adjustable using mallopt(3).</p><p>Bu yüzden lab'daki 200 KB'lık istek <code>0x7f…</code> aralığına (mmap bölgesi) düştü, heap'teki (<code>0x55…</code>) küçük yongaların yanına değil. mmap ile alınan bir blok free edildiğinde doğrudan işletim sistemine geri verilir; heap gibi elde tutulmaz. Eşik sabit değildir: glibc, serbest bırakılan büyük blokların boyutuna göre eşiği dinamik ayarlar (free olan 200 KB'lık bir blok görürse eşiği ona yaklaştırır).</p></div>
+
+<h3>2. Bir chunk neye benzer?</h3>
+<p>malloc'un dağıttığı her parçaya <strong>chunk</strong> denir. Döndürülen işaretçinin hemen öncesinde, malloc'un kendi muhasebesi için kullandığı bir başlık (header) vardır. İstediğin 40 bayt bu yüzden bellekte 48 bayt yer kaplar: header + hizalama (alignment, 64-bit'te 16 bayt katı).</p>
+<div class="deflist">
+<div><dt>size</dt><dd>Chunk'ın toplam boyutu. Boyut her zaman 16'nın katı olduğu için alttaki 3 bit boşta kalır ve bayrak (flag) olarak kullanılır.</dd></div>
+<div><dt>PREV_INUSE</dt><dd>En düşük bit. Bir önceki (fiziksel olarak bitişik) chunk kullanımdaysa 1. Komşu free chunk'ları birleştirmek (coalescing) için okunur.</dd></div>
+<div><dt>IS_MMAPPED</dt><dd>Bu chunk brk heap'inden değil, ayrı bir mmap bölgesinden geldiyse 1. free() buna bakıp munmap çağırır.</dd></div>
+<div><dt>NON_MAIN_ARENA</dt><dd>Chunk main arena dışında, bir thread arena'sında ayrıldıysa 1.</dd></div>
+<div><dt>prev_size / fd / bk</dt><dd>Chunk free olduğunda gövdesi boştur; glibc burayı listeleme için kullanır: fd/bk komşu free chunk'lara işaret eder. Yani kullanıcı verisiyle metadata aynı baytları farklı zamanlarda paylaşır — bu, heap exploit'lerinin kavramsal olarak hedef aldığı yerdir.</dd></div>
+</div>
+
+<h3>3. free olan chunk nereye gider? (bin'ler)</h3>
+<p>free() belleği hemen OS'a vermez; chunk'ı boyutuna ve durumuna göre bir listeye (bin) koyar. Bir sonraki malloc önce bu listelere bakar, uygun olanı bulursa çekirdeğe hiç gitmez. glibc'de birkaç bin türü vardır:</p>
+<div class="deflist">
+<div><dt>tcache</dt><dd>Her thread'e özel (per-thread) hızlı önbellek. Küçük boyutlar için ilk bakılan yerdir; kilit (lock) gerektirmez, bu yüzden en hızlısıdır. Lab'da c == a olmasının sebebi budur.</dd></div>
+<div><dt>fast bin</dt><dd>Küçük chunk'lar için tekli bağlı liste. Hız için coalescing yapılmaz; LIFO çalışır.</dd></div>
+<div><dt>unsorted bin</dt><dd>free edilen chunk'ların geçici olarak düştüğü tek liste. Sonraki malloc burayı tarayıp chunk'ları small/large bin'lere dağıtır.</dd></div>
+<div><dt>small / large bin</dt><dd>Sabit boyutlu (small) ve boyut aralıklı, sıralı (large) listeler. Büyük, uzun ömürlü bloklar buraya oturur; coalescing burada yapılır.</dd></div>
+</div>
+<p>Bu katmanlı yapı bir denge kurar: tcache/fast bin hızı, small/large bin ise <strong>fragmentation</strong>'ı (bellek parçalanmasını) azaltmayı hedefler. Kötü senaryo: çok sayıda farklı boyutta tahsis/serbest bırakma, aralarda kullanılamayan küçük boşluklar bırakır ve heap kullanılmayan belleğe rağmen büyümek zorunda kalır.</p>
+
+<h3>4. Arena'lar ve çok-thread'li programlar</h3>
+<p>Tek bir heap'i birden çok thread aynı anda kullanırsa, her malloc/free bir kilit (lock) için yarışır ve bu bir darboğaz olur. glibc bunu <strong>arena</strong>'larla çözer: main arena'ya ek olarak, iş yükü arttıkça thread'ler için ayrı arena'lar açılır (her biri kendi bin'leri ve kilidiyle). Böylece farklı thread'ler çoğu zaman farklı arena'larda, birbirini beklemeden çalışır. Arena sayısı <code>MALLOC_ARENA_MAX</code> ortam değişkeniyle sınırlanabilir (çekirdek sayısının katı kadar varsayılan üst sınır vardır).</p>
+
+<h3>5. Kolay unutulan davranışlar</h3>
+<div class="manpage"><div class="ref">3 malloc · DESCRIPTION</div><p class="orig">The memory is not initialized. ... If size is 0, then malloc() returns a unique pointer value that can later be successfully passed to free().</p><p>İki ince nokta: (1) malloc dönen bellek <strong>sıfırlanmaz</strong> — eski veriyi (çöp) içerir. Sıfır gerekiyorsa <code>calloc</code> kullan. (2) <code>malloc(0)</code> NULL dönmek zorunda değildir; free edilebilir geçerli bir işaretçi dönebilir. "malloc NULL döndürdü mü?" kontrolünü boyut 0 için yazarken bu tuzağa dikkat.</p></div>
+<div class="manpage"><div class="ref">3 free · DESCRIPTION</div><p class="orig">If p is NULL, no operation is performed.</p><p><code>free(NULL)</code> güvenlidir, hiçbir şey yapmaz — bu yüzden hata yollarında NULL kontrolü yapmadan free çağırmak yaygın ve doğru bir kalıptır. Buna karşılık aynı işaretçiyi iki kez free etmek (double-free) tanımsız davranıştır ve bin listelerini bozar.</p></div>
+
+<h3>6. Güvenlik tarafı (kavramsal)</h3>
+<p>Dikkat ettiysen chunk header'ı ve free chunk'ların fd/bk işaretçileri, kullanıcı verisiyle aynı bellekte, hemen bitişik durur. Bir heap taşması (overflow) bir sonraki chunk'ın header'ına taşarsa, ya da bir use-after-free bir free chunk'ın fd işaretçisini değiştirirse, saldırgan allocator'ın muhasebesini yanıltabilir. Bu modül mekanizmayı anlatır; sömürü tekniklerinin kendisi Ofansif izlekte, kavramsal düzeyde ele alınır.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">malloc kullanıcı alanında (user space) çalışır; çekirdeğe yalnızca alan yetmeyince iner. O zaman ya program break\'i iten <code>brk</code>, ya da yeni bölge eşleyen <code>mmap</code> sistem çağrısına gider.</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://man7.org/linux/man-pages/man3/malloc.3.html" target="_blank" rel="noopener">malloc()</a><span class="where">glibc</span><p>İsteği boyutuna göre sınıflandırır; uygun yongayı arena\'da arar.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://sourceware.org/glibc/wiki/MallocInternals" target="_blank" rel="noopener">_int_malloc / tcache</a><span class="where">glibc malloc</span><p>Önce tcache, sonra fast/small/large bin\'lere bakar. Hepsi boşsa sysmalloc\'a geçer.</p></div></li>' +
+      '<li class="boundary"><div>sistem çağrısı sınırı · kullanıcı → çekirdek</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://man7.org/linux/man-pages/man2/brk.2.html" target="_blank" rel="noopener">brk / sbrk</a><span class="where">çekirdek</span><p>Küçük istekler: program break\'i yukarı iter, öbeği büyütür.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://man7.org/linux/man-pages/man2/mmap.2.html" target="_blank" rel="noopener">mmap</a><span class="where">çekirdek</span><p>Büyük istekler: ayrı, anonim bir bölge eşler; free\'de doğrudan geri alınır.</p></div></li>' +
+      '</ol>' +
+      '<p class="prose" style="margin-top:14px">Eşiği <code>mallopt(M_MMAP_THRESHOLD, ...)</code> ile değiştirebilir, davranışı <code>MALLOC_ARENA_MAX</code> gibi ortam değişkenleriyle gözleyebilirsin.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. brk ve mmap çağrılarını gör', p: 'Programı strace ile çalıştır; küçük malloc\'lar için brk\'in, büyük istek için mmap\'in çağrıldığını kendi gözünle doğrula.',
+        shells: [{ label: 'terminal · gerçek çıktı', copy: 'strace -e trace=brk,mmap ./mallocdemo', pre: '<span class="c">$</span> strace -e trace=brk,mmap ./mallocdemo\n<span class="c"># ... yükleyici mmap\'leri ...</span>\nbrk(NULL)                 = 0x5622adccb000\n<span class="y">brk(0x5622adcec000)        = 0x5622adcec000</span>   <span class="c"># öbek büyüdü (küçük malloc\'lar)</span>\n<span class="hi">mmap(NULL, 208896, PROT_READ|PROT_WRITE, ...MAP_ANONYMOUS...) = 0x7f3d1b358000</span>  <span class="c"># big (200 KB)</span>' }] },
+      { h3: '2. tcache isabetini doğrula', p: 'free edilen yonganın bir sonraki aynı boyutlu malloc\'ta geri geldiğini gör (c == a). Use-after-free\'in temelini oluşturan mekanizma budur.',
+        shells: [{ label: 'terminal · gerçek çıktı', copy: 'gcc -w -o mallocdemo mallocdemo.c && ./mallocdemo', pre: '<span class="c">$</span> ./mallocdemo\na=0x55e92ef9f2a0 b=0x55e92ef9f2d0\nc=0x55e92ef9f2a0 <span class="g">(a ile ayni mi? evet)</span>\nbig=0x7f3d1b358010' }] },
+      { h3: '3. Bellek haritasını oku', p: 'Çalışan bir sürecin öbeğini ve mmap bölgelerini /proc üzerinden gör: [heap] etiketli satır brk bölgesidir.',
+        shells: [{ label: 'terminal', copy: 'cat /proc/self/maps | grep -E "heap|stack"', pre: '<span class="c">$</span> cat /proc/self/maps | grep heap\n5622adccb000-5622adcec000 rw-p ... <span class="y">[heap]</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Küçük bir malloc(40) genellikle hangi sistem çağrısıyla öbeği büyütür?', opts: ['mmap', 'brk / sbrk', 'read'], answer: 'brk / sbrk',
+        ok: 'Doğru. Küçük istekler için glibc program break\'i brk ile iter. mmap büyük istekler ve kütüphane eşlemeleri için kullanılır.', no: 'İpucu: program break\'i iten çağrı hangisi?' },
+      { q: 'free(a)\'dan sonra belleğe ne olur?', opts: ['Hemen işletim sistemine döner', 'tcache\'e eklenir, öbek küçülmez', 'Sıfırlanır'], answer: 'tcache\'e eklenir, öbek küçülmez',
+        ok: 'Doğru. Küçük yongalar OS\'a verilmez; tcache\'e konur ve sonraki aynı boyutlu malloc\'a geri verilir.', no: 'Tekrar dene. Bir sonraki adımda c, a ile aynı adresi aldı — bellek nereye gitmişti?' },
+      { q: 'malloc(200*1024) neden 0x7f… aralığında bir adres döndürdü?', opts: ['Rastgele', 'Büyük istek mmap ile ayrı bölgeye eşlendi', 'Öbek taştı'], answer: 'Büyük istek mmap ile ayrı bölgeye eşlendi',
+        ok: 'Doğru. Eşiği aşan istekler brk ile büyüyen öbek (0x55…) yerine mmap ile ayrı anonim bölgeye (0x7f…) düşer.', no: 'İpucu: büyük istekler öbeği büyütmek yerine hangi çağrıyı kullanır?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Linux Modül 6', title: 'Zamanlayıcı (EEVDF)', desc: 'CPU\'yu hangi süreç, ne kadar süre alır? Modern Linux zamanlayıcısı kararları nasıl verir?' },
+  sources: [
+    { href: 'https://man7.org/linux/man-pages/man3/malloc.3.html', text: 'man 3 malloc' },
+    { href: 'https://man7.org/linux/man-pages/man2/brk.2.html', text: 'man 2 brk / sbrk' },
+    { href: 'https://man7.org/linux/man-pages/man2/mmap.2.html', text: 'man 2 mmap' },
+    { href: 'https://sourceware.org/glibc/wiki/MallocInternals', text: 'glibc MallocInternals', note: 'arena, bin, tcache' },
+    { href: 'https://pages.cs.wisc.edu/~remzi/OSTEP/vm-freespace.pdf', text: 'OSTEP: Free-Space Management', note: 'ücretsiz' }
+  ],
+  pageTitle: 'brk, mmap ve malloc'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

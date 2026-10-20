@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>TrustZone ve TEE</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: iki dünya düzeni */
+.worlds { display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: stretch; }
+@media (max-width: 620px) { .worlds { grid-template-columns: 1fr; } }
+.world { border: 1.5px solid var(--line); border-radius: var(--r); padding: 12px; display: grid; gap: 8px; align-content: start; min-width: 0; background: var(--surface); }
+.world.normal { border-color: var(--line); }
+.world.secure { border-color: var(--track); background: var(--track-soft); }
+.world .wh { font-family: var(--f-mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; font-weight: 700; }
+.world.normal .wh { color: var(--muted); }
+.world.secure .wh { color: var(--track); }
+.world.dim { opacity: .5; }
+.world.active { box-shadow: 0 0 0 2px var(--track) inset; }
+.monitor { align-self: center; display: grid; gap: 4px; justify-items: center; text-align: center; min-width: 96px; }
+.monitor .gate { border: 1.5px dashed var(--track); border-radius: 999px; padding: 6px 12px; font-family: var(--f-mono); font-size: 11px; color: var(--track); font-weight: 700; }
+.monitor .smc { font-family: var(--f-mono); font-size: 10.5px; color: var(--muted); }
+.monitor .arrow { font-size: 18px; color: var(--track); }
+.world .item { border: 1px solid var(--line); border-radius: 7px; padding: 6px 8px; font-size: 12.5px; background: var(--bg); }
+.world .item.key { border-color: var(--track); font-weight: 600; }
+@media (max-width: 620px) { .monitor .arrow { transform: rotate(90deg); } }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'android',
+  crumbs: 'android › donanım destekli güvenlik › modül 16',
+  eyebrow: 'Modül 16 · Android · Donanım destekli güvenlik',
+  titleHTML: 'İki dünya: <code>TrustZone</code> ve güvenli yürütme',
+  lede: 'Bir parmak izi şablonu ya da ödeme anahtarı, Android çalışsa bile Android\'in göremeyeceği bir yerde durmalı. ARM TrustZone, işlemciyi iki dünyaya böler: normal dünyada Android, güvenli dünyada (secure world) ise izole bir güven ortamı (TEE) çalışır.',
+  meta: ['~16 dk', 'ön koşul: süreç/IPC', 'bağlam: ARM TrustZone'],
+  intuition: {
+    paras: [
+      'Bazı sırlar o kadar hassastır ki, işletim sistemi tümüyle ele geçirilse bile sızmamalıdır: cihaz şifreleme anahtarları, parmak izi/yüz şablonları, DRM anahtarları, ödeme jetonları. Bunları normal belleğe koymak, Android\'e güvenmek demektir — ve Android çok büyük bir saldırı yüzeyidir (attack surface).',
+      'ARM TrustZone çözümü donanıma taşır: işlemcinin her an bir "dünya biti" (NS, non-secure) vardır. <strong>Normal dünyada (normal world)</strong> Android ve tüm uygulamaları çalışır. <strong>Güvenli dünyada (secure world)</strong> ise küçük, ayrı bir güven ortamı (Trusted Execution Environment, TEE) çalışır. Geçiş yalnızca tek bir kapıdan olur: <code>SMC</code> komutu ve güvenli monitör (secure monitor).'
+    ],
+    ideas: [
+      { b: 'Tek çip, iki dünya', span: 'Aynı işlemci; donanımdaki bir bit hangi dünyada olduğunu söyler. Güvenli dünya belleğine normal dünya erişemez.' },
+      { b: 'Küçük yüzey', span: 'TEE OS (QSEE, Trusty, TEEGRIS) küçüktür: ne kadar az kod, o kadar az açık. Android\'in milyonlarca satırı buraya giremez.' },
+      { b: 'Anahtar hiç çıkmaz', span: 'Ham anahtar güvenli dünyada kalır; normal dünya yalnızca "bununla imzala/şifrele" der ve sonucu alır.' }
+    ]
+  },
+  lab: {
+    intro: 'Android bir anahtar işlemi istediğinde (örneğin Keystore ile imzalama) istek güvenli dünyaya geçer. Sağda iki dünyayı, aradaki güvenli monitörü ve SMC geçişini izle. Ham anahtarın normal dünyaya hiç geçmediğine dikkat et.',
+    codeLabel: 'keystore → TEE (temsilî akış)', cmd: 'Keystore imzalama isteği',
+    foot: 'Bileşen adları (QSEE, Trusty, Titan M) temsilîdir ve cihaza/yongaya göre değişir. SMC akışı kavramsaldır.',
+    code: [
+      { t: '<span class="cm">// normal dünya (Android)</span>' },
+      { t: 'key = KeyStore.<span class="f">getKey</span>(<span class="s">"ödeme"</span>);  <span class="cm">// sadece tanıtıcı (handle)</span>' },
+      { t: 'sig = key.<span class="f">sign</span>(veri);          <span class="cm">// ham anahtar DEĞİL</span>' },
+      { t: '    <span class="cm">// → keymaster HAL → SMC ile geçiş</span>' },
+      { t: '' },
+      { t: '<span class="cm">// güvenli dünya (TEE)</span>' },
+      { t: 'ta = <span class="f">load_trusted_app</span>(<span class="s">"keymaster"</span>);' },
+      { t: 'raw = <span class="f">unwrap_key</span>(blob);      <span class="cm">// ham anahtar sadece burada</span>' },
+      { t: 'sig = <span class="f">sign</span>(raw, veri);' },
+      { t: '<span class="k">return</span> sig;                   <span class="cm">// sonuç normal dünyaya</span>' }
+    ],
+    steps: [
+      { pc: [2, 3], title: 'Normal dünyada istek', world: 'normal',
+        text: 'Android\'de bir uygulama Keystore\'dan imzalama ister. Ama uygulamaya ya da Android\'e ham anahtar hiçbir zaman verilmez: elinde yalnızca bir <strong>tanıtıcı (handle)</strong> vardır. Gerçek anahtar, güvenli dünyada sarmalanmış (wrapped) bir blob olarak durur.',
+        normalItems: [{ t: 'Uygulama: "bununla imzala"', k: false }, { t: 'Keystore servisi + keymaster HAL', k: false }, { t: 'anahtar tanıtıcısı (handle)', k: true }],
+        secureItems: [{ t: 'TEE OS (uykuda)', k: false }, { t: 'sarmalı anahtar blob\'u', k: true }],
+        gate: false },
+      { pc: 4, title: 'SMC: güvenli dünyaya geçiş', world: 'gate',
+        text: 'keymaster HAL, isteği güvenli dünyaya iletmek için <code>SMC</code> (Secure Monitor Call) komutunu çalıştırır. Bu, normal dünyadan çıkışın tek kapısıdır: işlemci istisna seviyesi EL3\'teki <strong>güvenli monitöre (secure monitor)</strong> atlar.',
+        normalItems: [{ t: 'keymaster HAL → SMC #imzala', k: false }],
+        secureItems: [{ t: 'TEE OS (uyanıyor)', k: false }],
+        gate: true, gateText: 'SMC → EL3' },
+      { pc: 6, title: 'Monitör bağlamı değiştirir', world: 'secure',
+        text: 'Güvenli monitör, normal dünyanın durumunu (register, bağlam) kaydeder ve dünya bitini "güvenli"ye çevirir. Artık işlemci güvenli dünyadadır; buradaki belleğe normal dünya hiçbir şekilde erişemez. Kontrol TEE OS\'una verilir.',
+        normalItems: [{ t: 'Android donduruldu (bağlam saklandı)', k: false }],
+        secureItems: [{ t: 'Güvenli monitör: dünya = secure', k: false }, { t: 'TEE OS çalışıyor', k: false }],
+        gate: false },
+      { pc: [7, 8], title: 'Trusted application çalışır', world: 'secure',
+        text: 'TEE OS, isteğe karşılık gelen <strong>güvenilir uygulamayı (trusted application, TA)</strong> yükler — burada keymaster. TA, sarmalı blob\'u yalnızca güvenli dünyada bulunan bir donanım anahtarıyla açar (unwrap) ve ham anahtarı belleğe alır. Ham anahtar bu sınırın içinde doğar ve burada kalır.',
+        normalItems: [{ t: 'bekliyor…', k: false }],
+        secureItems: [{ t: 'keymaster TA', k: false }, { t: 'ham anahtar (yalnızca burada)', k: true }, { t: 'donanım kök anahtarı', k: true }],
+        gate: false },
+      { pc: 9, title: 'İmzala, sonucu döndür', world: 'secure',
+        text: 'TA ham anahtarla veriyi imzalar. Dışarı çıkan tek şey <strong>imzadır</strong>, anahtar değil. Ham anahtar güvenli dünya belleğinden silinir; normal dünya onu hiçbir anda görmedi.',
+        normalItems: [{ t: 'bekliyor…', k: false }],
+        secureItems: [{ t: 'imza = sign(ham anahtar, veri)', k: false }, { t: 'ham anahtar siliniyor', k: false }],
+        gate: false },
+      { pc: 10, title: 'Normal dünyaya dönüş', world: 'normal',
+        text: 'Güvenli monitör tekrar devreye girer, dünya bitini "normal"e çevirir ve Android\'in bağlamını geri yükler. Android yalnızca imzayı alır. Böylece en hassas sır, Android tümüyle ele geçirilse bile cihazdan sızmaz — bu, Mach port\'larında gördüğümüz "dünyalar arası sınır" fikrinin donanımdaki en katı hâlidir.',
+        normalItems: [{ t: 'Android sürüyor', k: false }, { t: 'elde: yalnızca imza', k: true }],
+        secureItems: [{ t: 'TEE OS (uykuda)', k: false }, { t: 'sarmalı anahtar blob\'u', k: true }],
+        gate: false, gateText: 'ERET → EL1' }
+    ],
+    render: function (s, stateEl, u) {
+      function world(kind, title, items, state) {
+        var cls = 'world ' + kind + (state ? ' ' + state : '');
+        var its = items.map(function (it) {
+          return '<div class="item' + (it.k ? ' key' : '') + '">' + u.esc(it.t) + '</div>';
+        }).join('');
+        return '<div class="' + cls + '"><span class="wh">' + title + '</span>' + its + '</div>';
+      }
+      var nState = s.world === 'normal' ? 'active' : (s.world === 'secure' ? 'dim' : '');
+      var sState = s.world === 'secure' ? 'active' : (s.world === 'normal' ? 'dim' : '');
+      var mid = s.gate
+        ? '<div class="monitor"><div class="gate">güvenli monitör</div><div class="arrow">⟶</div><div class="smc">' + u.esc(s.gateText || 'SMC') + '</div></div>'
+        : '<div class="monitor"><div class="smc">' + u.esc(s.gateText || '') + '</div><div class="gate" style="border-style:solid">EL3 monitör</div></div>';
+      stateEl.innerHTML =
+        '<p class="lab-label">Normal dünya ↔ Güvenli dünya</p>' +
+        '<div class="worlds">' +
+          world('normal', 'Normal dünya (Android)', s.normalItems, nState) +
+          mid +
+          world('secure', 'Güvenli dünya (TEE)', s.secureItems, sState) +
+        '</div>' +
+        '<p class="note" style="margin-top:12px">Anahtar (🔑 çerçeveli kutular) güvenli dünyadan çıkmaz; normal dünya yalnızca tanıtıcıyı ve sonucu görür.</p>';
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: tek CPU, iki dünya",
+    html: `<p class="lead">Android'in en hassas sırları — disk şifreleme anahtarları, parmak izi şablonları, ödeme anahtarları — normal işletim sisteminin hiç göremeyeceği bir yerde tutulur. Bunu mümkün kılan, ARM TrustZone'un tek bir fiziksel CPU'yu iki ayrı yürütme ortamına (normal world ve secure world) bölmesidir. Çekirdek tamamen ele geçirilse bile, saldırgan secure world'deki ham anahtarlara dokunamaz.</p>
+
+<h3>1. Normal world ve secure world</h3>
+<p>TrustZone, bir donanım özelliğidir: CPU her an ya normal world'de ya da secure world'dedir ve bunu bir donanım biti (NS — Non-Secure bit) belirler. İki dünyanın ayrı belleği, ayrı cache etiketleri ve ayrı peripheral erişim izinleri vardır. Normal world'de koca Android yığını (Linux kernel + framework + uygulamalar) çalışır; secure world'de ise küçük, güvenilir bir TEE OS çalışır. Donanım, normal world'ün secure world belleğini okumasını fiziksel olarak engeller — bu bir yazılım kuralı değil, silikon seviyesinde bir sınırdır.</p>
+<div class="deflist">
+<div><dt>normal world</dt><dd>Android'in tamamı burada: Linux kernel (EL1), uygulamalar (EL0). Büyük saldırı yüzeyi, düşük güven.</dd></div>
+<div><dt>secure world</dt><dd>TEE OS ve trusted application'lar. Küçük kod tabanı, yüksek güven; sırların tutulduğu yer.</dd></div>
+<div><dt>secure monitor</dt><dd>EL3'te çalışır; iki dünya arasındaki tek geçiş kapısıdır, context'i kaydedip değiştirir.</dd></div>
+</div>
+<div class="manpage src-aosp"><div class="ref">trusty · overview</div><p class="orig">On ARM systems, Trusty uses ARM's TrustZone to virtualize the main processor and create a secure TEE.</p><p>ARM'de secure world ayrı bir yonga değildir — aynı ana işlemci, TrustZone ile sanallaştırılıp ikiye bölünür. Böylece pahalı bir ikinci CPU olmadan donanım izolasyonu sağlanır.</p></div>
+
+<h3>2. Dünyalar arası geçiş: SMC ve secure monitor</h3>
+<p>Normal world bir güvenli işleme ihtiyaç duyduğunda (örneğin "şu veriyi anahtarla imzala"), doğrudan secure world'e atlayamaz. Bunun yerine bir <code>SMC</code> (Secure Monitor Call) komutu çalıştırır. Bu komut CPU'yu EL3'teki secure monitor'a sokar; monitor normal world'ün register/context'ini kaydeder, secure world'e geçer ve ilgili trusted application'ı çağırır. İş bitince kontrol aynı yoldan normal world'e döner. Bu geçiş, iki işletim sistemi arasındaki tek köprüdür ve her adımı donanım tarafından denetlenir — kavramsal olarak Linux'taki syscall sınırının bir benzeri, ama iki ayrı OS arasında.</p>
+
+<h3>3. TEE OS ve trusted application'lar</h3>
+<p>Secure world'de çalışan küçük işletim sistemine TEE OS denir. Üreticiye göre değişir: Qualcomm'da QSEE, Google Pixel'de Trusty, Samsung'da TEEGRIS. Üstünde çalışan güvenli uygulamalara trusted application (TA) denir — anahtar yönetimi, parmak izi eşleştirme, DRM gibi işler burada yapılır. TA'lar birbirinden de izole çalışır; biri çökerse diğerleri etkilenmez.</p>
+<div class="manpage src-aosp"><div class="ref">trusty · isolation</div><p class="orig">At run time, Trusty apps run as isolated processes in unprivileged mode under the Trusty kernel.</p><p>TA'lar secure world içinde bile ayrıcalıksız (unprivileged) ve izole process'ler olarak koşar. Yani bir TA'nın ele geçirilmesi, otomatik olarak tüm secure world'ün ele geçirilmesi anlamına gelmez.</p></div>
+<div class="manpage src-aosp"><div class="ref">trusty · third-party</div><p class="orig">Third-party app development isn't supported in Trusty.</p><p>Secure world'e üçüncü taraf uygulama kabul edilmez; saldırı yüzeyini küçük tutmak için yalnızca üreticinin imzaladığı TA'lar yüklenir.</p></div>
+
+<h3>4. Ham anahtar normal world'e asla çıkmaz</h3>
+<p>Modelin özü şudur: normal world bir anahtarı doğrudan görmez; yalnızca secure world'den bir tanıtıcı (key handle / key blob) ve işlemin sonucunu alır. Örneğin Keystore bir anahtar üretildiğinde, anahtar secure world'de kalır ve dışarıya şifreli bir blob olarak verilir. "Bu veriyi imzala" isteği secure world'e gider, imza geri döner — ham anahtar bitleri hiçbir zaman Linux belleğine düşmez.</p>
+<div class="manpage src-aosp"><div class="ref">trusty · delegation</div><p class="orig">Software running on the main processor delegates any operations that require use of secret data to the TEE processor.</p><p>Sır gerektiren her işlem secure world'e devredilir (delegation). Normal world yalnızca "yap" der ve sonucu alır; sırrın kendisini hiç tutmaz.</p></div>
+
+<h3>5. Hardware root of trust ve ayrı güvenlik yonggaları</h3>
+<p>TrustZone yazılımsal izolasyonun donanıma dayanmasını sağlar, ama güvenin bir başlangıç noktası olmalı: hardware root of trust. Bu genelde yonga içine kalıcı olarak yazılmış (fused) bir anahtardır ve boot zincirinin ilk halkasını imzalar (Verified Boot buna dayanır). Bazı cihazlar bir adım daha ileri gider: TrustZone'dan da ayrı, fiziksel olarak bağımsız bir güvenlik yongası kullanır — Google'ın Titan M'i, Qualcomm'un SPU'su gibi. Ana CPU tamamen ele geçirilse bile bu ayrı silikon kendi sırlarını korur; StrongBox Keymaster bu ayrı yonga üstünde çalışır.</p>
+<div class="deflist">
+<div><dt>TEE (TrustZone)</dt><dd>Ana CPU içinde secure world. Keymaster/Gatekeeper burada; hızlı ama ana işlemciyle aynı silikonda.</dd></div>
+<div><dt>StrongBox</dt><dd>Ayrı, sertifikalı güvenlik yongası (Titan M, SPU). Fiziksel saldırılara karşı daha dayanıklı.</dd></div>
+<div><dt>root of trust</dt><dd>Yongaya kalıcı yazılmış anahtar; tüm güven zincirinin başladığı değiştirilemez nokta.</dd></div>
+</div>
+<p>Bu katmanlar birlikte, parmak izi doğrulamanın, kilit ekranı parolasının ve ödeme anahtarlarının — Android çökse veya root edilse bile — korunmasını sağlar.</p>`
+  },
+
+  underHood: {
+    heading: 'Bileşenler: hangi dünyada, ne iş yapar',
+    html: '<p class="prose">TrustZone bir donanım özelliğidir; üstüne kurulan yazılım yığını yongaya göre değişir ama roller aynıdır:</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Bileşen</th><th>Dünya</th><th>Görevi</th></tr></thead><tbody>' +
+      '<tr><td><b>Android + uygulamalar</b></td><td>Normal</td><td>Her şeyi yapar ama sırlara doğrudan erişemez; TEE\'den hizmet ister</td></tr>' +
+      '<tr><td><b>keymaster / Gatekeeper HAL</b></td><td>Normal</td><td>İsteği SMC ile güvenli dünyaya köprüler</td></tr>' +
+      '<tr><td><b>Güvenli monitör (secure monitor)</b></td><td>EL3</td><td>İki dünya arasındaki tek geçiş; bağlam değiştirir, dünya bitini çevirir</td></tr>' +
+      '<tr><td><b>TEE OS (QSEE, Trusty, TEEGRIS)</b></td><td>Güvenli</td><td>Küçük işletim sistemi; güvenilir uygulamaları (TA) çalıştırır</td></tr>' +
+      '<tr><td><b>Trusted application (TA)</b></td><td>Güvenli</td><td>Anahtar işlemleri, parmak izi eşleştirme, DRM — sırrın kullanıldığı yer</td></tr>' +
+      '<tr><td><b>Donanım güvenlik modülü (Titan M, SPU)</b></td><td>Ayrı yonga</td><td>TrustZone\'dan da ayrı; kök anahtarları ve sayaçları fiziksel olarak izole tutar</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px">Bazı cihazlar bir adım daha atar: Google\'ın <strong>Titan M</strong>\'i veya Qualcomm\'un SPU\'su, TrustZone\'un da dışında, tamamen ayrı bir güvenlik yongasıdır (discrete secure element). En kritik sırlar (kilit ekranı deneme sayacı, kök anahtarlar) oraya konur; böylece ana işlemci tümüyle çökse bile fiziksel olarak korunurlar.</p>' +
+      '<p class="prose">Saldırgan açısından bu, saldırı yüzeyini daraltır: artık hedef koca Android değil, güvenli dünyadaki küçük TEE kodu ve SMC arayüzüdür. Bu yüzden TEE zafiyetleri (Cilt III\'ün konusu) nadir ama çok değerlidir — tek bir TEE açığı tüm donanım güvencelerini çökertebilir.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Donanım destekli anahtar var mı?', p: 'Android\'de bir anahtarın TEE ya da StrongBox (ayrı yonga) tarafından mı korunduğu KeyInfo.isInsideSecureHardware() ile anlaşılır. Keystore anahtarlarının attestation\'ı donanım kökünü kanıtlar.',
+        shells: [{ label: 'adb (temsilî)', copy: 'adb shell cmd keystore list', pre: '<span class="c">$</span> adb shell dumpsys | grep -i keymaster\n<span class="c"># keymaster TA sürümü, güvenlik seviyesi:</span>\n<span class="c"># SecurityLevel: TRUSTED_ENVIRONMENT (TEE) veya STRONGBOX (ayrı yonga)</span>' }] },
+      { h3: '2. TEE arayüzünü yokla', p: 'Normal dünyada TEE\'ye giden sürücü uç noktalarını görebilirsin (cihaza göre değişir). İçeriği değil, yalnızca varlığını.',
+        shells: [{ label: 'adb (temsilî)', copy: 'adb shell ls -l /dev | grep -iE "tzic|qseecom|tee|trusty"', pre: '<span class="c">$</span> adb shell ls /dev | grep -iE "tzic|qseecom|tee|trusty"\n<span class="c"># örn: qseecom (Qualcomm), tee0/teepriv0 (OP-TEE), trusty-ipc-dev0</span>\n<span class="c"># bunlar normal dünyanın güvenli dünyaya açılan kapılarıdır</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Normal dünya ile güvenli dünya arasındaki geçiş hangi komutla yapılır?', opts: ['syscall', 'SMC (Secure Monitor Call)', 'ioctl'], answer: 'SMC (Secure Monitor Call)',
+        ok: 'Doğru. SMC komutu işlemciyi EL3\'teki güvenli monitöre atlatır; iki dünya arasındaki tek kapı budur.', no: 'İpucu: syscall normal dünyada çekirdeğe gider. Dünyalar arası geçiş için özel bir komut var.' },
+      { q: 'Keystore ile imzalarken ham anahtar nerede bulunur?', opts: ['Uygulamanın belleğinde', 'Yalnızca güvenli dünyada', 'logcat\'te'], answer: 'Yalnızca güvenli dünyada',
+        ok: 'Doğru. Normal dünya yalnızca bir tanıtıcı (handle) ve sonucu görür; ham anahtar güvenli dünyadan hiç çıkmaz.', no: 'İpucu: tüm mesele anahtarı Android\'den uzak tutmak. O zaman nerede durur?' },
+      { q: 'Titan M gibi bir donanım güvenlik modülünün TrustZone\'dan farkı nedir?', opts: ['Aynı şeydir', 'Tamamen ayrı, fiziksel olarak izole bir yongadır', 'Sadece yazılımdır'], answer: 'Tamamen ayrı, fiziksel olarak izole bir yongadır',
+        ok: 'Doğru. TrustZone ana işlemci içinde bir ayrımdır; Titan M/SPU ise ayrı bir yongadır (discrete secure element) — ana işlemci çökse bile fiziksel korunur.', no: 'İpucu: TrustZone aynı çipin içinde iki dünyaydı. Titan M nerede duruyor?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Android Modül 17', title: 'Kimlik doğrulama ve şifreleme', desc: 'Kilit ekranı, Gatekeeper, Keystore ve dosya bazlı şifreleme (FBE) donanım köküne nasıl bağlanır?' },
+  sources: [
+    { href: 'https://newandroidbook.com/TOC.html', text: 'Levin — Android Internals', note: 'Cilt III, Bölüm 2' },
+    { href: 'https://source.android.com/docs/security/features/trusty', text: 'AOSP — Trusty TEE' },
+    { href: 'https://source.android.com/docs/security/features/keystore', text: 'AOSP — Hardware-backed Keystore' },
+    { href: 'https://developer.arm.com/documentation/100935/latest/', text: 'ARM — TrustZone for Cortex-A' }
+  ],
+  pageTitle: 'TrustZone ve TEE'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Kod İmzalama</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: imza doğrulama akışı */
+.vchain { display: grid; gap: 6px; margin-top: 2px; }
+.vstep { display: grid; grid-template-columns: 26px 1fr auto; gap: 8px; align-items: center; border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 8px 10px; min-width: 0; opacity: .5; transition: opacity .2s; }
+.vstep.done { opacity: 1; border-color: var(--ok); }
+.vstep.cur { opacity: 1; border-color: var(--track); background: var(--track-soft); }
+.vstep.fail { opacity: 1; border-color: var(--bad); background: var(--bad-soft); }
+.vstep .vi { font-family: var(--f-mono); font-weight: 700; text-align: center; }
+.vstep.done .vi { color: var(--ok); } .vstep.cur .vi { color: var(--track); } .vstep.fail .vi { color: var(--bad); }
+.vstep .vt { min-width: 0; } .vstep .vt b { font-family: var(--f-display); font-size: 14px; } .vstep .vt span { display: block; font-size: 12px; color: var(--muted); }
+.vstep .vs { font-family: var(--f-mono); font-size: 11px; font-weight: 700; }
+.pagegrid { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; }
+.ph2 { width: 30px; height: 22px; border-radius: 4px; border: 1px solid var(--ok); background: var(--ok-soft); display: grid; place-items: center; font-family: var(--f-mono); font-size: 9px; color: var(--ok); }
+.ph2.bad { border-color: var(--bad); background: var(--bad-soft); color: var(--bad); font-weight: 700; }
+.verdict2 { margin-top: 12px; border-radius: var(--r); padding: 10px 12px; font-family: var(--f-mono); font-size: 13px; font-weight: 700; display: flex; gap: 8px; align-items: center; }
+.verdict2.ok { background: var(--ok-soft); color: var(--ok); border: 1px solid var(--ok); }
+.verdict2.deny { background: var(--bad-soft); color: var(--bad); border: 1px solid var(--bad); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var VSTEPS = [
+  { id: 'cd', t: 'Code directory', e: 'her sayfanın hash\'i + bütünlük' },
+  { id: 'cert', t: 'Sertifika zinciri', e: 'imza → geliştirici → kök (root)' },
+  { id: 'page', t: 'Sayfa hash kontrolü', e: 'çalışmadan önce her sayfa (page-in)' },
+  { id: 'ent', t: 'Entitlements', e: 'imzaya gömülü yetkiler' },
+  { id: 'dec', t: 'Çekirdek kararı', e: 'çalıştır veya öldür' }
+];
+
+var MODULE = {
+  track: 'offensive',
+  crumbs: 'ofansif › kod imzalama › modül 6',
+  eyebrow: 'Ofansif izlek · Modül 6 · Savunma',
+  titleHTML: 'Kod imzalama saldırgan gözüyle: <code>code signing</code>',
+  lede: 'Bir sistem, yalnızca güvenilen ve değiştirilmemiş kodun çalışmasını nasıl garanti eder? Kod imzalama (code signing) ile. Bu modülde imzanın nasıl doğrulandığını adım adım izleyecek, sonra bir imza baypasının (bypass) tam olarak neyi başarması gerektiğini ve neden bu kadar zor olduğunu göreceksin.',
+  meta: ['~18 dk', 'ön koşul: Mach-O / imza temeli', 'bağlam: macOS/iOS + Android'],
+  ethic: '<b>İlke.</b> Bu modül mekanizmayı ve kamuya açık kavramları öğretir; çalışır ya da silahlandırılmış exploit/baypas kodu içermez. Komutlar yalnızca imzayı <b>incelemek</b> içindir. Tüm deneyler <b>kendi makinende</b> yapılır. Saldırıyı anlamak, savunmayı anlamanın ön koşuludur.',
+  intuition: {
+    paras: [
+      'Kod imzalama, bir ikilinin (binary) iki şeyini garanti eder: <strong>kaynağı</strong> (kim imzaladı — sertifika zinciri (certificate chain)) ve <strong>bütünlüğü</strong> (bir bayt bile değişmedi — hash\'ler). macOS, iOS ve Android\'in güven modelinin temelinde bu durur: iOS\'ta imzasız kod kural olarak hiç çalışmaz.',
+      'Anahtar fikir şudur: imza, ikilinin <em>her bellek sayfasının</em> (page) bir hash\'ini içeren bir <strong>kod dizini (code directory)</strong> taşır. Çekirdek, kodu çalıştırmadan — ve iOS\'ta her sayfayı belleğe alırken (page-in) — bu hash\'leri yeniden hesaplayıp karşılaştırır. Tek bir bayt değişirse hash tutmaz ve çekirdek süreci öldürür.',
+      'Saldırgan gözüyle bakınca sorun nettir: imzasız veya değiştirilmiş kod çalıştırmak istiyorsan, bu sayfa-sayfa doğrulamayı aşman gerekir. İşte bu yüzden bir "imza baypası" bu kadar değerlidir ve bu kadar zordur.'
+    ],
+    ideas: [
+      { b: 'Kaynak + bütünlük', span: 'İmza hem kimin imzaladığını (sertifika zinciri) hem de hiç değişmediğini (hash) kanıtlar.' },
+      { b: 'Sayfa sayfa doğrulama', span: 'Code directory her sayfanın hash\'ini tutar; çekirdek her sayfayı çalışmadan önce denetler.' },
+      { b: 'Yetki = entitlement', span: 'İmzaya gömülü entitlements, sürecin neye izinli olduğunu (ör. JIT, kamera) belirler.' }
+    ]
+  },
+  lab: {
+    intro: 'Bir ikili imzalandığında, çekirdek onu çalıştırmadan önce bir dizi kontrolden geçirir. Sağda doğrulama zincirini izle: her adım geçerse yeşil, son adımda karar verilir. Son iki adımda bir saldırganın bir baytı değiştirdiği senaryoyu göreceksin.',
+    codeLabel: 'imza doğrulama (kavramsal)', cmd: 'exec(imzalı_ikili)',
+    foot: 'Değerler kavramsal/temsilîdir. "Kendin dene" bölümünde kendi ikilini codesign ile inceleyebilirsin.',
+    code: [
+      { t: '<span class="cm">// ikili yapısı (Mach-O):</span>' },
+      { t: '__TEXT, __DATA ...        <span class="cm">// kod + veri bölütleri</span>' },
+      { t: 'LC_CODE_SIGNATURE   →     <span class="cm">// imza bloğu</span>' },
+      { t: '  CodeDirectory           <span class="cm">// her sayfanın hash\'i</span>' },
+      { t: '  CMS imza (sertifikalar) <span class="cm">// kim imzaladı</span>' },
+      { t: '  Entitlements (plist)    <span class="cm">// yetkiler</span>' },
+      { t: '' },
+      { t: '<span class="cm">// çekirdek/AMFI çalıştırmadan önce doğrular</span>' },
+      { t: 'verify(cert_chain) &&' },
+      { t: 'for (page in __TEXT) hash(page) == CodeDirectory[page]', danger: true }
+    ],
+    steps: [
+      { pc: [3, 4], title: 'İkili + gömülü imza', cur: 'cd', done: [], fail: null, verdict: null, pages: 'ok',
+        text: 'İmzalanan ikili, bir <strong>kod dizini (code directory)</strong> taşır: her 4 KB\'lik bellek sayfasının (page) kriptografik hash\'inden oluşan bir tablo. Buna ek olarak imzayı atan kimliğin sertifikaları ve entitlements gömülüdür. Bu blok <code>LC_CODE_SIGNATURE</code> ile Mach-O\'ya eklenir.' },
+      { pc: [8], title: 'Sertifika zinciri doğrulanır', cur: 'cert', done: ['cd'], fail: null, verdict: null, pages: 'ok',
+        text: 'Çekirdek (macOS/iOS\'ta AMFI) önce <strong>sertifika zincirini (certificate chain)</strong> doğrular: imza → geliştirici sertifikası → güvenilen kök (root). Zincir bilinen bir köke bağlanmıyorsa imza en baştan geçersizdir. Android\'de de APK, imzalayan anahtarın sürekliliğiyle doğrulanır (v2/v3 şeması).' },
+      { pc: [9, 10], title: 'Her sayfa hash\'lenir', cur: 'page', done: ['cd', 'cert'], fail: null, verdict: null, pages: 'ok',
+        text: 'Asıl güç burada: çekirdek her kod sayfasını — iOS\'ta belleğe alınırken, sayfa sayfa (page-in) — yeniden hash\'ler ve kod dizinindeki değerle karşılaştırır. Hepsi tutarsa bütünlük kanıtlanmıştır. Bu, "imzayı bir kez kontrol et" değil, "çalışırken sürekli denetle" demektir.' },
+      { pc: [5], title: 'Entitlements okunur', cur: 'ent', done: ['cd', 'cert', 'page'], fail: null, verdict: null, pages: 'ok',
+        text: '<strong>Entitlements</strong> (yetkiler), imzaya gömülü ve bu yüzden kurcalanamayan bir izin listesidir: sürecin JIT belleği oluşturup oluşturamayacağı, kameraya erişip erişemeyeceği, hangi sandbox istisnalarına sahip olduğu. Yetki imzanın parçası olduğundan, yetkiyi değiştirmek imzayı bozar.',
+        verdict: { cls: 'ok', txt: '✓ İmza geçerli → kod çalışır' } },
+      { pc: [10], title: 'Saldırgan bir baytı değiştirir', cur: 'page', done: ['cd', 'cert'], fail: 'page', verdict: null, pages: 'bad',
+        text: 'Şimdi saldırgan senaryosu: saldırgan ikilinin bir kod sayfasını değiştiriyor (örneğin bir kontrolü atlamak için). O sayfanın yeniden hesaplanan hash\'i, kod dizinindeki değerle artık <strong>tutmaz</strong>. Çekirdek bunu çalıştırmadan — veya o sayfaya ilk erişimde — fark eder.' },
+      { pc: [10], title: 'Çekirdek reddeder', cur: 'dec', done: ['cd', 'cert'], fail: 'page', verdict: 'deny', pages: 'bad',
+        text: 'Hash uyuşmazlığı → çekirdek süreci öldürür (<code>Code Signature Invalid</code>, SIGKILL). Bir baypasın başarması gereken tam olarak budur: imzasız veya değiştirilmiş bir sayfayı çalıştırılabilir kıldırmak. Neden zor? Çünkü her sayfa denetlenir, kontrolü çekirdek yapar ve dinamik kod (JIT) için bile özel bir entitlement gerekir. Tek bir mantık hatası değil, bu zincirin tamamını kırmak gerekir.',
+        verdict: { cls: 'deny', txt: '✗ Hash uyuşmazlığı → süreç öldürüldü' } }
+    ],
+    render: function (s, stateEl, u) {
+      var steps = VSTEPS.map(function (v) {
+        var cls = 'vstep';
+        var mark = '•';
+        var st = '';
+        if (s.fail === v.id) { cls += ' fail'; mark = '✗'; st = 'RED'; }
+        else if (s.cur === v.id) { cls += ' cur'; mark = '▸'; st = 'kontrol'; }
+        else if (s.done.indexOf(v.id) >= 0) { cls += ' done'; mark = '✓'; st = 'geçti'; }
+        else if (v.id === 'dec' && s.verdict) { cls += (s.verdict.cls === 'ok' ? ' done' : ' fail'); mark = s.verdict.cls === 'ok' ? '✓' : '✗'; }
+        return '<div class="' + cls + '"><span class="vi">' + mark + '</span><span class="vt"><b>' + u.esc(v.t) + '</b><span>' + u.esc(v.e) + '</span></span><span class="vs">' + st + '</span></div>';
+      }).join('');
+      var pages = '';
+      for (var i = 0; i < 8; i++) {
+        var bad = s.pages === 'bad' && i === 3;
+        pages += '<div class="ph2' + (bad ? ' bad' : '') + '">' + (bad ? '≠' : '✓') + '</div>';
+      }
+      stateEl.innerHTML =
+        '<p class="lab-label">Doğrulama zinciri</p><div class="vchain">' + steps + '</div>' +
+        '<p class="lab-label" style="margin-top:14px">Kod sayfaları (hash kontrolü)</p><div class="pagegrid">' + pages + '</div>' +
+        (s.verdict ? '<div class="verdict2 ' + s.verdict.cls + '"><span>' + u.esc(s.verdict.txt) + '</span></div>' : '');
+    }
+  },
+  underHood: {
+    heading: 'Kaputun altında: imzanın parçaları',
+    html: '<p class="prose">Kod imzası tek bir şey değil, bir arada çalışan birkaç bileşendir. Saldırgan açısından her birinin ayrı bir önemi vardır:</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Bileşen</th><th>Görevi</th><th>Saldırgan için önemi</th></tr></thead><tbody>' +
+      '<tr><td><b>Code directory</b></td><td>Her sayfanın hash\'ini tutar</td><td>Değiştirilen her sayfayı ele verir; aşmak için hash\'i de tutarlı kılmak gerekir</td></tr>' +
+      '<tr><td><b>CMS imza + sertifikalar</b></td><td>Kimin imzaladığını kanıtlar</td><td>Kendi sertifikan güvenilen köke bağlı değilse baştan reddedilir</td></tr>' +
+      '<tr><td><b>Entitlements</b></td><td>Sürecin yetkilerini belirler</td><td>İmzanın parçası; yetki eklemek imzayı bozar (ör. JIT için <code>dynamic-codesigning</code>)</td></tr>' +
+      '<tr><td><b>AMFI (çekirdek)</b></td><td>Doğrulamayı zorlar (macOS/iOS)</td><td>Kontrolü kullanıcı alanı değil çekirdek yapar; aşmak çekirdek erişimi gerektirir</td></tr>' +
+      '<tr><td><b>Trust cache</b></td><td>Platform ikililerinin önceden onaylı hash listesi</td><td>Sistem ikililerini değiştirmeyi ayrıca zorlaştırır</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px">Özetle bir imza baypası şu üçünden en az birini gerektirir: güvenilen bir anahtarla imzalatmak (ör. çalınmış sertifika), doğrulama mantığında bir kusur bulmak, ya da doğrulamayı yapan çekirdeği zaten ele geçirmiş olmak. Bu yüzden kod imzalama tek başına değil; sandbox, AMFI ve donanım güven kökü (hardware root of trust) ile <em>katmanlı</em> çalışır.</p>'
+  },
+  deepDive: {
+    heading: 'Derinlemesine: imza neyi garanti eder, neyi etmez',
+    html: '<p class="lead">Kod imzalama güçlüdür, ama her şeyi çözmez. Saldırgan gözüyle asıl soru şudur: imza <em>tam olarak</em> neyi kanıtlar, neyi kanıtlamaz? Bu ayrımı anlamak, bir baypasın neyi hedeflemek zorunda olduğunu ve neden tek bir katmanın yetmediğini (defense in depth) açıklar. Bu bölüm Apple\'ın platform güvenlik belgelerine ve <code>codesign</code> davranışına dayanır; somut baypas tekniği değil, güven modelinin sınırlarını anlatır.</p>' +
+
+      '<h3>1. İmzanın iki garantisi: köken ve bütünlük</h3>' +
+      '<p>Bir code signature iki ayrı soruyu yanıtlar. <strong>Köken (provenance):</strong> bunu kim üretti? Yanıt sertifika zincirinden gelir — imza, bir geliştirici sertifikasına, o da güvenilen bir köke (Apple Root CA) bağlanır. <strong>Bütünlük (integrity):</strong> üretildiğinden beri değişti mi? Yanıt sayfa hash\'lerinden gelir. Gatekeeper, indirilen yazılımı çalıştırmadan önce tam olarak bu ikisini denetler.</p>' +
+      '<div class="manpage src-apple"><div class="ref">Platform Security · Gatekeeper</div><p class="orig">Gatekeeper … verifies that the software is from an identified developer and hasn\'t been altered.</p><p>Gatekeeper iki şeyi birden doğrular: yazılımın <em>tanımlı bir geliştiriciden</em> (identified developer) geldiğini ve <em>değiştirilmediğini</em> (hasn\'t been altered). Biri bile sağlanmazsa yazılım engellenir. Köken sertifika zincirinden, bütünlük hash\'ten gelir.</p></div>' +
+
+      '<h3>2. Notarization: "kötü amaçlı içerik bilinmiyor" ≠ "güvenli"</h3>' +
+      '<p>macOS\'ta imzaya ek bir katman daha vardır: <strong>notarization</strong>. Geliştirici yazılımı Apple\'a gönderir, Apple bilinen zararlı içerik için tarar ve bir onay (ticket) döner. Bu önemli bir ayrımdır: notarization yazılımın <em>bilinen</em> zararlıdan arınmış olduğunu söyler — yazılımın güvenli ya da hatasız olduğunu değil. Saldırgan açısından bu, "imzalı ve notarize" bir ikilinin bile henüz keşfedilmemiş bir açık ya da kötü niyetli ama "temiz görünen" mantık taşıyabileceği anlamına gelir.</p>' +
+      '<div class="manpage src-apple"><div class="ref">Platform Security · Notarization</div><p class="orig">The … notarization pipeline are designed to ensure that apps contain no known malware.</p><p>Notarization hattı, uygulamaların <em>bilinen</em> zararlı yazılım (no known malware) içermediğini güvence altına almak için tasarlanmıştır. Anahtar kelime "known" (bilinen): bu bir kötü amaçlılık taraması, bütünsel bir güvenlik kanıtı değil. İmza kökeni ve bütünlüğü kanıtlar; notarization yalnızca bilinen zararlıyı eler.</p></div>' +
+
+      '<h3>3. İmzanın kör noktası: runtime bellek</h3>' +
+      '<p>İşte saldırgan için en kritik nokta. Kod imzalama <em>diskteki</em> ya da <em>belleğe alınan</em> kod sayfalarının bütünlüğünü doğrular. Ama bir süreç çalışırken belleğinde bir buffer overflow ya da use-after-free yoluyla veri/işaretçi bozulması olursa — imza bundan habersizdir. İmza, kodun değişmediğini kanıtlar; <strong>kontrol akışının kaçırılmadığını kanıtlamaz</strong>. Bu yüzden imza tek başına yetmez: bir bellek güvenliği hatası, imzalı kodun içindeki mevcut parçaları (gadget) saldırganın istediği sırada çalıştırabilir (ROP/JOP), tek bir baytı bile diske yazmadan.</p>' +
+      '<div class="deflist">' +
+      '<div><dt>imza doğrular</dt><dd>Kod sayfalarının diskten belleğe değişmeden geldiğini; imzalayanın kimliğini. Statik bütünlük.</dd></div>' +
+      '<div><dt>imza doğrulamaz</dt><dd>Çalışma anında bellekteki veri/işaretçi bozulmasını; kontrol akışının kaçırılıp kaçırılmadığını. Dinamik bütünlük ayrı korumaların işi.</dd></div>' +
+      '<div><dt>sonuç</dt><dd>Bir bellek bozulması açığı, imzalı kodu bile saldırganın amacı doğrultusunda yeniden yönlendirebilir. İmza gerekli ama yeterli değildir.</dd></div>' +
+      '</div>' +
+
+      '<h3>4. Tarihsel zayıflık sınıfları (kavramsal)</h3>' +
+      '<p>İmza mekanizmasının kendisi de kusursuz değildir. Kamuya açık araştırmalarda tekrarlayan <em>sınıflar</em> şunlardır — somut istismar adımı değil, savunmacının haritası olarak:</p>' +
+      '<div class="deflist">' +
+      '<div><dt>doğrulama mantığı hatası</dt><dd>İmzayı ayrıştıran kodun bir durumu yanlış ele alması (ör. çok mimarili/çok imzalı dosyalarda hangi imzanın geçerli sayıldığı karışıklığı). Düzeltme: ayrıştırıcıyı sadeleştirmek, tek doğru yol.</dd></div>' +
+      '<div><dt>TOCTOU</dt><dd>Time-of-check / time-of-use: doğrulanan ile çalıştırılan içeriğin arasında bir pencere bırakmak. Düzeltme: doğrulamayı belleğe alma (page-in) anına bağlamak — XNU\'nun sayfa sayfa denetiminin amacı tam da budur.</dd></div>' +
+      '<div><dt>entitlement kötüye kullanımı</dt><dd>Güçlü bir entitlement (ör. JIT için <code>dynamic-codesigning</code>) taşıyan meşru bir sürecin, saldırgan tarafından kaldıraç olarak kullanılması. Düzeltme: en az ayrıcalık — yalnızca mutlaka gereken entitlement.</dd></div>' +
+      '</div>' +
+
+      '<h3>5. Savunma: Hardened Runtime ve library validation</h3>' +
+      '<p>İmzanın "runtime bellek" kör noktasını kapatmak için macOS, <strong>Hardened Runtime</strong>\'ı ekler. Bu, imzalı bir sürece ek çalışma-anı kısıtlamaları getirir: başka kodun enjekte edilmesini, imzalı kodun dinamik olarak değiştirilmesini ve süreç bellek alanının kurcalanmasını engeller. Yanına <strong>library validation</strong> gelir: bir süreç yalnızca aynı Team ID ile imzalı ya da Apple imzalı kütüphaneleri yükleyebilir — böylece "meşru uygulamaya yabancı dylib yükletme" yolu kapanır.</p>' +
+      '<div class="manpage src-apple"><div class="ref">Security · Hardened Runtime</div><p class="orig">The Hardened Runtime, along with System Integrity Protection (SIP), protects the runtime integrity of your software by preventing certain classes of exploits, like code injection, dynamically linked library (DLL) hijacking, and process memory space tampering.</p><p>Hardened Runtime, SIP ile birlikte yazılımın <em>çalışma-anı bütünlüğünü</em> (runtime integrity) korur: code injection, kütüphane kaçırma (DLL/dylib hijacking) ve süreç bellek alanının kurcalanması gibi belirli istismar sınıflarını engeller. İmzanın kapatamadığı dinamik boşluğu tam da bu doldurur.</p></div>' +
+      '<div class="manpage src-docs"><div class="ref">Hardened Runtime · entitlements</div><p class="orig">Make sure to use only the entitlements that are absolutely necessary for your app\'s functionality.</p><p>Her korumanın bir istisna entitlement\'ı vardır (ör. <code>disable-library-validation</code>, <code>allow-unsigned-executable-memory</code>). Apple\'ın kuralı nettir: yalnızca <em>mutlaka gerekli</em> olanı kullan. Çünkü açılan her istisna, saldırgana bir yüzey açar — en az ayrıcalık ilkesi burada doğrudan saldırı yüzeyini küçültür.</p></div>' +
+      '<p class="prose">Toparlarsak: kod imzalama kökeni ve statik bütünlüğü kanıtlar; notarization bilinen zararlıyı eler; Hardened Runtime + library validation runtime boşluğunu daraltır; AMFI bunları çekirdekte zorlar; donanım güven kökü (hardware root of trust) ise en alta sabitler. Bir baypasın bu katmanların hepsini birden aşması gerekir — <code>macos-codesign</code> ve <code>macos-amfi</code> modülleri bu zinciri makine tarafından nasıl kurulduğuyla anlatıyor. Saldırganı anlamanın savunmaya kattığı şey budur: nereye kaç katman koymak gerektiğini görmek.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Kendi ikilinin imzasını incele (macOS)', p: 'codesign, bir ikilinin imza bilgilerini döker: kod dizini hash\'i, imzalayan kimlik, bayraklar. Yalnızca inceleme; hiçbir şey değiştirmez.',
+        shells: [{ label: 'terminal (macOS, temsilî)', copy: 'codesign -dvvv /bin/ls', pre: '<span class="c">$</span> codesign -dvvv /bin/ls\nExecutable=/bin/ls\nIdentifier=com.apple.ls\n<span class="g">CodeDirectory</span> v=20400 size=... flags=0x0(none) hashes=...\nSigned Time=...\n<span class="g">Authority</span>=Software Signing\nAuthority=Apple Code Signing Certification Authority\nAuthority=Apple Root CA   <span class="c"># sertifika zinciri</span>' }] },
+      { h3: '2. Entitlements\'ı oku', p: 'Bir uygulamanın hangi yetkilere sahip olduğunu imzasından okuyabilirsin. Yetkiler imzanın parçası olduğu için kurcalanamaz.',
+        shells: [{ label: 'terminal (macOS, temsilî)', copy: 'codesign -d --entitlements - /path/to/App.app', pre: '<span class="c">$</span> codesign -d --entitlements - /path/to/App\n&lt;dict&gt;\n  &lt;key&gt;com.apple.security.app-sandbox&lt;/key&gt;&lt;true/&gt;\n  &lt;key&gt;com.apple.security.network.client&lt;/key&gt;&lt;true/&gt;\n&lt;/dict&gt;' }] },
+      { h3: '3. Android: APK imzasını doğrula', p: 'Android tarafında apksigner, bir APK\'nın imza şemasını (v2/v3) ve imzalayan sertifikayı doğrular.',
+        shells: [{ label: 'terminal (temsilî)', copy: 'apksigner verify --verbose --print-certs app.apk', pre: '<span class="c">$</span> apksigner verify --verbose app.apk\nVerified using v2 scheme (APK Signature Scheme v2): <span class="g">true</span>\nVerified using v3 scheme: <span class="g">true</span>\nSigner #1 certificate SHA-256 digest: ...' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Kod imzası, ikilinin hangi iki şeyini birden garanti eder?', opts: ['Hız ve boyut', 'Kaynak (kim) ve bütünlük (değişmedi)', 'Sürüm ve tarih'], answer: 'Kaynak (kim) ve bütünlük (değişmedi)',
+        ok: 'Doğru. Sertifika zinciri kaynağı, sayfa hash\'leri bütünlüğü kanıtlar. İkisi birden olmadan imza anlamsızdır.', no: 'İpucu: imza hem "kim imzaladı" hem "değişti mi" sorusunu yanıtlar.' },
+      { q: 'Bir saldırgan imzalı bir ikilinin tek bir kod baytını değiştirirse ne olur?', opts: ['Hiçbir şey, çalışır', 'O sayfanın hash\'i tutmaz, çekirdek süreci öldürür', 'İmza otomatik güncellenir'], answer: 'O sayfanın hash\'i tutmaz, çekirdek süreci öldürür',
+        ok: 'Doğru. Code directory o sayfanın hash\'ini tutar; değişen bayt hash\'i bozar ve çekirdek "Code Signature Invalid" ile süreci sonlandırır.', no: 'İpucu: code directory her sayfanın hash\'ini saklıyordu. Değişen bayt hash\'e ne yapar?' },
+      { q: 'Entitlements neden kurcalanamaz?', opts: ['Şifreli olduğu için', 'İmzanın parçası olduğu için — değiştirmek imzayı bozar', 'Çekirdekte saklandığı için'], answer: 'İmzanın parçası olduğu için — değiştirmek imzayı bozar',
+        ok: 'Doğru. Yetkiler imzalanan veriye dahildir; birini eklemek/değiştirmek hash\'i ve dolayısıyla imzayı geçersiz kılar.', no: 'İpucu: yetkiler imzayla birlikte hash\'lenir. Onları değiştirmek imzaya ne yapar?' }
+    ]
+  },
+  pipeline: { intro: 'Kod imzalama, sömürü boru hattının (exploitation pipeline) sonundaki "yük (payload) çalıştırma" basamağını hedefler: imzasız kodu çalıştırmayı en baştan engeller.' },
+  next: { eyebrow: 'Sıradaki · Ofansif Modül 7', title: 'Sandbox kaçışı kavramları', desc: 'Kod imzalı ve kum havuzundaki (sandbox) bir süreç, sınırlarının dışına nasıl bakmaya çalışır?' },
+  sources: [
+    { href: 'https://newosxbook.com/toc3.html', text: 'Levin — OS Internals Cilt III Bölüm 5', note: 'Code Signing' },
+    { href: 'https://developer.apple.com/documentation/security/code_signing_services', text: 'Apple — Code Signing Services' },
+    { href: 'https://source.android.com/docs/security/features/apksigning', text: 'Android — APK imzalama (v2/v3)' },
+    { href: 'https://www.antid0te.com/training/kernel-internals.html', text: 'Antid0te — Kernel Internals', note: 'AMFI / trust cache' }
+  ],
+  pageTitle: 'Kod İmzalama'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

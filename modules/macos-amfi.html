@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>AMFI ve Trust Cache</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: AMFI karar akışı */
+.amfi-flow { display: grid; gap: 8px; }
+.acomp { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 9px 12px; display: grid; gap: 3px; min-width: 0; opacity: .5; transition: opacity .2s, border-color .2s, background .2s; }
+.acomp.lit { opacity: 1; border-color: var(--track); background: var(--track-soft); }
+.acomp .ah { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.acomp .ah b { font-family: var(--f-display); font-size: 14.5px; }
+.acomp .ah .mono { font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.acomp p { margin: 0; font-size: 12px; color: var(--muted); }
+.acomp.lit p { color: var(--fg); }
+.averdict { border-radius: var(--r); padding: 10px 12px; font-family: var(--f-mono); font-size: 13px; display: flex; gap: 8px; align-items: center; margin-top: 2px; }
+.averdict .d { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.averdict.ok { background: var(--ok-soft); color: var(--ok); } .averdict.ok .d { background: var(--ok); }
+.averdict.bad { background: var(--bad-soft); color: var(--bad); } .averdict.bad .d { background: var(--bad); }
+.averdict.wait { background: var(--sunk); color: var(--muted); } .averdict.wait .d { background: var(--muted); }
+.aarrow { text-align: center; color: var(--muted); font-size: 12px; line-height: 1; }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'macos',
+  crumbs: 'macos › amfi › modül 16',
+  eyebrow: 'Modül 16 · macOS / iOS · Güvenlik',
+  titleHTML: '<code>AMFI</code>: imzayı çalışma anında zorlayan göz',
+  lede: 'Kod imzalama bir ikiliye imza koyar; ama o imzayı program çalışmadan HEMEN ÖNCE kontrol edip geçersizse süreci öldüren bir mekanizma gerekir. iOS ve macOS\'ta bu görevi AMFI (AppleMobileFileIntegrity) üstlenir: çekirdekte bir uzantı (kext) ile kullanıcı-alanındaki yardımcısı amfid birlikte çalışır.',
+  meta: ['~15 dk', 'ön koşul: kod imzalama', 'bağlam: XNU, AMFI'],
+  ethic: '<b>Not.</b> Bu modül mekanizmayı ve savunma tasarımını anlatır. AMFI tarihsel olarak jailbreak araştırmasının ana hedeflerinden biridir; burada baypas yöntemleri değil, <b>sistemin imzayı nasıl zorladığı</b> ele alınır.',
+  intuition: {
+    paras: [
+      'Kod imzalama (code signing) modülünde gördüğümüz imza, tek başına yeterli değildir: birinin o imzayı <em>her çalıştırmada</em> doğrulaması ve geçersizse çalışmayı <em>engellemesi</em> gerekir. AMFI tam olarak bu zorlayıcıdır (enforcer).',
+      'AMFI iki parçadan oluşur. Çekirdekteki <code>AMFI.kext</code>, MACF (Mandatory Access Control Framework) kancalarına (hook) takılır ve her <code>execve</code> ile her bellek sayfasının çalıştırılabilir yapılma isteğinde devreye girer. Kullanıcı-alanındaki <code>amfid</code> ise asıl imza/sertifika doğrulamasının pahalı kısmını yapıp çekirdeğe "evet/hayır" döndürür. Hız için Apple\'ın önceden imzaladığı sistem ikilileri bir <strong>güven önbelleğinde (trust cache)</strong> hash listesi olarak tutulur; oradaki bir ikili tekrar doğrulanmaz, doğrudan güvenilir sayılır.'
+    ],
+    ideas: [
+      { b: 'Çekirdek + yardımcı', span: 'AMFI.kext (çekirdek, MACF kancaları) kararı verir; amfid (kullanıcı-alanı) pahalı imza doğrulamasını yapar.' },
+      { b: 'Güven önbelleği', span: 'Apple\'ın önceden imzaladığı sistem ikililerinin hash listesi (trust cache). Buradaki ikili doğrulanmadan güvenilir sayılır — hızlı yol.' },
+      { b: 'Sağlama profili', span: 'Geliştirici imzalı uygulamalar bir provisioning profile ile hangi cihazda/entitlement ile çalışabileceğini belgeler.' }
+    ]
+  },
+  lab: {
+    intro: 'Bir ikili çalıştırılmak istendiğinde AMFI\'nin verdiği kararı adım adım izleyelim. Her adımda ilgili bileşen aydınlanır ve o anki karar (bekliyor / izin / ret) altta görünür.',
+    codeLabel: 'AMFI karar akışı', cmd: 'execve(ikili)',
+    foot: 'Log satırları ve değerler temsilîdir; gerçek davranış sürüme göre değişir.',
+    code: [
+      { t: '<span class="cm">// bir ikili çalıştırılmak isteniyor</span>' },
+      { t: 'execve("/path/ikili", ...)' },
+      { t: '' },
+      { t: '<span class="cm">// çekirdek: MACF kancası → AMFI.kext</span>' },
+      { t: 'amfi: trust_cache_lookup(cdhash)?' },
+      { t: '  → bulundu  : güven (hızlı yol)' },
+      { t: '  → yok      : amfid\'ye sor (kullanıcı-alanı)' },
+      { t: '' },
+      { t: 'amfi: entitlements + provisioning profile kontrol' },
+      { t: 'karar: izin  → çalıştır   |   ret → SIGKILL' }
+    ],
+    steps: [
+      { pc: [1, 2], title: 'Çalıştırma isteği', term: ['execve: /Applications/Ornek.app/ornek'],
+        text: 'Bir ikili (binary) çalıştırılmak isteniyor. Çekirdek <code>execve</code> yolunda, kodu belleğe eşleyip çalıştırmadan önce MACF (Mandatory Access Control Framework) kancalarını çağırır. AMFI bu kancalara takılıdır, yani söz hakkı ondadır.',
+        lit: ['exec'], verdict: { cls: 'wait', txt: 'karar bekleniyor…' } },
+      { pc: 4, title: 'AMFI.kext devrede', term: ['AMFI: imza bütünlüğü denetimi başladı'],
+        text: 'Çekirdekteki <code>AMFI.kext</code> devreye girer. İkilinin kod imzasından türetilen özet değerini (cdhash — code directory hash) hesaplar. Bu hash, ikiliyi benzersiz kimlikler: tek bir bayt değişse cdhash değişir.',
+        lit: ['exec', 'kext'], verdict: { cls: 'wait', txt: 'cdhash hesaplandı, aranıyor…' } },
+      { pc: [5, 6], title: 'Güven önbelleği (trust cache)', term: ['AMFI: cdhash trust cache\'te → güvenilir'],
+        text: 'AMFI önce hızlı yolu dener: cdhash güven önbelleğinde (trust cache) mi? Apple\'ın önceden imzaladığı sistem ikilileri bu listede olduğu için, bir sistem ikilisi burada bulunur ve imza tekrar doğrulanmadan GÜVENİLİR sayılır. Üçüncü taraf bir uygulama ise listede olmaz; bir sonraki adıma düşer.',
+        lit: ['exec', 'kext', 'tc'], verdict: { cls: 'ok', txt: 'sistem ikilisi: trust cache → izin' } },
+      { pc: 7, title: 'amfid: imza doğrula', term: ['AMFI → amfid: cdhash doğrula', 'amfid: sertifika zinciri geçerli'],
+        text: 'Trust cache\'te olmayan bir ikili için AMFI, kullanıcı-alanındaki yardımcısı <code>amfid</code>\'ye sorar. amfid asıl pahalı işi yapar: imzanın sertifika zincirini (certificate chain) Apple köküne kadar doğrular, iptal (revocation) durumuna bakar ve çekirdeğe "geçerli/değil" döndürür. (amfid\'nin kendisi tarihsel bir saldırı hedefidir; bu yüzden artık daha kısıtlıdır.)',
+        lit: ['exec', 'kext', 'amfid'], verdict: { cls: 'wait', txt: 'imza geçerli; yetkiler kontrol ediliyor…' } },
+      { pc: 9, title: 'Sağlama profili ve yetkiler', term: ['AMFI: provisioning profile eşleşti, entitlements onaylı'],
+        text: 'İmza geçerli olsa bile iş bitmez: ikilinin istediği yetkiler (entitlements) ve — geliştirici dağıtımında — sağlama profili (provisioning profile) kontrol edilir. Profil, uygulamanın hangi cihazlarda ve hangi yetkilerle çalışabileceğini belgeler; istenen yetki profilin izin verdiğinden fazlaysa reddedilir.',
+        lit: ['exec', 'kext', 'amfid', 'ent'], verdict: { cls: 'wait', txt: 'yetkiler profile uygun; karar veriliyor…' } },
+      { pc: 10, title: 'Karar', term: ['— geçerli yol —', 'AMFI: izin verildi, süreç başlıyor', '', '— geçersiz imza olsaydı —', 'AMFI: cdhash doğrulanamadı → SIGKILL'],
+        text: 'AMFI kararını verir. Her şey geçerliyse süreç çalışır. İmza eksik/bozuksa, cdhash hiçbir yerde doğrulanamıyorsa veya yetkiler yetersizse çekirdek süreci başlatmaz; çalışmakta olan bir sayfa bozulursa <code>SIGKILL</code> ile anında öldürür. "İmzasız kod çalışmaz" kuralını fiilen uygulayan katman budur.',
+        lit: ['exec', 'kext', 'amfid', 'ent'], verdict: { cls: 'ok', txt: 'tüm kontroller geçti → çalıştır (geçersizse → SIGKILL)' } }
+    ],
+    render: function (s, stateEl, u) {
+      var all = [
+        { id: 'exec', b: 'execve → MACF kancası', mono: 'çekirdek' },
+        { id: 'kext', b: 'AMFI.kext', mono: 'cdhash' },
+        { id: 'tc', b: 'Güven önbelleği (trust cache)', mono: 'hash listesi' },
+        { id: 'amfid', b: 'amfid', mono: 'kullanıcı-alanı' },
+        { id: 'ent', b: 'Yetkiler + sağlama profili', mono: 'entitlements' }
+      ];
+      var html = '<p class="lab-label">AMFI bileşenleri</p><div class="amfi-flow">';
+      all.forEach(function (c, i) {
+        var lit = s.lit && s.lit.indexOf(c.id) >= 0;
+        html += '<div class="acomp' + (lit ? ' lit' : '') + '"><div class="ah"><b>' + c.b + '</b><span class="mono">' + c.mono + '</span></div></div>';
+        if (i < all.length - 1) html += '<div class="aarrow">▼</div>';
+      });
+      html += '</div>';
+      html += '<div class="averdict ' + s.verdict.cls + '"><span class="d"></span><span>' + u.esc(s.verdict.txt) + '</span></div>';
+      stateEl.innerHTML = html;
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: imzayı kim zorlar?",
+    html: `<p class="lead">Kod imzalama bir binary'nin bütünlüğünü <em>tanımlar</em>, ama onu çalışma anında <strong>zorlayan</strong> ayrı bir mekanizma gerekir: AMFI (AppleMobileFileIntegrity). AMFI, macOS/iOS'un "yalnızca Apple'ın ya da yetkili bir geliştiricinin imzaladığı kod çalışabilir" kuralını çekirdekte uygulatan parçadır. Bu bölüm Apple Platform Security belgelerine ve Levin'in OS Internals Cilt III'üne dayanır.</p>
+
+<h3>1. İki parça: AMFI.kext ve amfid</h3>
+<p>AMFI tek bir bileşen değil, çekirdek ile kullanıcı alanına yayılmış bir çifttir. Ağır, güvenlik-kritik karar (bir sayfanın çalıştırılabilir olup olamayacağı) çekirdekte verilir; pahalı ama nadir olan iş (bir imzanın sertifika zinciriyle kriptografik doğrulanması) kullanıcı alanındaki bir yardımcıya devredilir.</p>
+<div class="deflist">
+<div><dt>AMFI.kext</dt><dd>Çekirdekteki politika modülü. MACF hook'larında devreye girer, trust cache'e bakar, kararı uygular (gerekirse process'i öldürür).</dd></div>
+<div><dt>amfid</dt><dd>Kullanıcı alanı daemon'ı. Trust cache'te bulunmayan bir binary'nin code signature'ını sertifika zinciriyle doğrular ve sonucu çekirdeğe bildirir.</dd></div>
+</div>
+
+<h3>2. MACF hook'ları: nerede devreye girer</h3>
+<p>AMFI, çekirdeğin MACF (Mandatory Access Control Framework) politika motoruna kaydolur. Kritik iki nokta vardır: (1) <code>execve</code> — bir binary çalıştırılmak istendiğinde; (2) bellek koruması değişimi — bir sayfa sonradan çalıştırılabilir (executable) yapılmak istendiğinde. İkincisi W^X'in (write XOR execute) özüdür: AMFI, imzasız bir belleğin çalıştırılmasını da engeller; böylece "önce yaz, sonra çalıştır" tarzı kod enjeksiyonu kapanır. Bu yüzden iOS'ta JIT bile ancak özel bir entitlement ile mümkündür.</p>
+
+<h3>3. Trust cache: hız ve güvenlik aynı anda</h3>
+<p>Sistemdeki her Apple binary'si için her açılışta sertifika zinciri doğrulamak hem yavaş hem gereksizdir. Çözüm trust cache'tir: Apple'ın önceden onayladığı binary'lerin <strong>cdhash</strong> (code directory hash) listesi. Bir binary çalışırken code directory'si hash'lenir; hash listede varsa imza ayrıca doğrulanmadan güvenilir kabul edilir.</p>
+<div class="manpage src-apple"><div class="ref">Platform Security · Trust caches</div><p class="orig">A trusted record of all the Mach-O binaries that are assembled into the signed system volume.</p><p>Statik trust cache, imzalı sistem birimine (signed system volume) dahil edilen tüm Mach-O binary'lerinin güvenilir bir kaydıdır — yani sistemle gelen onaylı çalıştırılabilirlerin listesi.</p></div>
+<div class="manpage src-apple"><div class="ref">Platform Security · Trust caches</div><p class="orig">Each Mach-O is represented by a code directory hash.</p><p>Her Mach-O, bir code directory hash (cdhash) ile temsil edilir. Bu hash'ler trust cache'e sıralı olarak yazılır; çalışma anında binary'nin cdhash'i bu listede hızlıca aranır.</p></div>
+<div class="manpage src-apple"><div class="ref">Platform Security · Trust caches</div><p class="orig">the executable mappings created for the binary will be granted platform privileges.</p><p>cdhash trust cache'te bulunursa, binary için oluşturulan executable mapping'lere platform ayrıcalıkları verilir — ek imza doğrulaması yapılmadan. Match yoksa karar amfid'e düşer.</p></div>
+
+<h3>4. amfid: trust cache dışındaki kod</h3>
+<p>Üçüncü taraf bir uygulama trust cache'te yoktur. Bu durumda AMFI.kext, binary'nin cdhash'ini amfid'e sorar; amfid imzayı ve sertifika zincirini doğrular (macOS'ta ayrıca notarization kontrolü), geçerliyse cdhash'i çekirdeğe onaylar. Geçersizse çekirdek process'i <code>SIGKILL</code> ile öldürür — root olsa bile. Tarihsel olarak amfid, saldırganların "imzasız kodu imzalıymış gibi göstertmeye" çalıştığı bir hedef olmuştur; bu yüzden amfid ↔ kernel arası iletişim sıkılaştırılmıştır (kavramsal).</p>
+
+<h3>5. Provisioning profile ve entitlements</h3>
+<p>iOS'ta trust cache'te olmayan geliştirici uygulamalarına izin, provisioning profile ile verilir: hangi cihazların, hangi App ID'nin, hangi entitlement'larla kodu çalıştırabileceğini Apple'ın imzaladığı bir belge. Entitlement'lar imzanın içine gömülüdür ve bir process'in neye yetkili olduğunu (örn. belirli bir sandbox istisnası) belirler; AMFI bu yetkilerin imzayla tutarlı olmasını da denetler.</p>
+<div class="deflist">
+<div><dt>provisioning profile</dt><dd>Apple imzalı; hangi cihaz + App ID + entitlement kombinasyonunun çalışabileceğini belirten belge (çoğunlukla iOS).</dd></div>
+<div><dt>entitlement</dt><dd>İmzaya gömülü yetki anahtarları; process'in ayrıcalıklarını (sandbox istisnaları, donanım erişimi) tanımlar.</dd></div>
+</div>
+
+<h3>6. SIP ile ilişki ve bütünlük zinciri</h3>
+<p>AMFI tek başına çalışmaz: secure boot zinciri çekirdeğin ve AMFI.kext'in kendisinin bütün olduğunu garanti eder; signed system volume sistem dosyalarının değişmediğini; SIP (System Integrity Protection) ise root'un bile AMFI/çekirdek yapılarını kurcalamasını engeller. Böylece "yalnızca güvenilir kod çalışır" güvencesi, donanım kök güveninden (hardware root of trust) çalışan process'e kadar kesintisiz bir zincir oluşturur. Bu zincirin bir halkasını kırmak, iOS güvenlik araştırmasının (jailbreak) tarihsel hedefidir — mekanizma için ofansif izleğe bakın.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">AMFI, çekirdeğin MACF (Mandatory Access Control Framework) politika motoruna bir politika modülü olarak kaydolur. İlgili kancalar <code>execve</code> ve bellek koruması değiştirme (bir sayfayı çalıştırılabilir yapma) yollarındadır; böylece imzasız kodun hem baştan çalıştırılması hem de sonradan belleğe enjekte edilip çalıştırılması engellenir.</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">execve()</span><span class="where">bsd/kern</span><p>İkiliyi belleğe eşler; çalıştırmadan önce MACF kancalarını çağırır.</p></div></li>' +
+      '<li class="boundary"><div>MACF politika kancası · çekirdek</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">AMFI.kext</span><span class="where">mac policy modülü</span><p>cdhash hesaplar; önce trust cache\'e bakar (hızlı yol).</p></div></li>' +
+      '<li class="boundary"><div>upcall · çekirdek → kullanıcı-alanı</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://newosxbook.com/toc3.html" target="_blank" rel="noopener">amfid</a><span class="where">kullanıcı-alanı daemon</span><p>Sertifika zincirini ve imzayı doğrular, sonucu çekirdeğe döndürür.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">karar</span><span class="where">AMFI.kext</span><p>Geçerse süreç çalışır; değilse başlatılmaz veya çalışan sayfa SIGKILL ile öldürülür.</p></div></li>' +
+      '</ol>' +
+      '<p class="prose" style="margin-top:14px">SIP (System Integrity Protection) ile ilişki: SIP sistem dosyalarının ve süreçlerinin değiştirilmesini engeller; AMFI ise çalıştırılan <em>kodun</em> imzalı olmasını zorlar. İkisi birlikte, imzasız veya değiştirilmiş kodun hem diske yazılmasını hem de çalıştırılmasını kısıtlayan katmanlı bir savunma (defense in depth) oluşturur. Bu yüzden jailbreak araştırmasında AMFI sık sık incelenen bir hedeftir — ama buradaki amaç mekanizmayı anlamaktır.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Bir ikilinin imzasını incele (macOS)', p: 'codesign, cdhash ve imza bilgisini gösterir. AMFI\'nin baktığı değer tam da bu cdhash\'tir.',
+        shells: [{ label: 'terminal (macOS · temsilî)', copy: 'codesign -dvvv /bin/ls', pre: '<span class="c">$</span> codesign -dvvv /bin/ls\nExecutable=/bin/ls\nIdentifier=com.apple.ls\n<span class="hi">CDHash=ab12...  (trust cache\'teki sistem ikilisi)</span>\nAuthority=Software Signing\nAuthority=Apple Code Signing Certification Authority' }] },
+      { h3: '2. Yetkileri (entitlements) gör (macOS)', p: 'Bir uygulamanın istediği yetkileri listele; AMFI bunları imzayla birlikte doğrular.',
+        shells: [{ label: 'terminal (macOS · temsilî)', copy: 'codesign -d --entitlements - /Applications/Safari.app', pre: '<span class="c">$</span> codesign -d --entitlements - /Applications/Safari.app\n[Dict]\n  com.apple.security.network.client = true\n  ...' }] },
+      { h3: '3. Reddedilen çalıştırma (macOS)', p: 'İmzası bozuk bir ikiliyi çalıştırmayı dene; AMFI/Gatekeeper engeller, günlükte iz kalır.',
+        shells: [{ label: 'terminal (macOS · temsilî)', copy: 'log show --predicate \'process == "amfid"\' --last 10m', pre: '<span class="c">$</span> ./bozuk_imza\nzsh: killed     ./bozuk_imza   <span class="c"># SIGKILL</span>\n<span class="c"># log: amfid: cdhash doğrulanamadı</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Bir sistem ikilisi çalıştırılırken AMFI neden imzayı baştan sona tekrar doğrulamaz?', opts: ['Çünkü imza yok', 'Çünkü cdhash güven önbelleğinde (trust cache) var', 'Çünkü SIP kapalı'], answer: 'Çünkü cdhash güven önbelleğinde (trust cache) var',
+        ok: 'Doğru. Apple\'ın önceden imzaladığı ikililerin hash\'leri trust cache\'tedir; oradaki bir cdhash tekrar doğrulanmadan güvenilir sayılır — hızlı yol.', no: 'İpucu: Apple\'ın önceden imzaladığı ikililerin hash listesi nerede tutulur?' },
+      { q: 'AMFI\'nin iki parçası hangileridir?', opts: ['AMFI.kext (çekirdek) ve amfid (kullanıcı-alanı)', 'launchd ve dyld', 'SIP ve Gatekeeper'], answer: 'AMFI.kext (çekirdek) ve amfid (kullanıcı-alanı)',
+        ok: 'Doğru. Çekirdekteki AMFI.kext kararı verir ve MACF kancalarına takılır; amfid pahalı imza/sertifika doğrulamasını kullanıcı-alanında yapar.', no: 'İpucu: biri çekirdekte karar verir, diğeri kullanıcı-alanında imza doğrular.' },
+      { q: 'İmzası doğrulanamayan bir koda çekirdek ne yapar?', opts: ['Uyarı verip çalıştırır', 'Başlatmaz / çalışan sayfayı SIGKILL ile öldürür', 'İmzayı kendi ekler'], answer: 'Başlatmaz / çalışan sayfayı SIGKILL ile öldürür',
+        ok: 'Doğru. "İmzasız kod çalışmaz" kuralını fiilen uygulayan katman budur: başlatma reddedilir, çalışırken bozulan sayfa anında öldürülür.', no: 'İpucu: AMFI bir zorlayıcı (enforcer); geçersiz imzaya izin vermez.' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · macOS Modül 17', title: 'Sandbox', desc: 'Bir süreç hangi dosyalara, syscall\'lara ve servislere erişebilir? Seatbelt profilleri ve mac_syscall.' },
+  sources: [
+    { href: 'https://newosxbook.com/toc3.html', text: 'Levin — OS Internals Cilt III', note: 'Bölüm 7, AMFI' },
+    { href: 'https://support.apple.com/guide/security/welcome/web', text: 'Apple Platform Security', note: 'kod imzalama zorlaması' },
+    { href: 'https://github.com/apple-oss-distributions/xnu', text: 'XNU kaynağı', note: 'MACF / mac policy' }
+  ],
+  pageTitle: 'AMFI ve Trust Cache'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

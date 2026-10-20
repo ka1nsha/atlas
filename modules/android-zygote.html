@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Zygote</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'android',
+  crumbs: 'android › init ve zygote › modül 4',
+  eyebrow: 'Modül 4 · Android · Süreç doğuşu',
+  titleHTML: 'Her uygulama <code>Zygote</code>\'tan doğar',
+  lede: 'Android\'de bir uygulama sıfırdan başlamaz; Zygote adlı, çalışma zamanını ve framework\'ü önceden yüklemiş bir ana süreç fork edilerek doğar. Bu, fork() modülündeki copy-on-write\'ın gerçek dünyadaki en güzel örneğidir.',
+  meta: ['~15 dk', 'ön koşul: Linux fork/CoW', 'bağlam: AOSP'],
+  intuition: {
+    paras: [
+      'Bir Android uygulaması bir JVM (ART) ve koca bir framework sınıf kütüphanesi ister. Bunu her uygulama için sıfırdan yüklemek yavaş ve savurgan olurdu. Çözüm: açılışta bir kez <strong>Zygote</strong> süreci başlatılır, ART ve framework sınıfları onun belleğine önceden yüklenir (preload).',
+      'Yeni bir uygulama gerektiğinde Zygote <code>fork()</code> edilir. Linux\'un copy-on-write\'ı sayesinde önceden yüklenen bu dev bellek kopyalanmaz; tüm uygulamalar onu paylaşır. Uygulama yalnızca değiştirdiği sayfalar için yeni bellek harcar.'
+    ],
+    ideas: [
+      { b: 'Önceden yükle', span: 'Zygote açılışta ART\'ı, framework sınıflarını ve kaynakları belleğine yükler. Tek büyük paylaşılabilir görüntü.' },
+      { b: 'fork, exec değil', span: 'Uygulama Zygote\'un kopyası olarak doğar. exec() yok; hazır çalışma zamanı devralınır, başlatma anında olur.' },
+      { b: 'Paylaşılan framework', span: 'CoW sayesinde onlarca uygulama aynı fiziksel framework belleğini paylaşır; sadece kirlettikleri sayfalar kopyalanır.' }
+    ]
+  },
+  lab: {
+    intro: 'Zygote açılışta framework\'ü yükler, sonra bir socket üzerinden gelen istekleri bekler. Her istekte fork eder ve çocuğu bir uygulamaya "specialize" eder. Sağda süreçleri ve paylaşılan framework belleğini izle.',
+    codeLabel: 'ZygoteServer (temsilî)', cmd: 'system_server → zygote',
+    foot: 'PID\'ler ve çıktı temsilîdir; gerçek değerler cihaza göre değişir. Gerçek ağacı "adb shell ps -A" ile görebilirsin.',
+    code: [
+      { t: '<span class="cm">// ZygoteInit — açılışta bir kez</span>' },
+      { t: '<span class="f">preload</span>();            <span class="cm">// ART + framework sınıfları + kaynaklar</span>' },
+      { t: '' },
+      { t: '<span class="k">while</span> (<span class="k">true</span>) {' },
+      { t: '    cmd = socket.<span class="f">read</span>();   <span class="cm">// system_server\'dan istek</span>' },
+      { t: '    pid = Zygote.<span class="f">forkAndSpecialize</span>(uid, gid, seInfo);' },
+      { t: '    <span class="k">if</span> (pid == <span class="n">0</span>) {' },
+      { t: '        <span class="f">handleChildProc</span>();   <span class="cm">// app kendi kimliğine düşer</span>' },
+      { t: '    }' },
+      { t: '}' }
+    ],
+    steps: [
+      { pc: 2, title: 'Önyükleme (preload)', term: ['zygote64 başladı (pid 620)', 'framework önceden yüklendi'],
+        text: 'Açılışta Zygote başlar ve ART çalışma zamanını, framework sınıflarını ve kaynakları belleğine yükler. Bu büyük görüntü, bir kez kurulur ve sonradan tüm uygulamalarca paylaşılır.',
+        procs: [{ name: 'Zygote', pid: 620, state: 'bekliyor (socket)', k: 'sleep' }],
+        frames: [{ pfn: 'framework', what: 'ART + framework sınıfları', refs: 1 }] },
+      { pc: 4, title: 'Uygulama isteği', term: ['system_server → zygote: fork "com.ornek.app" uid=10234'],
+        text: 'Kullanıcı bir uygulama açar. system_server, Zygote\'a socket üzerinden bir forkAndSpecialize komutu yollar: hangi UID, hangi SELinux bağlamı, hangi sınıf.',
+        procs: [{ name: 'Zygote', pid: 620, state: 'istek alındı', k: 'run' }],
+        frames: [{ pfn: 'framework', what: 'ART + framework sınıfları', refs: 1 }] },
+      { pc: 5, title: 'fork: copy-on-write', term: [],
+        text: 'Zygote fork eder. Önceden yüklenen framework sayfaları KOPYALANMAZ: çocuk ile paylaşılır ve iki tarafta da salt okunur işaretlenir. Yeni uygulama süreci anında ve neredeyse bedava doğar.',
+        procs: [
+          { name: 'Zygote', pid: 620, state: 'fork etti', k: 'run' },
+          { name: 'app (henüz Zygote kopyası)', pid: 4120, state: 'oluşturuldu', k: 'new', isNew: true }
+        ],
+        frames: [{ pfn: 'framework', what: 'ART + framework (paylaşılıyor)', refs: 2, shared: true }] },
+      { pc: 7, title: 'specialize: kimliğe düş', term: ['app pid 4120: uid=10234 seccomp+SELinux kuruldu'],
+        text: 'Çocuk artık kendi uygulaması olmalı: UID/GID uygulamanın değerine düşürülür, SELinux bağlamı atanır, seccomp filtresi kurulur. Bu noktadan sonra çocuk Zygote değil, kum havuzundaki (sandbox) bir uygulamadır.',
+        procs: [
+          { name: 'Zygote', pid: 620, state: 'bekliyor (socket)', k: 'sleep' },
+          { name: 'com.ornek.app', pid: 4120, state: 'specialize edildi', k: 'kern' }
+        ],
+        frames: [{ pfn: 'framework', what: 'ART + framework (paylaşılıyor)', refs: 2, shared: true }] },
+      { pc: 8, title: 'Uygulama çalışır', term: ['app pid 4120: onCreate() çalışıyor'],
+        text: 'Uygulama çalışmaya başlar. Paylaşılan framework sayfalarını okudukça onları paylaşmaya devam eder; yalnızca değiştirdiği (yazdığı) sayfalar için yeni fiziksel bellek ayrılır. Onlarca uygulama aynı framework belleğini bu şekilde paylaşır.',
+        procs: [
+          { name: 'Zygote', pid: 620, state: 'bekliyor (socket)', k: 'sleep' },
+          { name: 'com.ornek.app', pid: 4120, state: 'çalışıyor', k: 'run' }
+        ],
+        frames: [{ pfn: 'framework', what: 'ART + framework (paylaşılıyor)', refs: 2, shared: true }, { pfn: 'app-özel', what: 'uygulamanın kirlettiği sayfalar', refs: 1, fresh: true }] }
+    ],
+    render: function (s, stateEl, u) {
+      var procs = s.procs.map(function (p, i) {
+        var who = i === 0 ? 'parent' : 'child';
+        return '<div class="proc ' + who + (p.isNew ? ' new' : '') + '"><div class="proc-h"><b>' + u.esc(p.name) + '</b><span class="mono">PID ' + p.pid + '</span></div>' +
+          '<span class="chip ' + p.k + '">' + u.esc(p.state) + '</span></div>';
+      }).join('');
+      var frames = s.frames.map(function (f) {
+        var c = 'fr' + (f.shared ? ' shared' : '') + (f.fresh ? ' fresh' : '');
+        var r = f.fresh ? 'app-özel' : (f.refs > 1 ? '×' + f.refs + ' paylaşımda' : '×1');
+        return '<div class="' + c + '" style="min-width:150px"><span class="mono">' + f.pfn + '</span><b style="font-size:12.5px">' + u.esc(f.what) + '</b><span class="refs">' + r + '</span></div>';
+      }).join('');
+      stateEl.innerHTML =
+        '<p class="lab-label">Süreçler</p><div class="procs">' + procs + '</div>' +
+        '<p class="lab-label" style="margin-top:14px">Paylaşılan framework belleği (CoW)</p><div class="frames">' + frames + '</div>';
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: Zygote neden böyle tasarlandı?",
+    html: `<p class="lead">Zygote, Android'in süreç modelinin kalbidir ve Linux fork modülündeki copy-on-write'ın gerçek dünyadaki en büyük ölçekli kullanımıdır. Her uygulamayı sıfırdan başlatmak yerine, ART runtime'ı ve framework'ü bir kez yükleyip onlarca uygulamayla paylaşmanın hikâyesidir. Bu bölüm AOSP belgelerine dayanır.</p>
+
+<h3>1. Neden preload? Soğuk başlatmanın maliyeti</h3>
+<p>Bir Android uygulaması bir ART runtime'ı, binlerce framework class'ını ve ortak resource'ları (drawable, string, tema) ister. Bunları her uygulama için ayrı ayrı yüklemek hem yavaş (disk + class linking + JIT) hem savurgan (her süreçte aynı kopya) olurdu. Çözüm: açılışta bir kez Zygote başlatılır ve bu pahalı şeyler onun address space'ine önceden yüklenir (preload).</p>
+<div class="manpage src-aosp"><div class="ref">AOSP · runtime/zygote</div><p class="orig">The init daemon spawns the Zygote process when the Android OS is initialized.</p><p>Zygote'u init daemon başlatır (Android açılış modülüne bağ: init, PID 1). Yani Zygote, kullanıcı daha hiçbir uygulama açmadan, sistem hazır olurken ayağa kalkar ve preload'u o anda yapar.</p></div>
+<div class="deflist">
+<div><dt>ART runtime</dt><dd>Managed runtime'ın kendisi; interpreter, JIT, garbage collector. Bir kez kurulur.</dd></div>
+<div><dt>framework classes</dt><dd>android.* ve java.* sınıflarının büyük kısmı; preloaded-classes listesinden yüklenir, verify + initialize edilir.</dd></div>
+<div><dt>resources</dt><dd>Ortak sistem drawable'ları, renkler, temalar — framework-res.apk'ten.</dd></div>
+</div>
+
+<h3>2. fork ve copy-on-write: paylaşımın mekaniği</h3>
+<p>Yeni bir uygulama gerektiğinde Zygote <code>fork()</code> edilir. Linux fork modülünde gördüğümüz copy-on-write burada devreye girer: önceden yüklenen o dev memory image kopyalanmaz; parent (Zygote) ile child (uygulama) aynı fiziksel sayfaları read-only olarak paylaşır. Uygulama yalnızca <em>değiştirdiği</em> (yazdığı) sayfalar için yeni fiziksel bellek harcar. Framework kodu çalışırken çoğunlukla okunduğundan, onlarca uygulama aynı framework sayfalarını fiziksel olarak paylaşmaya devam eder — bu, Android'in sınırlı RAM'de çok sayıda uygulama tutabilmesinin temel nedenidir (Android /proc modülündeki PSS metriği bu paylaşımı ölçer).</p>
+
+<h3>3. specialize: Zygote kopyasından uygulamaya</h3>
+<p>fork'tan hemen sonra child hâlâ Zygote'un yüksek ayrıcalıklarına sahiptir. specialize adımı onu kum havuzundaki bir uygulamaya indirger.</p>
+<div class="manpage src-aosp"><div class="ref">AOSP · runtime/zygote</div><p class="orig">The Zygote forks the process and changes the PID, cgroup, and other information.</p><p>fork'tan sonra Zygote; PID'i, cgroup'u ve "diğer bilgileri" ayarlar. Bu "diğer bilgiler" güvenliğin kalbidir:</p></div>
+<div class="deflist">
+<div><dt>setuid / setgid</dt><dd>Uygulamaya özel UID/GID'ye düşülür (per-app sandbox). Artık root değil, o uygulamanın kullanıcısıdır.</dd></div>
+<div><dt>SELinux context</dt><dd>Süreç untrusted_app gibi bir domain'e geçer; MAC politikası onu kısıtlar.</dd></div>
+<div><dt>seccomp</dt><dd>İzin verilen system call kümesini daraltan bir BPF filtresi kurulur.</dd></div>
+<div><dt>capabilities</dt><dd>Zygote'un sahip olduğu Linux capability'ler düşürülür; uygulama minimumla çalışır.</dd></div>
+</div>
+<p>Bu sıra önemlidir: önce ayrıcalıklar düşürülür, sonra uygulama kodu çalıştırılır — böylece uygulama hiçbir an Zygote ayrıcalıklarıyla kendi kodunu çalıştıramaz.</p>
+
+<h3>4. Zygote socket protokolü</h3>
+<p>Uygulama başlatma kararını system_server (ActivityManager) verir, ama fork'u Zygote yapar. system_server, Zygote'a bir Unix domain socket üzerinden komut yollar: hangi UID, hangi SELinux context, hangi ana sınıf (android.app.ActivityThread), hangi ABI. Zygote bu komutu okur, forkAndSpecialize'ı çağırır ve yeni PID'i geri bildirir. Yani "kim başlatılacak" kararı ile "nasıl doğurulacak" mekanizması ayrı süreçlerdedir.</p>
+
+<h3>5. USAP: ön-fork edilmiş havuz</h3>
+<p>fork + specialize bile ölçülebilir bir gecikmedir. Android bunu da gizlemek için isteği beklemeden önceden fork edilmiş, henüz specialize edilmemiş süreçlerden bir havuz tutabilir.</p>
+<div class="manpage src-aosp"><div class="ref">AOSP · runtime/zygote</div><p class="orig">When this feature is enabled, each Zygote maintains a pool of forked processes</p><p>USAP (Unspecialized App Process Pool) açıkken, her Zygote önceden fork edilmiş süreçlerden bir havuz tutar. İstek geldiğinde yalnızca specialize adımı kalır; fork'un maliyeti zaten ödenmiştir, uygulama daha hızlı açılır.</p></div>
+
+<h3>6. 64/32-bit Zygote ve bir güvenlik gerilimi</h3>
+<p>Hem 64-bit hem 32-bit uygulamaları desteklemek için iki ayrı Zygote (zygote64 ve zygote) çalışır; her uygulama ABI'sine uygun olandan doğar. Güvenlik tarafında ince bir gerilim vardır: tüm uygulamalar aynı Zygote'tan fork edildiği için, fork anındaki memory layout (ve dolayısıyla ASLR yerleşimi) büyük ölçüde ortaktır. Bu, bir uygulamada sızan bir adresin başka bir uygulamada da geçerli olma riskini doğurur. Android bunu, specialize sırasında bazı bölgeleri yeniden rastgeleleştirerek ve exec-tabanlı spawning seçenekleriyle hafifletir.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">Zygote\'un çekirdeğindeki süreç yaratma, Linux\'un <code>fork()</code>\'unun aynısıdır; Android sadece üstüne specialize adımını ekler. Kod AOSP\'ta <code>cs.android.com</code> üzerinden okunabilir.</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">ZygoteInit.main()</span><span class="where">frameworks/base</span><p>preload() ile framework\'ü yükler, sonra ZygoteServer döngüsüne girer.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">Zygote.forkAndSpecialize()</span><span class="where">frameworks/base</span><p>nativeForkAndSpecialize JNI çağrısına iner.</p></div></li>' +
+      '<li class="boundary"><div>JNI · Java → native → çekirdek</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">clone / copy_process()</span><span class="where">Linux kernel</span><p>Aynı fork modülündeki yol: task_struct, CoW sayfa tabloları.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">SpecializeCommon()</span><span class="where">frameworks/base</span><p>setuid/setgid, SELinux bağlamı, seccomp-BPF filtresi: çocuk uygulamaya dönüşür.</p></div></li>' +
+      '</ol>' +
+      '<p class="prose" style="margin-top:14px">USAP (Unspecialized App Process Pool): Android, isteği beklemeden önceden fork edilmiş çocuklar da tutar; istek gelince yalnızca specialize adımı kalır, başlatma daha da hızlanır.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Süreç ağacında Zygote\'u bul', p: 'Çalışan uygulamaların PPID\'sinin zygote64 olduğunu gör: hepsi ondan doğmuş.',
+        shells: [{ label: 'adb (temsilî çıktı)', copy: 'adb shell ps -A -o PID,PPID,NAME | grep -E "zygote|com\\."', pre: '<span class="c">$</span> adb shell ps -A -o PID,PPID,NAME\n  620     1 <span class="y">zygote64</span>\n 4120   <span class="g">620</span> com.ornek.app\n 4377   <span class="g">620</span> com.android.settings' }] },
+      { h3: '2. Paylaşılan belleği ölç', p: 'PSS (Proportional Set Size) paylaşılan sayfaları süreçlere böler; bir uygulamanın "gerçek" bellek payını Zygote paylaşımını hesaba katarak gösterir.',
+        shells: [{ label: 'adb', copy: 'adb shell dumpsys meminfo com.ornek.app', pre: '<span class="c">$</span> adb shell dumpsys meminfo com.ornek.app\n<span class="c"># Dalvik, .so, .art paylaşımlı (shared) sütunlarına bak</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Zygote neden <code>exec()</code> değil de <code>fork()</code> kullanır?', opts: ['Daha güvenli', 'Hazır çalışma zamanını devralmak için', 'Zorunlu olduğu için'], answer: 'Hazır çalışma zamanını devralmak için',
+        ok: 'Doğru. exec() belleği sıfırlardı; fork, önceden yüklenen ART ve framework\'ü CoW ile devralmayı sağlar — başlatma anında olur.', no: 'İpucu: exec() yeni program yükleyip belleği sıfırlar. Zygote tam tersini ister.' },
+      { q: 'Önceden yüklenen framework belleği uygulamalar arasında nasıl paylaşılır?', opts: ['Kopyalanarak', 'Copy-on-write ile', 'Diskten tekrar okunarak'], answer: 'Copy-on-write ile',
+        ok: 'Doğru. fork sonrası sayfalar salt okunur paylaşılır; yalnızca yazılan sayfalar kopyalanır. Bu yüzden onlarca uygulama aynı framework belleğini paylaşır.', no: 'Tekrar dene. fork() modülündeki mekanizmayı hatırla.' },
+      { q: 'specialize adımı ne yapar?', opts: ['Framework yükler', 'Çocuğu kendi UID/SELinux/seccomp kimliğine düşürür', 'Yeni Zygote başlatır'], answer: 'Çocuğu kendi UID/SELinux/seccomp kimliğine düşürür',
+        ok: 'Doğru. fork ile doğan çocuk hâlâ Zygote ayrıcalıklarındadır; specialize onu kum havuzundaki bir uygulamaya indirger.', no: 'İpucu: fork\'tan sonra çocuk hâlâ Zygote kimliğinde; bunu düzelten adım hangisi?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Android Modül 5', title: 'Servis mimarisi ve Binder', desc: 'Uygulamalar ve system_server birbirine Binder üzerinden nasıl çağrı yapar?' },
+  sources: [
+    { href: 'https://newandroidbook.com/TOC.html', text: 'Levin — Android Internals', note: 'Cilt I, Bölüm 8' },
+    { href: 'https://source.android.com/docs/core/runtime', text: 'AOSP — ART ve Zygote' },
+    { href: 'https://cs.android.com/android/platform/superproject/main/+/main:frameworks/base/core/java/com/android/internal/os/ZygoteInit.java', text: 'ZygoteInit.java', note: 'AOSP kaynağı' }
+  ],
+  pageTitle: 'Zygote'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

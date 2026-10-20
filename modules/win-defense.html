@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Uç nokta savunması: AV, EDR, ETW</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: telemetri boru hattı ve savunma katmanları */
+.evbox { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 10px 12px; display: grid; gap: 3px; }
+.evbox.on { border-color: var(--track); background: var(--track-soft); }
+.evbox .cl { font-family: var(--f-mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.evbox .cv { font-family: var(--f-display); font-weight: 800; font-size: 15px; }
+.evbox.on .cv { color: var(--track); }
+.flow { display: grid; gap: 8px; margin-top: 10px; }
+.node { border-radius: var(--r); padding: 9px 12px; border: 1.5px solid var(--line); background: var(--surface); display: grid; gap: 2px; }
+.node b { font-family: var(--f-display); font-size: 13.5px; } .node span { font-size: 12.5px; color: var(--muted); }
+.node.active { border-color: var(--track); background: var(--track-soft); } .node.active b { color: var(--track); }
+.node.done { opacity: .55; }
+.verdict { font-family: var(--f-mono); font-size: 12.5px; border: 1px dashed var(--track); border-radius: var(--r); background: var(--track-soft); color: var(--track); padding: 8px 10px; overflow-wrap: anywhere; }
+.verdict.block { border-color: var(--bad); background: var(--bad-soft); color: var(--bad); }
+.verdict.ok { border-color: var(--ok, #178a5a); background: var(--track-soft); }
+.layers { display: grid; gap: 7px; margin-top: 10px; }
+.layer { border: 1.5px solid var(--line); border-left: 3px solid var(--track); border-radius: var(--r); padding: 8px 12px; background: var(--surface); }
+.layer b { font-family: var(--f-display); font-size: 13.5px; color: var(--track); } .layer span { display:block; font-size: 12.5px; color: var(--muted); margin-top:2px; }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'windows',
+  crumbs: 'windows › uç nokta savunması › modül 6',
+  eyebrow: 'Modül 6 · Windows kernel · Mavi takım',
+  titleHTML: 'Uç nokta savunması: <code>AV</code> → <code>EDR</code> → <code>XDR</code> nasıl görür ve korur?',
+  lede: 'Önceki modüller çekirdeğin güvenlik kapılarını (callback\'ler, ETW) ve tehditleri kavramsal olarak gösterdi. Bu modül tamamen savunma tarafındadır: bir uç nokta koruma ürünü olayları hangi meşru kaynaklardan toplar, davranışı nasıl çıkarır, ve kendi bütünlüğünü (PPL, HVCI) nasıl korur. Saldırı tekniği değil, görünürlük ve koruma mühendisliği anlatılır.',
+  meta: ['~16 dk', 'ön koşul: callbacks & ETW, process/thread', 'platform: Windows 10/11, Defender/EDR'],
+  intuition: {
+    paras: [
+      'Bir uç nokta koruma ürünü tek bir "virüs imzası" listesinden ibaret değildir; katmanlı bir görünürlük ve karar sistemidir. En altta çekirdekten gelen gerçek-zamanlı olaylar (süreç/thread/image/registry callback\'leri + ETW akışı) vardır; bunların üstünde bu olayları birleştirip <strong>davranış</strong> çıkaran bir motor; en üstte de uyarı, engelleme ve müdahale süreçleri bulunur.',
+      'Savunmanın gücü, birbirinden bağımsız birçok kaynağı <strong>çaprazlamasından</strong> gelir: tek bir sinyal yanıltıcı olabilir ama "Office → PowerShell → uzak thread → şüpheli ağ" gibi bir <em>zincir</em> güçlü bir davranışsal göstergedir. Bu modül bu boru hattını ve savunmanın kendi kendini koruma mekanizmalarını (PPL, memory integrity) ele alır.'
+    ],
+    ideas: [
+      { b: 'İmza değil davranış', span: 'Modern tespit, bilinen dosya imzasından çok olay zincirlerinin davranışına bakar (behavioral detection).' },
+      { b: 'Çok kaynak çaprazlama', span: 'Callback + ETW + minifilter + kullanıcı-alanı telemetri birlikte değerlendirilir; tek kaynak kırılgandır.' },
+      { b: 'Savunma kendini korur', span: 'EDR süreci PPL ile korunur, çekirdek HVCI ile sertleşir — görünürlük ancak bütünlük korunursa güvenilirdir.' }
+    ]
+  },
+  lab: {
+    intro: 'Bir davranışsal tespit boru hattını izle. Soldaki "kod" bir EDR consumer\'ının sözde-akışıdır; sağda olayların toplanıp bir davranış kuralıyla değerlendirilmesini ve verilen kararı gör. Bu tamamen savunma tarafıdır.',
+    codeLabel: 'EDR consumer (sözde-kod)', cmd: '(telemetri boru hattı çalışıyor)',
+    foot: 'Akış kavramsaldır; gerçek bir EDR çok daha fazla sinyal ve makine öğrenmesi birleştirir. ← → tuşlarıyla da ilerleyebilirsin.',
+    code: [
+      { t: '<span class="cm">// ETW oturumunu aç, olayları tüket</span>' },
+      { t: 'OpenTrace(session);  ProcessTrace(...);' },
+      { t: '' },
+      { t: '<span class="cm">// her olay için çağrılır (callback + ETW)</span>' },
+      { t: '<span class="f">EventRecordCallback</span>(olay):' },
+      { t: '    graf.<span class="f">ekle</span>(olay);  <span class="cm">// süreç ağacını kur</span>' },
+      { t: '    skor = <span class="f">kural_degerlendir</span>(graf);' },
+      { t: '    <span class="k">if</span> (skor &gt; ESIK):' },
+      { t: '        <span class="f">uyar_ve_yanitla</span>(graf);  <span class="cm">// alert + remediation</span>' },
+      { t: '    <span class="k">else</span>:' },
+      { t: '        <span class="f">sakla</span>(olay);  <span class="cm">// avlanma için telemetri</span>' }
+    ],
+    steps: [
+      { pc: [0, 1], title: 'Consumer telemetriyi toplar', node: 'collect',
+        text: 'EDR, ETW oturumunu açar ve olay akışını tüketir (<code>ProcessTrace</code> olayları kronolojik sırayla callback\'e teslim eder). Aynı anda kernel notify routine\'lerinden ve minifilter\'dan gelen sinyaller de aynı boru hattına girer. Amaç: tek bir yerde, birden çok bağımsız kaynaktan görünürlük.',
+        ev: 'olaylar toplanıyor', flow: ['collect'], verdict: '' },
+      { pc: [4, 5], title: 'Süreç ağacı kurulur', node: 'graph',
+        text: 'Her olay izole bir satır değildir; EDR olayları bir <strong>süreç ağacına</strong> (parent → child → network) örer. "WINWORD.EXE bir powershell.exe başlattı, o da bir uzak thread oluşturdu" gibi ilişkiler bu grafta ortaya çıkar. Davranış, tek olayda değil bu ilişkilerde görünür.',
+        ev: 'süreç ağacı güncellendi', flow: ['collect', 'graph'], verdict: 'parent=WINWORD.EXE → child=powershell.exe → remote-thread' },
+      { pc: [6], title: 'Davranış kuralı değerlendirir', node: 'rule',
+        text: 'Bir davranış kuralı (ör. "ofis uygulaması → betik yorumlayıcı → enjeksiyon davranışı") grafı tarar ve bir şüphe skoru üretir. Bu, dosya imzasına değil <strong>davranışa</strong> dayanır — yani daha önce hiç görülmemiş bir ikili bile zincir davranışıyla yakalanabilir.',
+        ev: 'kural eşleşmesi değerlendiriliyor', flow: ['collect', 'graph', 'rule'], verdict: 'davranış skoru: yüksek (bilinen kötüye kullanım zinciri)' },
+      { pc: [7, 8], title: 'Uyarı + müdahale', node: 'respond',
+        text: 'Skor eşiği aşarsa EDR bir <strong>uyarı</strong> üretir ve önceden tanımlı müdahale (remediation) uygular: süreci sonlandırma, makineyi ağdan izole etme, artefaktı karantinaya alma. Önleme (prevention) olayı baştan durdurmayı, müdahale ise olmuş bir olayı geri almayı hedefler.',
+        ev: 'uyarı üretildi', flow: ['collect', 'graph', 'rule', 'respond'], verdict: 'ALERT → süreç sonlandırıldı, cihaz izole edildi', block: true },
+      { pc: [9, 10], title: 'Eşik altı: telemetri saklanır', node: 'hunt',
+        text: 'Eşiği aşmayan olaylar atılmaz; tehdit avı (threat hunting) ve olay sonrası analiz için saklanır. Bugün masum görünen bir olay, yarın bir uzlaşma göstergesiyle (IOC) eşleşince anlam kazanabilir. Bu yüzden görünürlük hem anlık karar hem de geçmişe dönük analiz içindir.',
+        ev: 'telemetri arşivlendi', flow: ['collect', 'graph', 'rule', 'hunt'], verdict: 'eşik altı → saklandı (threat hunting için)', ok: true }
+    ],
+    render: function (s, stateEl, u) {
+      var order = ['collect', 'graph', 'rule', 'respond'];
+      var labels = {
+        collect: ['Toplama', 'ETW + callback + minifilter'],
+        graph: ['Süreç ağacı', 'olaylar ilişkilendirilir'],
+        rule: ['Davranış kuralı', 'imza değil davranış'],
+        respond: ['Uyarı / müdahale', 'izole et, sonlandır, sakla']
+      };
+      var flow = s.flow || [];
+      var active = flow[flow.length - 1] || '';
+      var nodes = order.map(function (k) {
+        var cls = k === active ? 'active' : (flow.indexOf(k) >= 0 ? 'done' : '');
+        return '<div class="node ' + cls + '"><b>' + labels[k][0] + '</b><span>' + u.esc(labels[k][1]) + '</span></div>';
+      }).join('');
+      var vclass = 'verdict' + (s.block ? ' block' : (s.ok ? ' ok' : ''));
+      stateEl.innerHTML =
+        '<p class="lab-label">Boru hattı durumu</p>' +
+        '<div class="evbox on"><span class="cl">şu an</span><span class="cv">' + u.esc(s.ev) + '</span></div>' +
+        '<p class="lab-label" style="margin-top:14px">Telemetri → karar akışı</p><div class="flow">' + nodes + '</div>' +
+        (s.verdict ? '<p class="lab-label" style="margin-top:14px">Motor çıktısı</p><div class="' + vclass + '">' + u.esc(s.verdict) + '</div>' : '');
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: görünürlük ve bütünlük mühendisliği",
+    html: `<p class="lead">Uç nokta savunması iki soruya dayanır: <strong>ne görüyorum?</strong> (telemetri ve davranışsal tespit) ve <strong>bu görüşe güvenebilir miyim?</strong> (savunmanın kendi bütünlüğü). Bu bölüm her ikisini de yalnızca savunma mühendisliği açısından ele alır — koruma katmanları, veri kaynakları ve kendini koruma mekanizmaları.</p>
+
+<h3>1. Koruma katmanları: AV, EPP, EDR, XDR</h3>
+<p>Terimler sık karıştırılır; aslında artan kapsamı tanımlarlar:</p>
+<div class="deflist">
+<div><dt>AV (antivirus)</dt><dd>Klasik imza ve sezgisel (heuristic) tarama; bilinen kötücül dosyaları tanır. Tek başına, daha önce görülmemiş (zero-day) ve dosyasız (fileless) tehditlerde zayıftır.</dd></div>
+<div><dt>EPP (Endpoint Protection Platform)</dt><dd>Önleme odaklı paket: AV + güvenlik duvarı + cihaz/uygulama denetimi + exploit azaltma. Olay <em>olmadan önce</em> durdurmaya çalışır.</dd></div>
+<div><dt>EDR (Endpoint Detection and Response)</dt><dd>Tespit ve müdahale odaklı: sürekli telemetri toplar, davranışsal tespit yapar, olay sonrası görünürlük ve müdahale (izolasyon, sonlandırma) sağlar. "Önleme kaçarsa yakala ve yanıtla" katmanıdır.</dd></div>
+<div><dt>XDR (Extended Detection and Response)</dt><dd>EDR\'nin kapsamını uç noktadan kimlik, e-posta, bulut ve ağ gibi başka sinyallere genişletir; farklı alanları tek bir korelasyon motorunda birleştirir.</dd></div>
+</div>
+<p>Pratikte modern ürünler bu katmanları birleştirir: önleme (EPP) ilk savunma hattı, tespit+müdahale (EDR/XDR) ise kaçanı yakalayan ikinci hattır (defense in depth).</p>
+
+<h3>2. Meşru veri kaynakları: EDR ne ile görür?</h3>
+<p>Bir EDR\'nin görüşü, işletim sisteminin sunduğu belgeli telemetri kaynaklarından gelir — önceki modüldeki callback\'ler ve ETW bunun çekirdeğidir:</p>
+<div class="deflist">
+<div><dt>kernel notify routine\'leri</dt><dd>Süreç/thread/image/registry olayları (<code>PsSetCreateProcessNotifyRoutineEx</code>, <code>CmRegisterCallback</code>). Gerçek-zamanlı, çekirdekten, kaçırmadan.</dd></div>
+<div><dt>ETW (consumer)</dt><dd>Geniş, yapılandırılmış olay akışı. EDR bir consumer olarak oturumu dinler. Özellikle Threat-Intelligence provider\'ı düşük seviyeli davranışları görünür kılar.</dd></div>
+<div><dt>minifilter (dosya sistemi)</dt><dd>Dosya oluşturma/okuma/yazma olaylarına filtre sürücüsüyle görünürlük — fidye yazılımı davranışı (toplu şifreleme) burada belirir.</dd></div>
+<div><dt>kullanıcı-alanı telemetri</dt><dd>API gözlemi, AMSI (Antimalware Scan Interface — betik/bellek içeriğini tarama), komut satırı yakalama. Çekirdek sinyalleriyle çaprazlanır.</dd></div>
+</div>
+<p>ETW consumer\'ının olayları nasıl aldığı belgelidir — olaylar birleştirilip sıralanarak teslim edilir:</p>
+<div class="manpage src-docs"><div class="ref">docs · ETW · consuming events</div><p class="orig">The ProcessTrace function combines the events, sorts them into chronological order, and then delivers them to the callbacks one at a time.</p><p>Consumer, <code>OpenTrace</code> ile oturumu açar ve <code>ProcessTrace</code> ile olayları işler; olaylar kronolojik sıraya konup callback\'e tek tek teslim edilir. "Event trace consumers can process events from one or more providers" — yani tek bir consumer birden çok kaynağı birleştirebilir. EDR\'nin olay zincirlerini kurabilmesi tam da bu sıralı, çok-kaynaklı akış sayesindedir.</p></div>
+
+<h3>3. Davranışsal tespit: imza yerine zincir</h3>
+<p>İmza tabanlı tespit "bu dosyanın hash\'i kötü listede mi?" diye sorar; davranışsal tespit ise "bu olay <em>dizisi</em> bilinen bir kötüye kullanım desenine benziyor mu?" diye sorar. İkincisi, daha önce hiç görülmemiş bir ikiliyi bile davranışından yakalayabilir — çünkü saldırganlar dosyayı kolayca değiştirir ama davranış kalıbını (süreç enjeksiyonu, kalıcılık kurma, telemetri susturma) değiştirmek zordur. Modern bellek tarama (memory scanning) da buna eklenir: diskte masum görünüp yalnızca bellekte açığa çıkan (fileless) yükleri yakalamak için çalışan süreçlerin belleği periyodik/olay-tetikli taranır. Tespitin kalitesi, gürültüyü (false positive) bastırırken gerçek zinciri yakalayabilmesinde yatar; bu yüzden çok-kaynak çaprazlama kritiktir.</p>
+
+<h3>4. Önleme vs müdahale (prevention vs remediation)</h3>
+<p>Savunmanın iki farklı anı vardır. <strong>Önleme</strong>, kötü olayın <em>hiç gerçekleşmemesini</em> hedefler (ör. create-process callback\'inin süreci baştan reddetmesi, exploit azaltmaların saldırıyı çökertmesi). <strong>Müdahale</strong> ise gerçekleşmiş bir olayın etkisini sınırlar ve geri alır: süreci sonlandırma, makineyi ağdan izole etme, oluşturulan kalıcılık artefaktlarını temizleme, zaman çizelgesini yeniden kurma. Olgun bir savunma ikisini de planlar; çünkü hiçbir önleme %100 değildir ve "ihlal varsay" (assume breach) ilkesi müdahale yeteneğini zorunlu kılar.</p>
+
+<h3>5. Savunma kendini korur: PPL, HVCI, VBS</h3>
+<p>Görünürlük ancak savunmanın kendisi bozulamazsa anlamlıdır. Bu yüzden EDR süreçleri ve çekirdek, kurcalamaya karşı donanım/işletim sistemi düzeyinde sertleştirilir:</p>
+<div class="manpage src-docs"><div class="ref">docs · protected service (anti-malware)</div><p class="orig">After the service is launched as protected, other non-protected processes on the system won't be able to inject threads, and they won't be allowed to write into the virtual memory of the protected process.</p><p>Anti-malware servisleri <strong>protected process</strong> (yaygın adıyla PPL) olarak başlatılır: yönetici dahil korumasız süreçler bu sürece thread enjekte edemez, belleğine yazamaz, hatta servisi durduramaz. İçine yalnızca Windows-imzalı veya satıcı sertifikasıyla imzalı kod yüklenebilir. Böylece saldırganın "önce EDR\'yi öldür" hamlesi donanım/OS düzeyinde zorlaşır.</p></div>
+<div class="manpage src-docs"><div class="ref">docs · memory integrity (HVCI)</div><p class="orig">Memory integrity is a critical component that protects and hardens Windows by running kernel mode code integrity within the isolated virtual environment of VBS.</p><p>Memory integrity (HVCI — hypervisor-protected code integrity), çekirdek-modu kod bütünlüğü denetimini VBS\'in izole sanal ortamında çalıştırır ve "kernel memory allocations that could be used to compromise the system" tahsislerini kısıtlar. Sonuç: çekirdekte imzasız kod çalıştırmak ve belleği keyfî yürütülebilir yapmak çok zorlaşır — bu, imzalı-ama-zafiyetli sürücü kötüye kullanımına (BYOVD) karşı en etkili savunma katmanlarından biridir. VBS, donanım sanallaştırmasıyla güvenlik sınırlarını çekirdeğin bile dışına taşıyarak "çekirdek ele geçirilse bile" modelini güçlendirir.</p></div>
+<p>Diğer platformlarda karşılığı vardır: Linux\'ta eBPF/auditd ile çekirdek olay telemetrisi ve LSM kancaları; macOS\'ta EndpointSecurity framework\'ü aynı "çekirdekten olay akışı + AUTH kararı" modelini sunar. Üçünde de ortak ders aynıdır: savunma, bağımsız kaynakların çaprazlandığı, kendi bütünlüğü korunan, hem önleme hem müdahale yeteneği olan katmanlı bir sistemdir.</p>`
+  },
+  quiz: {
+    questions: [
+      { q: 'Davranışsal tespitin (behavioral detection) imza tabanlı tespite göre temel avantajı nedir?', opts: ['Daha az CPU kullanır', 'Daha önce hiç görülmemiş bir ikiliyi bile olay zincirinin davranışından yakalayabilir', 'İnternet bağlantısı gerektirmez'], answer: 'Daha önce hiç görülmemiş bir ikiliyi bile olay zincirinin davranışından yakalayabilir',
+        ok: 'Doğru. Saldırgan dosyayı kolayca değiştirir ama davranış kalıbını (enjeksiyon, kalıcılık, telemetri susturma) değiştirmek zordur; davranışsal tespit bu zinciri hedefler.', no: 'İpucu: imza dosyanın hash\'ine bakar; dosya kolayca değişir. Davranış neye bakar?' },
+      { q: 'ETW\'de bir EDR olayları hangi rolle okur ve <code>ProcessTrace</code> ne yapar?', opts: ['Provider olarak; olayları üretir', 'Consumer olarak; ProcessTrace olayları kronolojik sıralayıp callback\'e teslim eder', 'Controller olarak; yalnızca oturumu başlatır'], answer: 'Consumer olarak; ProcessTrace olayları kronolojik sıralayıp callback\'e teslim eder',
+        ok: 'Doğru. EDR consumer\'dır; ProcessTrace olayları birleştirip kronolojik sıraya koyar ve callback\'e tek tek teslim eder — olay zincirleri bu sıralı akışla kurulur.', no: 'İpucu: provider üretir, controller yönetir. EDR okuyan taraftır.' },
+      { q: 'Anti-malware servisinin PPL (protected process) olarak çalışması neyi engeller?', opts: ['Servisin ağ erişimini', 'Yönetici dahil korumasız süreçlerin servise thread enjekte etmesini ve belleğine yazmasını', 'Servisin disk kullanımını'], answer: 'Yönetici dahil korumasız süreçlerin servise thread enjekte etmesini ve belleğine yazmasını',
+        ok: 'Doğru. PPL ile korumasız süreçler (admin dahil) sürece thread enjekte edemez, belleğine yazamaz, servisi durduramaz; yalnızca imzalı kod yüklenir. Bu, "önce EDR\'yi öldür" hamlesini zorlaştırır.', no: 'İpucu: PPL savunmanın kendi bütünlüğünü korur — kurcalamaya karşı.' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · katalog', title: 'Tüm izlekler', desc: 'Windows savunma katmanını Linux (eBPF/auditd), macOS (EndpointSecurity) ve ofansif izlekle çaprazla. Katalogdan devam et.', href: '../index.html' },
+  sources: [
+    { href: 'https://learn.microsoft.com/en-us/windows/win32/etw/consuming-events', text: 'Microsoft Learn — Consuming Events (ETW)', note: 'OpenTrace/ProcessTrace, consumer modeli' },
+    { href: 'https://learn.microsoft.com/en-us/windows/security/hardware-security/enable-virtualization-based-protection-of-code-integrity', text: 'Microsoft Learn — Memory integrity (HVCI/VBS)', note: 'çekirdek kod bütünlüğü' },
+    { href: 'https://learn.microsoft.com/en-us/windows/win32/services/protecting-anti-malware-services-', text: 'Microsoft Learn — Protecting Anti-Malware Services (PPL)', note: 'korumalı süreç' },
+    { href: 'https://d3fend.mitre.org/', text: 'MITRE D3FEND', note: 'savunma teknikleri ontolojisi' },
+    { href: 'https://www.xintra.org/courses/11-windows-kernel-offensive-defensive-reverse-engineering', text: 'Xintra — Windows Kernel Offensive/Defensive/RE', note: 'müfredat: defensive bölümü' }
+  ],
+  pageTitle: 'Uç nokta savunması: AV, EDR, ETW'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

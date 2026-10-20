@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Korumalar ve Neden Varlar</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: koruma kalkanları ızgarası */
+.mits { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+@media (max-width: 560px) { .mits { grid-template-columns: 1fr 1fr; } }
+.mit { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 9px 10px; display: grid; gap: 3px; min-width: 0; opacity: .55; transition: opacity .2s; }
+.mit.on { opacity: 1; border-color: var(--ok); background: var(--ok-soft); }
+.mit .mt { font-family: var(--f-display); font-weight: 700; font-size: 14px; }
+.mit .me { font-family: var(--f-mono); font-size: 10.5px; color: var(--muted); }
+.mit .ms { font-family: var(--f-mono); font-size: 11px; font-weight: 700; }
+.mit.on .ms { color: var(--ok); }
+.mit.off .ms { color: var(--muted); }
+.mit.just { border-color: var(--track); background: var(--track-soft); opacity: 1; }
+.mit.just .ms { color: var(--track); }
+.chain-state { margin-top: 12px; display: grid; gap: 6px; }
+.cs-row { display: flex; gap: 8px; align-items: baseline; font-size: 13px; }
+.cs-row .cn { font-family: var(--f-mono); font-size: 11px; width: 92px; flex: none; color: var(--muted); }
+.cs-row .cv { font-weight: 600; }
+.cs-row.open .cv { color: var(--bad); }
+.cs-row.blocked .cv { color: var(--ok); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+// korumalar ve durumları (açık/kapalı), adım adım eklenir
+var MITS = [
+  { id: 'nx',     t: 'DEP / NX',    e: 'W^X · noexecstack' },
+  { id: 'aslr',   t: 'ASLR / PIE',  e: 'randomize_va_space' },
+  { id: 'canary', t: 'Stack canary', e: 'stack-protector' },
+  { id: 'relro',  t: 'Full RELRO',  e: 'relro,now' },
+  { id: 'cfipac', t: 'CFI / PAC',   e: 'branch-protection' },
+  { id: 'mte',    t: 'MTE / ASan',  e: 'memtag' }
+];
+
+var MODULE = {
+  track: 'offensive',
+  crumbs: 'ofansif › korumalar › modül 4',
+  eyebrow: 'Ofansif izlek · Modül 4 · Savunma',
+  titleHTML: 'Korumalar ve neden varlar: <code>mitigations</code>',
+  lede: 'Her sömürü (exploit) basamağının karşısında onu pahalılaştıran bir koruma (mitigation) vardır. Bu modülde korumaları tek tek açacak ve her birinin sömürü zincirinin hangi aşamasını kırdığını — ve nasıl aşılabildiğini — göreceksin. Bu, bir savunmacının zihin haritasıdır.',
+  meta: ['~20 dk', 'ön koşul: primitifler modülü', 'bağlam: Linux + ARM'],
+  ethic: '<b>İlke.</b> Bu modül mekanizmayı ve kamuya açık kavramları öğretir; çalışır ya da silahlandırılmış exploit kodu içermez. Komutlar kendi ikili dosyalarını (binary) inceler. Tüm deneyler <b>kendi makinende</b> yapılır. Saldırıyı anlamak, savunmayı anlamanın ön koşuludur.',
+  intuition: {
+    paras: [
+      'Modern bir sistemde bir bellek hatasını (bug) tam ele geçirmeye çevirmek neden zor? Çünkü her basamakta bir koruma (mitigation) durur. Hiçbiri saldırıyı tek başına imkânsız kılmaz; her biri bir yolu kapatır ve saldırganı daha pahalı, daha kırılgan bir yola iter. Buna <strong>katmanlı savunma (defense in depth)</strong> denir.',
+      'Önemli olan hangi korumanın hangi basamağı hedeflediğini bilmek. DEP/NX kod enjeksiyonunu (code injection) öldürür ama ROP kalır. ASLR adresleri gizler ama bir sızıntı (leak) onu aşar. Bu eşleşmeleri öğrenmek, hem saldırganın neyi aşması gerektiğini hem de savunmacının neyi açık bırakmaması gerektiğini gösterir.'
+    ],
+    ideas: [
+      { b: 'Koruma = basamak keser', span: 'Her mitigation sömürü merdiveninin belirli bir basamağını hedefler; birbirini tamamlarlar.' },
+      { b: 'Hiçbiri mutlak değil', span: 'Sızıntı ASLR\'yi, ROP DEP\'i, bilgi sızdırma canary\'yi aşabilir. Bu yüzden katmanlanırlar.' },
+      { b: 'Asıl çözüm: bug\'ı yok et', span: 'Korumalar sömürüyü pahalılaştırır; bellek-güvenli diller ve MTE ise hatanın kendisini hedefler.' }
+    ]
+  },
+  lab: {
+    intro: 'Aşağıda bir ikiliyi (binary) önce korumasız, sonra her adımda bir koruma ekleyerek derliyoruz. Sağda hangi korumaların açık olduğunu ve sömürü zincirinin (exploit chain) hangi aşamalarının hâlâ ulaşılabilir olduğunu izle.',
+    codeLabel: 'derleme bayrakları', cmd: 'gcc ... prog.c',
+    foot: 'Bayraklar gerçektir; aşağıdaki "Kendin dene" bölümünde kendi binary\'inde doğrulayabilirsin.',
+    code: [
+      { t: '<span class="cm"># 0) korumasız (yalnızca eğitim için)</span>' },
+      { t: 'gcc -fno-stack-protector -z execstack \\', danger: true },
+      { t: '    -no-pie -z norelro -O0 prog.c' },
+      { t: '<span class="cm"># korumaları tek tek ekle:</span>' },
+      { t: '-z noexecstack            <span class="cm"># 1) NX / DEP</span>' },
+      { t: '-fPIE -pie                <span class="cm"># 2) ASLR (PIE)</span>' },
+      { t: '-fstack-protector-all     <span class="cm"># 3) stack canary</span>' },
+      { t: '-Wl,-z,relro,-z,now       <span class="cm"># 4) Full RELRO</span>' },
+      { t: '-mbranch-protection=standard  <span class="cm"># 5) PAC (ARM)</span>' },
+      { t: '-fsanitize=memtag         <span class="cm"># 6) MTE (ARM)</span>' }
+    ],
+    steps: [
+      { pc: [2, 3], title: 'Korumasız bina', on: [], just: null,
+        text: 'Hiçbir koruma yok. Yığına (stack) taşan veri dönüş adresini ezebilir, enjekte edilen kod doğrudan çalışır, adresler sabittir. Sömürü zincirinin her aşaması açık: bu, 1990\'ların dünyasıdır.',
+        chain: { inject: 'açık', leak: 'gereksiz (adresler sabit)', hijack: 'kolay' } },
+      { pc: 5, title: '+ DEP / NX', on: ['nx'], just: 'nx',
+        text: 'NX (No-eXecute), belleği ya yazılabilir ya çalıştırılabilir yapar, ikisi birden değil (W^X). Yığına enjekte edilen kod artık çalışmaz. Ama saldırgan var olan kod parçalarını zincirler: <strong>ROP (return-oriented programming)</strong> doğar.',
+        chain: { inject: 'engellendi (W^X)', leak: 'gereksiz', hijack: 'ROP ile mümkün' } },
+      { pc: 6, title: '+ ASLR / PIE', on: ['nx', 'aslr'], just: 'aslr',
+        text: 'ASLR her çalıştırmada modülleri rastgele adreslere yerleştirir (PIE ile çalıştırılabilirin kendisi de). Saldırgan gadget\'ların nerede olduğunu artık bilmez; önce bir <strong>bilgi sızıntısı (info leak)</strong> bulmak zorundadır. Zincir bir halka uzadı.',
+        chain: { inject: 'engellendi', leak: 'ZORUNLU oldu', hijack: 'sızıntı gerektirir' } },
+      { pc: 7, title: '+ Stack canary', on: ['nx', 'aslr', 'canary'], just: 'canary',
+        text: 'Derleyici, dönüş adresinin önüne rastgele bir "bekçi" (canary) değeri koyar ve fonksiyon dönerken kontrol eder. Klasik yığın taşması bu değeri ezeceği için yakalanır: <code>*** stack smashing detected ***</code>. Saldırgan ya canary\'yi sızdırmalı ya başka bir yol (örn. heap) bulmalı.',
+        chain: { inject: 'engellendi', leak: 'zorunlu + canary sızıntısı', hijack: 'yığın yolu zor' } },
+      { pc: 8, title: '+ Full RELRO', on: ['nx', 'aslr', 'canary', 'relro'], just: 'relro',
+        text: 'RELRO, GOT gibi kritik tabloları başlatmadan sonra salt okunur (read-only) yapar. Keyfi yazmanın (arbitrary write) en kolay klasik hedefi kapanır; saldırgan daha zor hedeflere (fonksiyon işaretçileri, vtable) yönelmek zorunda kalır.',
+        chain: { inject: 'engellendi', leak: 'zorunlu', hijack: 'kolay hedefler kapandı' } },
+      { pc: [9, 10], title: '+ CFI/PAC ve MTE', on: ['nx', 'aslr', 'canary', 'relro', 'cfipac', 'mte'], just: 'mte',
+        text: 'CFI/PAC işaretçilerin bütünlüğünü doğrular: keyfi yazma olsa bile kontrol akışını kaçırmak (control-flow hijack) kırılır. MTE ise her bellek erişimini etiketle denetler ve hatanın kendisini daha oluşurken yakalar — merdivenin ilk basamağını hedefler. Katmanlar birikti; her basamak ayrı ayrı savunuluyor.',
+        chain: { inject: 'engellendi', leak: 'zorunlu', hijack: 'PAC/CFI ile kırıldı' } }
+    ],
+    render: function (s, stateEl, u) {
+      var mits = MITS.map(function (m) {
+        var isOn = s.on.indexOf(m.id) >= 0;
+        var cls = 'mit ' + (m.id === s.just ? 'just' : (isOn ? 'on' : 'off'));
+        var st = (m.id === s.just ? 'YENİ ✓' : (isOn ? 'açık ✓' : 'kapalı'));
+        return '<div class="' + cls + '"><span class="mt">' + u.esc(m.t) + '</span><span class="me">' + u.esc(m.e) + '</span><span class="ms">' + st + '</span></div>';
+      }).join('');
+      function row(label, val) {
+        var blocked = /engellend|kırıl|kapand|zor/.test(val);
+        return '<div class="cs-row ' + (blocked ? 'blocked' : 'open') + '"><span class="cn">' + label + '</span><span class="cv">' + u.esc(val) + '</span></div>';
+      }
+      stateEl.innerHTML =
+        '<p class="lab-label">Açık korumalar</p><div class="mits">' + mits + '</div>' +
+        '<p class="lab-label" style="margin-top:14px">Sömürü zincirine etki</p>' +
+        '<div class="chain-state">' +
+          row('kod enjekte', s.chain.inject) +
+          row('bilgi sızıntısı', s.chain.leak) +
+          row('akış kaçırma', s.chain.hijack) +
+        '</div>';
+    }
+  },
+  deepDive: {
+    heading: 'Derinlemesine: her korumanın hedefi ve sınırı',
+    html: `<p class="lead">Bir mitigation sihir değildir: tam olarak bir sömürü primitifini hedefler, onu pahalılaştırır ve bilinen bir aşma yolu bırakır. Bu bölüm korumaları derleyici (GCC/Clang) ve çekirdek belgelerinin kamuya açık tanımlarına dayanarak tek tek açar. Fikir basit: hangi korumanın hangi basamağı kestiğini bilmek, hem savunmacının neyi açık bırakmaması gerektiğini hem de bir katman aşıldığında arkada ne kaldığını gösterir.</p>
+
+<h3>1. DEP / NX ve W^X: veri çalıştırılamaz</h3>
+<p>İlk ve en temel koruma, belleğin aynı anda hem yazılabilir hem çalıştırılabilir olmasını engeller: W^X (write xor execute). Yığına (stack) ya da heap'e enjekte edilen veri artık kod olarak çalışamaz; bu, klasik shellcode enjeksiyonunu öldürür. Çekirdek de aynı ilkeyi kendi üzerinde uygular.</p>
+<div class="manpage src-docs"><div class="ref">docs · kernel self-protection · W^X</div><p class="orig">Any areas of the kernel with executable memory must not be writable. … The kernel must never execute userspace memory.</p><p>Çekirdeğin çalıştırılabilir (executable) bölgeleri yazılabilir (writable) olmamalı; çekirdek asla userspace belleğini çalıştırmamalıdır. Birincisi kod yamasını, ikincisi ret2usr tarzı saldırıları keser. <strong>Sınırı:</strong> veri çalıştırılamayınca saldırgan var olan kodu yeniden kullanır — ROP (return-oriented programming) ve JOP doğar.</p></div>
+
+<h3>2. ASLR / KASLR: adresleri gizle, ama sızıntı her şeyi açar</h3>
+<p>ASLR her çalıştırmada modülleri rastgele adreslere yerleştirir (PIE ile çalıştırılabilirin kendisi de). Saldırgan gadget'ların nerede olduğunu bilmediği için önce bir bilgi sızıntısı (info leak) bulmak zorunda kalır. Korumanın gücü doğrudan entropy'ye (rastgelelik miktarına) bağlıdır: entropy düşükse kaba kuvvetle (brute force) tahmin edilebilir.</p>
+<div class="deflist">
+<div><dt>randomize_va_space</dt><dd>Linux'ta ASLR anahtarı: <code>0</code> kapalı, <code>1</code> mmap/stack/vdso, <code>2</code> ek olarak heap (tam ASLR). <code>/proc/sys/kernel/</code> altından okunur.</dd></div>
+<div><dt>entropy</dt><dd>Rastgeleleştirilen bit sayısı. Ne kadar yüksekse tahmin o kadar zor; 32-bit sistemlerde düşük entropy ASLR'yi kaba kuvvete açık bırakır.</dd></div>
+<div><dt>info leak</dt><dd>Tek bir sızdırılmış adres tüm modülün tabanını (base) çözer; ASLR o modül için etkisiz kalır. Bu yüzden leak, modern zincirlerin kilit basamağıdır.</dd></div>
+</div>
+<div class="manpage src-docs"><div class="ref">docs · kernel self-protection · KASLR</div><p class="orig">Printing kernel addresses to userspace leaks sensitive information about the kernel memory layout.</p><p>Çekirdek adreslerini userspace'e yazdırmak, kernel bellek düzeni hakkında hassas bilgi sızdırır. KASLR'nin tüm değeri adreslerin gizli kalmasına dayandığından, <code>dmesg</code>'de ya da bir yapı alanında sızan tek bir pointer korumayı devre dışı bırakabilir. Savunma tarafı bu yüzden adresleri <code>%pK</code> ile maskeler ve <code>kptr_restrict</code> uygular.</p></div>
+
+<h3>3. Stack canary: dönüş adresinin bekçisi</h3>
+<p>Derleyici, yerel tampon (buffer) ile kaydedilmiş dönüş adresi arasına rastgele bir "bekçi" (canary) değeri koyar ve fonksiyon dönmeden önce bu değeri kontrol eder. Klasik yığın taşması (stack overflow) dönüş adresine ulaşmak için canary'yi de ezeceğinden, uyuşmazlık yakalanır ve program güvenle sonlandırılır.</p>
+<div class="manpage src-docs"><div class="ref">docs · gcc · -fstack-protector</div><p class="orig">This is done by adding a guard variable to functions with vulnerable objects. … If a guard check fails, an error message is printed and the program exits.</p><p>Koruma, savunmasız nesneler içeren fonksiyonlara bir guard variable (canary) ekleyerek yapılır; guard kontrolü başarısız olursa bir hata basılır ve program çıkar (<code>*** stack smashing detected ***</code>). <code>-fstack-protector-all</code> ise "all functions are protected" — yani seçmeli değil, her fonksiyonu korur. <strong>Sınırı:</strong> saldırgan ya canary'yi sızdırmalı ya da onu ezmeyen bir yol (örn. heap taşması, tek-byte yazma) bulmalıdır.</p></div>
+
+<h3>4. RELRO ve FORTIFY_SOURCE: yazılabilir hedefleri daralt</h3>
+<p>Bir keyfi yazma (arbitrary write) primitifi bulunduğunda, saldırganın en kolay klasik hedefi GOT (Global Offset Table) gibi fonksiyon işaretçisi tablolarıdır. <strong>Full RELRO</strong> (<code>-Wl,-z,relro,-z,now</code>), tüm sembolleri yükleme anında çözer ve GOT'u başlatmadan sonra salt okunur (read-only) yapar; böylece çalışma zamanında GOT'a yazma kapanır. Partial RELRO yalnızca bir kısmını korur. Bu, ld (bağlayıcı) belgelerinde <code>-z relro</code> ve <code>-z now</code> seçenekleri olarak tanımlıdır.</p>
+<p><strong>FORTIFY_SOURCE</strong> (<code>-D_FORTIFY_SOURCE=2/3</code>) farklı bir açıdan yaklaşır: <code>memcpy</code>, <code>strcpy</code>, <code>sprintf</code> gibi tehlikeli fonksiyonların derleme anında boyutu bilinen çağrılarını, taşmayı çalışma zamanında yakalayan güvenli sürümleriyle değiştirir (glibc belgeleri). İkisi birlikte, "yazma primitifi var ama nereye?" sorusunu saldırgan için zorlaştırır: kolay hedefler kapanır, geriye vtable ve fonksiyon işaretçileri gibi daha zahmetli hedefler kalır.</p>
+
+<h3>5. CFI, shadow stack ve BTI: akış kaçırmayı kır</h3>
+<p>DEP enjeksiyonu, ASLR adres tahminini, canary yığın taşmasını kapatınca saldırgan ROP/JOP ile var olan kodu zincirlemeye çalışır. Control-flow integrity (CFI) bu basamağı hedefler: dolaylı çağrı, dönüş ve atlamaların yalnızca meşru hedeflere gitmesini doğrular. Forward-edge (dolaylı çağrı) ve backward-edge (dönüş) olmak üzere iki yönü vardır.</p>
+<div class="deflist">
+<div><dt>CFI (forward edge)</dt><dd>Dolaylı çağrının (indirect call) yalnızca tipe/izin listesine uyan bir hedefe gitmesini denetler; sahte fonksiyon işaretçisiyle sapmayı kırar.</dd></div>
+<div><dt>shadow stack (backward edge)</dt><dd>Dönüş adreslerinin ayrı, korumalı bir kopyasını tutar; ROP dönüş adresini ezse bile uyuşmazlık yakalanır. Intel CET ve ARM'de donanım desteklidir.</dd></div>
+<div><dt>BTI (ARM)</dt><dd>Branch Target Identification: dolaylı dalların yalnızca özel bir <code>BTI</code> komutuyla işaretlenmiş hedeflere inmesine izin verir; JOP gadget'larını daraltır.</dd></div>
+</div>
+<div class="manpage src-docs"><div class="ref">docs · gcc · -fcf-protection</div><p class="orig">This is intended to protect against such threats as Return-oriented Programming (ROP) … On x86 GNU/Linux, the implementation is based on Intel Control-flow Enforcement Technology (CET).</p><p>CFI tam olarak ROP (return-oriented programming) gibi tehditlere karşı tasarlanmıştır; x86 Linux'ta uygulama Intel CET (Control-flow Enforcement Technology) üzerine kuruludur. Apple Silicon tarafında bunun karşılığı PAC (pointer authentication) ve BTI'dır — ayrıntısı macOS ARM64 ve korumalar modüllerinde. <strong>Sınırı:</strong> CFI meşru hedefler kümesi içinde kalan "data-only" saldırılara ve COOP'a kapalı değildir; bu yüzden MTE gibi hatayı kaynağında yakalayan korumalarla katmanlanır.</p></div>
+
+<p>Bütün resim şudur: hiçbir koruma tek başına mutlak değildir; her biri bir basamağı keser ve saldırganı daha pahalı, daha kırılgan, daha çok ön koşul (örn. bir sızıntı) gerektiren bir yola iter. Nihai çözüm ise merdivenin ilk basamağını yok etmektir — bellek-güvenli diller (Rust) ve donanım etiketleme (MTE), korumaların aştığı hatanın kendisini azaltır.</p>`
+  },
+  underHood: {
+    heading: 'Kaputun altında: hangi koruma neyi kırar',
+    html: '<p class="prose">Her koruma (mitigation) tam olarak bir sömürü primitifini hedefler — ve her birinin bilinen bir aşma yolu vardır. Savunmayı anlamak bu üç sütunu birlikte okumaktır:</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Koruma</th><th>Neyi kırar</th><th>Nasıl aşılır</th></tr></thead><tbody>' +
+      '<tr><td><b>DEP / NX (W^X)</b></td><td>Enjekte edilen kodun çalışması</td><td>ROP / JOP: var olan kod parçaları zincirlenir</td></tr>' +
+      '<tr><td><b>ASLR / KASLR</b></td><td>Adres tahmini</td><td>Bilgi sızıntısı (info leak) ile taban çözülür</td></tr>' +
+      '<tr><td><b>Stack canary</b></td><td>Yığın taşmasıyla dönüş adresi ezme</td><td>Canary sızdırma veya taşmayan yol (heap)</td></tr>' +
+      '<tr><td><b>Full RELRO</b></td><td>GOT üzerine keyfi yazma</td><td>Başka yazılabilir hedefler (vtable, fn ptr)</td></tr>' +
+      '<tr><td><b>CFI</b></td><td>İzinsiz dallanma hedefleri</td><td>İzinli hedeflere/COOP\'a sıkışma, veri-only saldırı</td></tr>' +
+      '<tr><td><b>PAC (ARM)</b></td><td>İşaretçi saptırma</td><td>İmza oluşturan/doğrulayan bir sızıntı (signing gadget)</td></tr>' +
+      '<tr><td><b>MTE (ARM)</b></td><td>Bug\'ın kendisi (etiket uyuşmazlığı)</td><td>Etiket tahmini/çarpışması (olasılıksal)</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px">Dikkat edilecek nokta: aşma yolları korumayı değersiz kılmaz; onu <em>daha pahalı</em> kılar. Her katman saldırının güvenilirliğini düşürür, daha fazla ön koşul (örn. bir sızıntı) dayatır ve çoğu saldırganı eler. Nihai hedef ise merdivenin ilk basamağını yok etmektir: bellek-güvenli diller (Rust) ve donanım etiketleme (MTE) hatanın kendisini azaltır.</p>'
+  },
+  pipeline: { intro: 'Korumaları, serinin genel sömürü boru hattının (exploitation pipeline) üstüne yerleştirince resim netleşir: her koruma zincirin bir halkasını hedefler.' },
+  tryIt: {
+    items: [
+      { h3: '1. Kendi binary\'inin korumalarını oku', p: 'checksec kuruluysa tek komutla özet verir. Yoksa readelf ile aynı bilgiyi çıkarabilirsin: NX (GNU_STACK), RELRO (GNU_RELRO + BIND_NOW), canary (__stack_chk_fail), PIE (DYN tipi).',
+        shells: [{ label: 'terminal (gerçek çıktı)', copy: 'gcc -O2 -o prog prog.c\nreadelf -lW prog | grep -E "GNU_STACK|GNU_RELRO"\nreadelf -dW prog | grep BIND_NOW\nnm prog | grep __stack_chk_fail\nreadelf -hW prog | grep Type', pre: '<span class="c">$</span> gcc -O2 -o prog prog.c\n<span class="c"># varsayılan derlemede korumalar açık:</span>\n  <span class="g">GNU_STACK</span> ... RW   <span class="c"># NX açık (E yok)</span>\n  <span class="g">GNU_RELRO</span> ...      <span class="c"># RELRO var</span>\n (FLAGS) <span class="g">BIND_NOW</span>       <span class="c"># Full RELRO</span>\n U <span class="g">__stack_chk_fail</span>@GLIBC_2.4  <span class="c"># canary var</span>\n Type: <span class="g">DYN</span> (...)          <span class="c"># PIE (ASLR) açık</span>' }] },
+      { h3: '2. Canary\'yi iş başında gör', p: 'Kasıtlı taşmalı küçük bir programı çalıştır: canary ezilince program güvenle sonlandırılır. Bu, "stack smashing detected" mesajıdır — koruma tam olarak burada devreye girer.',
+        shells: [{ label: 'terminal (gerçek çıktı)', copy: 'gcc -O0 -fstack-protector-all -o m m.c\n./m "$(python3 -c \'print(\"A\"*40)\')"; echo $?', pre: '<span class="c">$</span> ./m "$(python3 -c \'print(&quot;A&quot;*40)\')"\n<span class="hi">*** stack smashing detected ***: terminated</span>\nAborted\n<span class="c">$</span> echo $?\n134   <span class="c"># canary saldırıyı durdurdu</span>' }] },
+      { h3: '3. ASLR\'yi aç/kapat ve gözlemle', p: 'Sistem ASLR durumunu oku; geçici kapatıp bir adresin artık her çalıştırmada sabit kaldığını görebilirsin (neden sızıntı gerektiğini somutlaştırır).',
+        shells: [{ label: 'terminal (gerçek çıktı)', copy: 'cat /proc/sys/kernel/randomize_va_space', pre: '<span class="c">$</span> cat /proc/sys/kernel/randomize_va_space\n2   <span class="c"># 2 = tam ASLR açık (0 = kapalı)</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'DEP/NX açıkken saldırgan kod enjekte edip çalıştıramaz. Hangi tekniğe yönelir?', opts: ['ROP (return-oriented programming)', 'Daha fazla RAM', 'Canary sızdırma'], answer: 'ROP (return-oriented programming)',
+        ok: 'Doğru. Veri çalıştırılamadığında saldırgan var olan kod parçalarını (gadget) zincirler. Koruma bir yolu kapatır, saldırgan başkasını arar.', no: 'İpucu: kod enjekte edilemiyorsa, bellekte zaten var olan kod nasıl kullanılır?' },
+      { q: 'ASLR bir saldırganı neye zorlar?', opts: ['Daha hızlı olmaya', 'Önce bir bilgi sızıntısı (info leak) bulmaya', 'Hiçbir şeye'], answer: 'Önce bir bilgi sızıntısı (info leak) bulmaya',
+        ok: 'Doğru. Adresler rastgele olduğundan saldırgan nereye atlayacağını bilemez; bir sızıntı olmadan zincir körleşir. Bu yüzden leak kilit basamaktır.', no: 'İpucu: ASLR adresleri gizler. Saldırganın önce neyi öğrenmesi gerekir?' },
+      { q: 'Hangi koruma doğrudan hatanın kendisini (bug) hedefler, bir sonraki basamağı değil?', opts: ['Full RELRO', 'MTE / ASan', 'Stack canary'], answer: 'MTE / ASan',
+        ok: 'Doğru. MTE ve ASan belleği etiketleyip her erişimi denetler; uyuşmazlıkta hatayı oluşurken yakalar. Diğerleri zincirin ileri basamaklarını hedefler.', no: 'İpucu: çoğu koruma bir primitifi hedefler; hangisi bug\'ı daha doğarken yakalar?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Ofansif Modül 5', title: 'Korumaları aşma kavramları', desc: 'ROP/JOP ve heap grooming mantığı: bir koruma kapandığında saldırgan nasıl başka yol açar?' },
+  sources: [
+    { href: 'https://pwn.college/', text: 'pwn.college', note: 'uygulamalı, ücretsiz' },
+    { href: 'https://github.com/xairy/linux-kernel-exploitation', text: 'xairy/linux-kernel-exploitation', note: 'çekirdek korumaları' },
+    { href: 'https://www.antid0te.com/training/kernel-internals.html', text: 'Antid0te — Kernel Internals', note: 'PAC/PPL/MTE' },
+    { href: 'https://lwn.net/Kernel/Index/#Security-Mitigations', text: 'LWN — çekirdek güvenlik korumaları' }
+  ],
+  pageTitle: 'Korumalar ve Neden Varlar'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

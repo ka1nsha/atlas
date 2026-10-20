@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>EndpointSecurity</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: ES olay akışı */
+.es-flow { display: grid; gap: 10px; }
+.es-feed { display: grid; gap: 6px; }
+.esrow { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 8px 11px; display: flex; gap: 10px; align-items: baseline; justify-content: space-between; opacity: .45; transition: opacity .2s, border-color .2s, background .2s; min-width: 0; }
+.esrow.lit { opacity: 1; border-color: var(--track); background: var(--track-soft); }
+.esrow .ev { font-family: var(--f-mono); font-size: 11.5px; color: var(--track); font-weight: 500; white-space: nowrap; }
+.esrow .de { font-family: var(--f-mono); font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.esrow .kind { font-family: var(--f-mono); font-size: 10px; padding: 1px 6px; border-radius: 4px; background: var(--sunk); color: var(--muted); flex: none; }
+.esrow.lit .kind.auth { background: var(--bad-soft); color: var(--bad); }
+.esrow.lit .kind.notify { background: var(--track-soft); color: var(--track); border: 1px solid var(--track); }
+.esverdict { border-radius: var(--r); padding: 10px 12px; font-family: var(--f-mono); font-size: 13px; display: flex; gap: 8px; align-items: center; }
+.esverdict .d { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.esverdict.ok { background: var(--ok-soft); color: var(--ok); } .esverdict.ok .d { background: var(--ok); }
+.esverdict.bad { background: var(--bad-soft); color: var(--bad); } .esverdict.bad .d { background: var(--bad); }
+.esverdict.wait { background: var(--sunk); color: var(--muted); } .esverdict.wait .d { background: var(--muted); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'macos',
+  crumbs: 'macos › endpointsecurity › modül 24',
+  eyebrow: 'Modül 24 · macOS / iOS · Güvenlik',
+  titleHTML: 'EndpointSecurity: güvenlik araçları çekirdeği nasıl izler?',
+  lede: 'Eski EDR ve antivirüs ürünleri olayları yakalamak için kendi kernel extension\'larını yazardı — kırılgan, tehlikeli ve artık büyük ölçüde yasak. EndpointSecurity bunun yerine resmi, denetimli bir C API sunar: bir güvenlik aracı, süreç exec\'inden dosya açmaya kadar sistem olaylarını izler ve hatta bazılarını gerçekleşmeden önce onaylar ya da reddeder.',
+  meta: ['~15 dk', 'ön koşul: sandbox, kod imzalama', 'bağlam: EDR, System Extensions'],
+  ethic: '<b>Not.</b> Bu modül EndpointSecurity\'nin <b>savunma tasarımını</b> — bir EDR\'nin olayları nasıl gözlemleyip yetkilendirdiğini — anlatır. ES\'in kör noktaları ofansif izlekte kavramsal olarak değerlendirilir; burada odak, denetim noktasının nasıl kurulduğudur.',
+  intuition: {
+    paras: [
+      'Bir uç nokta güvenlik aracının (EDR) tek bir temel ihtiyacı vardır: sistemde <em>ne olup bittiğini</em> zamanında görmek. Hangi program çalıştı, hangi dosya açıldı, hangi süreç çatallandı, kime sinyal gönderildi? Eskiden bunun için üreticiler çekirdeğe kendi kodlarını (kext) enjekte ederdi; bu hem sistemi dengesizleştirir hem de dev bir saldırı yüzeyi açardı. Apple bu yolu kapattı ve yerine <strong>EndpointSecurity</strong>\'yi koydu.',
+      'EndpointSecurity, kullanıcı-alanında (bir System Extension içinde) çalışan bir istemcinin, çekirdekteki olay akışına güvenli şekilde abone olmasını sağlayan resmi bir API\'dir. İki tür ilişki vardır: <strong>NOTIFY</strong> (olay zaten oldu, sadece haber ver) ve <strong>AUTH</strong> (olay askıda, sen karar verene kadar bekliyor — izin ver veya reddet). Böylece bir güvenlik aracı, kötü amaçlı bir <code>exec</code>\'i çalışmadan durdurabilir; ama bu güç, bir son tarih (deadline) içinde yanıt verme sorumluluğuyla gelir.'
+    ],
+    ideas: [
+      { b: 'kext değil, API', span: 'Güvenlik aracı çekirdeğe kod koymaz; resmi bir C API üzerinden olaylara abone olur. Daha az saldırı yüzeyi.' },
+      { b: 'NOTIFY vs AUTH', span: 'NOTIFY = olay oldu, haber ver. AUTH = olay askıda, sen izin/ret kararı verene kadar bekliyor.' },
+      { b: 'entitlement kapısı', span: 'ES istemcisi olmak Apple onaylı bir entitlement ister; her yazılım çekirdeği dinleyemez.' }
+    ]
+  },
+  lab: {
+    intro: 'Bir ES istemcisinin, çalıştırılmak üzere olan bir süreci (exec) nasıl görüp onayladığını ya da reddettiğini izleyelim. AUTH olayı, istemci karar verene kadar çekirdekte askıda bekler.',
+    codeLabel: 'ES istemcisi (C API · temsilî)', cmd: './es-monitor',
+    foot: 'Olay akışı ve kararlar temsilîdir; gerçek es_message_t alanları ve zamanlama sürüme göre değişir.',
+    code: [
+      { t: '<span class="cm">// 1) istemci oluştur; handler her olayda çağrılır</span>' },
+      { t: 'es_new_client(&client, ^(es_client_t *c, const es_message_t *msg) {' },
+      { t: '  switch (msg->event_type) {' },
+      { t: '    <span class="cm">// AUTH: karar verene kadar işlem askıda</span>' },
+      { t: '    case ES_EVENT_TYPE_AUTH_EXEC: {' },
+      { t: '      const char *path = msg->event.exec.target->executable->path.data;' },
+      { t: '      bool bad = is_blocklisted(path);' },
+      { t: '      es_respond_auth_result(c, msg,' },
+      { t: '          bad ? ES_AUTH_RESULT_DENY : ES_AUTH_RESULT_ALLOW, false);' },
+      { t: '      break; }' },
+      { t: '    <span class="cm">// NOTIFY: olay zaten oldu, sadece kaydet</span>' },
+      { t: '    case ES_EVENT_TYPE_NOTIFY_OPEN: log_open(msg); break;' },
+      { t: '  }' },
+      { t: '});' },
+      { t: 'es_subscribe(client, events, n);  <span class="cm">// ilgilenilen olaylar</span>' }
+    ],
+    steps: [
+      { pc: [1, 2], title: 'İstemci oluşturulur', term: ['es_new_client: OK (entitlement doğrulandı)'],
+        text: '<code>es_new_client()</code> bir <code>es_client_t</code> döndürür ve her olayda çağrılacak handler bloğunu kaydeder. Bu çağrı yalnızca süreç doğru <strong>entitlement</strong>\'a sahipse başarılı olur; Apple\'ın onayı olmadan hiçbir yazılım çekirdeği dinleyemez.',
+        focus: 'none', verdict: { cls: 'wait', txt: 'istemci hazır; olaylar bekleniyor' } },
+      { pc: [15], title: 'Olaylara abone olunur', term: ['es_subscribe: AUTH_EXEC, NOTIFY_OPEN, NOTIFY_FORK …'],
+        text: '<code>es_subscribe()</code> ile istemci yalnızca ilgilendiği olay türlerini seçer: burada süreç çalıştırma (AUTH_EXEC) ve dosya açma (NOTIFY_OPEN). Abone olunmayan olaylar hiç gelmez — bu, hem gürültüyü hem de yükü azaltır.',
+        focus: 'none', verdict: { cls: 'wait', txt: 'abone olundu; akış başladı' } },
+      { pc: [12], title: 'NOTIFY: dosya açıldı', term: ['NOTIFY_OPEN: /Users/deniz/rapor.pdf (pid 812)', 'log kaydedildi'],
+        text: 'Bir süreç bir dosya açtı. Bu bir <strong>NOTIFY</strong> olayıdır: işlem <em>zaten gerçekleşti</em>, çekirdek yalnızca istemciye haber veriyor. İstemci bunu engelleyemez, sadece kaydeder (telemetri). Davranışsal tespit (behavioral detection) çoğunlukla bu NOTIFY akışının analizine dayanır.',
+        focus: 'notify', verdict: { cls: 'ok', txt: 'NOTIFY işlendi (engellenemez, kaydedildi)' } },
+      { pc: [4, 5, 6], title: 'AUTH: süreç çalışmak üzere', term: ['AUTH_EXEC: /tmp/update (pid 913) — ASKIDA', 'handler karar bekliyor (deadline içinde)'],
+        text: 'Şüpheli bir yoldan (<code>/tmp/update</code>) bir süreç <code>exec</code> yapmak üzere. Bu bir <strong>AUTH</strong> olayıdır: işlem <em>henüz olmadı</em>, çekirdekte askıda ve istemcinin kararını bekliyor. İstemci bir <strong>deadline</strong> içinde yanıt vermek zorundadır; vermezse, istemcinin ayarına göre işlem reddedilir, izin verilir veya istemci öldürülür.',
+        focus: 'auth', verdict: { cls: 'wait', txt: 'AUTH_EXEC askıda — karar bekleniyor…' } },
+      { pc: [7, 8, 9], title: 'Ret: ES_AUTH_RESULT_DENY', term: ['is_blocklisted("/tmp/update") → true', 'es_respond_auth_result: DENY', 'exec engellendi (süreç başlamadı)'],
+        text: 'İstemci yolu kara listesinde bulur ve <code>es_respond_auth_result()</code>\'u <code>ES_AUTH_RESULT_DENY</code> ile çağırır. Çekirdek askıdaki <code>exec</code>\'i iptal eder — süreç hiç başlamaz. İşte EDR\'nin "önleme" (prevention) gücü buradadır: NOTIFY sadece görür, AUTH ise durdurabilir.',
+        focus: 'auth', verdict: { cls: 'bad', txt: 'DENY → exec engellendi (önleme)' } },
+      { pc: [7, 8, 9], title: 'İzinli durum', term: ['is_blocklisted("/usr/bin/git") → false', 'es_respond_auth_result: ALLOW', 'exec normal şekilde sürdü'],
+        text: 'Karşılaştırma için: meşru bir yol (<code>/usr/bin/git</code>) için istemci <code>ES_AUTH_RESULT_ALLOW</code> döndürür ve işlem normal akışına devam eder. ES her şeyi engellemez; istemcinin politikası neyin askıda kesileceğini belirler. Yanıt gecikirse <code>ES_DEADLINE_MISS_MODE_KILL</code> (varsayılan) istemciyi sonlandırır — yavaş bir güvenlik aracı sistemi kilitlemesin diye.',
+        focus: 'auth', verdict: { cls: 'ok', txt: 'ALLOW → exec sürdü' } }
+    ],
+    render: function (s, stateEl, u) {
+      var feed = [
+        { id: 'notify', ev: 'NOTIFY_OPEN', de: '/Users/deniz/rapor.pdf', kind: 'notify' },
+        { id: 'auth', ev: 'AUTH_EXEC', de: '/tmp/update  (askıda)', kind: 'auth' }
+      ];
+      var html = '<p class="lab-label">ES olay akışı</p><div class="es-flow"><div class="es-feed">';
+      feed.forEach(function (r) {
+        var lit = s.focus === r.id;
+        html += '<div class="esrow' + (lit ? ' lit' : '') + '">' +
+          '<span class="ev">' + u.esc(r.ev) + '</span>' +
+          '<span class="de">' + u.esc(r.de) + '</span>' +
+          '<span class="kind ' + r.kind + '">' + (r.kind === 'auth' ? 'AUTH' : 'NOTIFY') + '</span></div>';
+      });
+      html += '</div>';
+      html += '<div class="esverdict ' + s.verdict.cls + '"><span class="d"></span><span>' + u.esc(s.verdict.txt) + '</span></div>';
+      html += '</div>';
+      stateEl.innerHTML = html;
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: resmi bir denetim noktası nasıl çalışır?",
+    html: '<p class="lead">EndpointSecurity, "güvenlik aracı çekirdeği izlesin ama çekirdeğe kod koymasın" problemine Apple\'ın cevabıdır. İstemci modelinden olay yapısına, entitlement kapısından deadline mekaniğine kadar ayrıntılar, bir EDR\'nin ne görebileceğini ve neyi durdurabileceğini belirler. Bu bölüm Apple\'ın EndpointSecurity belgelerine dayanır.</p>' +
+
+      '<h3>1. ES nedir ve neden kext\'in yerini aldı</h3>' +
+      '<p>EndpointSecurity, sistem olaylarını izlemek için tasarlanmış bir <strong>C API</strong>\'dir. İstemci (client) kullanıcı-alanında, bir <strong>System Extension</strong> içinde çalışır — yani çekirdeğin içinde değil. Bu, eski <strong>kernel extension</strong> (kext) tabanlı EDR\'lere göre temel bir güvenlik kazanımıdır: bir güvenlik ürünündeki hata artık tüm çekirdeği değil, yalıtılmış bir uzantıyı etkiler ve saldırı yüzeyi çok daralır. Modern macOS üçüncü-taraf kext\'leri büyük ölçüde emekliye ayırmıştır; ES ve DriverKit/SystemExtensions bunun ikamesidir.</p>' +
+      '<div class="manpage src-apple"><div class="ref">Endpoint Security · Overview</div><p class="orig">Endpoint Security is a C API for monitoring system events for potentially malicious activity. You can write your client in any language that supports native calls. Your client registers with Endpoint Security to authorize pending events, or receive notifications of events that already occurred. These events include process executions, mounting file systems, forking processes, and raising signals.</p><p>İki yetenek tek cümlede: istemci ya <strong>askıdaki olayları yetkilendirir</strong> (authorize pending events) ya da <strong>olmuş olayların bildirimini alır</strong> (notifications of events that already occurred). Olaylar süreç çalıştırma, dosya sistemi bağlama, süreç çatallama ve sinyal gönderme gibi güvenlik açısından kritik eylemleri kapsar.</p></div>' +
+
+      '<h3>2. İstemci, mesaj ve olay türleri</h3>' +
+      '<p>Merkezde iki tip vardır. <strong>es_client_t</strong>, istemcinin durumunu tutan opak bir tiptir; <code>es_new_client()</code> ile oluşturulur ve her olayda çağrılacak bir handler bloğu alır. <strong>es_message_t</strong> ise tek bir olayı tanımlayan yapıdır: olay türü, olayı doğuran süreç, zamanlama ve (AUTH için) bir son tarih (deadline), ve olaya özgü veriyi tutan bir union. İstemci <code>es_subscribe()</code> ile yalnızca ilgilendiği olay türlerine abone olur; gerisi hiç gelmez.</p>' +
+      '<div class="manpage src-apple"><div class="ref">docs · es_client_t / es_message_t</div><p class="orig">Client — An opaque type that maintains Endpoint Security client state. Message — A type used by Endpoint Security to notify your client when a monitored action occurs.</p><p>İstemci durumu opak bir handle ardında saklanır (içine doğrudan dokunulmaz); mesaj ise izlenen bir eylem gerçekleştiğinde istemciye iletilen olay kaydıdır. Her olay türünün kendi veri alanları vardır (ör. exec için hedef yürütülebilir, open için vnode).</p></div>' +
+
+      '<h3>3. NOTIFY ve AUTH: görmek ile durdurmak</h3>' +
+      '<p>Her olay türünün iki biçimi olabilir. <strong>NOTIFY</strong> olayları (ör. <code>ES_EVENT_TYPE_NOTIFY_OPEN</code>) bilgilendiricidir: eylem zaten olmuştur, istemci yalnızca haberdar edilir ve engelleyemez — davranışsal tespitin ve telemetrinin temeli budur. <strong>AUTH</strong> olayları (ör. <code>ES_EVENT_TYPE_AUTH_EXEC</code>) ise karar gerektirir: eylem çekirdekte askıdadır ve istemci <code>es_respond_auth_result()</code>\'u <code>ES_AUTH_RESULT_ALLOW</code> veya <code>ES_AUTH_RESULT_DENY</code> ile çağırana kadar bekler. Bir EDR\'nin "önleme" gücü yalnızca AUTH olaylarında vardır.</p>' +
+      '<div class="deflist">' +
+      '<div><dt>NOTIFY</dt><dd>Eylem oldu; istemci haber alır, engelleyemez. Telemetri ve tespit için.</dd></div>' +
+      '<div><dt>AUTH</dt><dd>Eylem askıda; istemci ALLOW/DENY kararı verene kadar bekler. Önleme için.</dd></div>' +
+      '<div><dt>es_respond_auth_result</dt><dd>AUTH olayına kararı bildiren çağrı (ALLOW veya DENY).</dd></div>' +
+      '<div><dt>es_subscribe</dt><dd>İstemcinin yalnızca ilgilendiği olay türlerine abone olmasını sağlar.</dd></div>' +
+      '</div>' +
+
+      '<h3>4. Deadline: güç ile sorumluluk</h3>' +
+      '<p>AUTH olayı sistemi bekletir, bu yüzden istemci sonsuza kadar düşünemez: her AUTH olayının bir <strong>deadline</strong>\'ı vardır. İstemci zamanında yanıt vermezse ne olacağını <code>deadline miss mode</code> belirler. Varsayılan sert moddur — yavaş bir güvenlik aracı tüm sistemi kilitlemesin diye istemci sonlandırılır.</p>' +
+      '<div class="manpage src-apple"><div class="ref">docs · es_deadline_miss_mode_t</div><p class="orig">ES_DEADLINE_MISS_MODE_KILL — Kill the client when it fails to respond to an auth event (default behavior). ES_DEADLINE_MISS_MODE_FAIL_CLOSED — Deny the operation when client fails to respond, but don\'t kill the client. ES_DEADLINE_MISS_MODE_FAIL_OPEN — Allow the operation when client fails to respond, but don\'t kill the client.</p><p>Üç seçenek bir tasarım gerilimini özetler: <strong>KILL</strong> (varsayılan) sistemi korur ama istemciyi feda eder; <strong>FAIL_CLOSED</strong> güvenliği seçip işlemi reddeder; <strong>FAIL_OPEN</strong> işlevselliği seçip işleme izin verir. Bir EDR tasarımcısının en temel tercihlerinden biri.</p></div>' +
+
+      '<h3>5. Entitlement kapısı, muting ve sınırlar</h3>' +
+      '<p>ES istemcisi olmak ayrıcalıklı bir yetkidir: süreç <strong>com.apple.developer.endpoint-security.client</strong> entitlement\'ına sahip olmalı, bu da Apple tarafından açıkça verilir. Böylece rastgele bir yazılım çekirdeği dinleyemez. Yük yönetimi için istemci <strong>muting</strong> kullanır — belirli süreçleri veya yolları olay akışından çıkararak hem gürültüyü hem CPU maliyetini düşürür (ör. kendi süreçlerini susturmak). Ama ES\'in temel bir sınırı vardır: o da çekirdeğin bütünlüğüne güvenir. Çekirdek tam olarak ele geçirilirse, ES\'in gördüğü akış da güvenilmez hale gelir. Bu yüzden ES tek savunma değil, katmanlı savunmanın (SIP, sandbox, kod imzalama, SPTM/TXM) bir halkasıdır — ve asıl gücü, çekirdek sağlamken kötü niyetli davranışı erken yakalamaktır.</p>',
+  },
+  quiz: {
+    questions: [
+      { q: 'Bir EDR\'nin kötü amaçlı bir süreci <em>çalışmadan önce</em> durdurabilmesi hangi olay türüyle mümkündür?', opts: ['NOTIFY olayları', 'AUTH olayları', 'İkisi de'], answer: 'AUTH olayları',
+        ok: 'Doğru. AUTH olayları eylem gerçekleşmeden askıda bekler; istemci DENY derse eylem hiç olmaz. NOTIFY olayları ise yalnızca olmuş eylemleri bildirir, engelleyemez.', no: 'İpucu: biri "oldu, haber ver", diğeri "olacak, izin ver mi?" diye sorar.' },
+      { q: 'EndpointSecurity\'nin eski kext tabanlı EDR\'lere göre temel güvenlik avantajı nedir?', opts: ['Daha hızlıdır', 'Güvenlik aracı çekirdeğe kod koymaz; saldırı yüzeyi daralır', 'İmza gerektirmez'], answer: 'Güvenlik aracı çekirdeğe kod koymaz; saldırı yüzeyi daralır',
+        ok: 'Doğru. ES istemcisi kullanıcı-alanında bir System Extension içinde çalışır; üründeki bir hata artık tüm çekirdeği değil yalıtılmış bir uzantıyı etkiler.', no: 'İpucu: eski yöntem çekirdeğe kod enjekte ediyordu — asıl sorun neydi?' },
+      { q: 'Bir ES istemcisi bir AUTH olayına deadline içinde yanıt veremezse (varsayılan modda) ne olur?', opts: ['Sistem çöker', 'İstemci sonlandırılır (ES_DEADLINE_MISS_MODE_KILL)', 'Olay sonsuza kadar bekler'], answer: 'İstemci sonlandırılır (ES_DEADLINE_MISS_MODE_KILL)',
+        ok: 'Doğru. Varsayılan sert moddur: yavaş bir güvenlik aracı tüm sistemi kilitlemesin diye istemci öldürülür. Alternatifler FAIL_CLOSED (reddet) ve FAIL_OPEN (izin ver).', no: 'İpucu: AUTH olayı sistemi bekletir — yavaş istemci sistemi dondurmamalı.' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · macOS Modül 25', title: 'Secure Enclave (SEP)', desc: 'Anahtarların ana işlemciden bile gizlendiği ayrı güvenlik işlemcisi: Touch/Face ID, Data Protection ve SEPOS.', href: 'macos-sep.html' },
+  sources: [
+    { href: 'https://developer.apple.com/documentation/endpointsecurity', text: 'Apple — Endpoint Security', note: 'C API, overview' },
+    { href: 'https://developer.apple.com/documentation/endpointsecurity/monitoring-system-events-with-endpoint-security', text: 'Monitoring System Events with Endpoint Security', note: 'istemci akışı' },
+    { href: 'https://www.antid0te.com/training/kernel-internals.html', text: 'Antid0te — Kernel Internals', note: 'modül 4: sürücüler ve ES' }
+  ],
+  pageTitle: 'EndpointSecurity'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Açılış Süreci</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: açılış zaman çizelgesi */
+.timeline { display: grid; gap: 8px; }
+.tstage { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 10px 12px; display: grid; grid-template-columns: 30px 1fr; gap: 10px; align-items: start; min-width: 0; opacity: .5; transition: opacity .2s; }
+.tstage.done { opacity: 1; }
+.tstage.active { opacity: 1; border-color: var(--track); background: var(--track-soft); }
+.tstage .tn { font-family: var(--f-mono); font-size: 12px; color: var(--muted); font-weight: 700; }
+.tstage.active .tn, .tstage.done .tn { color: var(--track); }
+.tstage b { font-family: var(--f-display); font-size: 15px; }
+.tstage .tloc { font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.tstage .td { font-size: 13px; color: var(--muted); margin-top: 2px; }
+.tstage.active .td { color: var(--fg); }
+.memnote { margin-top: 12px; border: 1px dashed var(--line); border-radius: var(--r); padding: 10px 12px; font-size: 13px; background: var(--sunk); }
+.memnote b { font-family: var(--f-mono); font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; display: block; margin-bottom: 4px; }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var STAGES = [
+  { tn: '1', name: 'Firmware (UEFI/BIOS)', loc: 'donanım', d: 'Güç açılır; POST ile donanım sınanır; firmware açılış diskindeki önyükleyiciyi (bootloader) bulup belleğe alır ve ona atlar.' },
+  { tn: '2', name: 'Önyükleyici (bootloader, GRUB)', loc: 'disk → bellek', d: 'GRUB çekirdeği (kernel) ve başlangıç ram diskini (initramfs) belleğe yükler, çekirdeğe komut satırını (cmdline) verip sıkıştırılmış çekirdeği açar.' },
+  { tn: '3', name: 'Çekirdek başlar', loc: 'start_kernel()', d: 'Çekirdek belleği, kesmeleri, zamanlayıcıyı ve temel sürücüleri kurar. En sonunda ilk kullanıcı sürecini (PID 1) çalıştırmaya hazırlanır.' },
+  { tn: '4', name: 'initramfs / erken userland', loc: 'geçici kök (rootfs)', d: 'Çekirdek initramfs içindeki geçici kök dosya sistemini kullanır; gerçek diski bulmak için gereken sürücü/modülleri yükler (örn. LVM, RAID, şifreli disk).' },
+  { tn: '5', name: 'Gerçek köke geçiş (pivot_root)', loc: 'pivot_root / switch_root', d: 'Gerçek kök dosya sistemi mount edilir ve kök ona taşınır; initramfs belleği bırakılır. Artık asıl sistem üzerindeyiz.' },
+  { tn: '6', name: 'PID 1 (systemd / init)', loc: '/sbin/init', d: 'İlk gerçek süreç servisleri (ağ, günlük, oturum) başlatır. PID 1, fork modülündeki süreç ağacının kökü — tüm süreçlerin atasıdır.' }
+];
+
+var MODULE = {
+  track: 'linux',
+  crumbs: 'linux › açılış › modül 13',
+  eyebrow: 'Modül 13 · Linux · Açılış',
+  titleHTML: 'Güç düğmesinden <code>PID 1</code>\'e: açılış süreci',
+  lede: 'Bilgisayar açıldığında kod nasıl çalışmaya başlar? Firmware\'den önyükleyiciye, çekirdeğin ilk komutundan tüm süreçlerin atası olan PID 1\'e kadar zinciri adım adım izle ve kendi makinende doğrula.',
+  meta: ['~15 dk', 'ön koşul: süreçler (fork)', 'çekirdek: Linux 6.x'],
+  intuition: {
+    paras: [
+      'Açılış (boot), her katmanın bir sonrakini belleğe yükleyip ona kontrolü devrettiği bir zincirdir. Firmware önyükleyiciyi, önyükleyici çekirdeği, çekirdek de ilk kullanıcı sürecini (PID 1) başlatır. Her halka bir öncekinden daha çok şey bilir ve daha az ayrıcalıklı bir ortama doğru ilerler.',
+      'İki incelik önemli: çekirdek, gerçek diski okuyacak sürücüye henüz sahip olmayabilir, bu yüzden önce bellekte duran geçici bir kök dosya sistemini (initramfs) kullanır. Gerçek diski hazırladıktan sonra <code>pivot_root</code> ile köke geçer ve ilk gerçek programı (<code>/sbin/init</code>, çoğu dağıtımda systemd) çalıştırır.'
+    ],
+    ideas: [
+      { b: 'Zincirleme devir', span: 'Firmware → önyükleyici (bootloader) → çekirdek → PID 1. Her aşama bir sonrakini belleğe yükler ve atlar.' },
+      { b: 'Geçici kök', span: 'initramfs, gerçek diski bulacak sürücüler yüklenene kadar kullanılan, bellekteki geçici bir kök dosya sistemidir.' },
+      { b: 'Her şeyin atası', span: 'PID 1 ilk kullanıcı sürecidir; fork modülündeki süreç ağacının köküdür ve asla ölmez.' }
+    ]
+  },
+  lab: {
+    intro: 'Açılış zincirini aşama aşama izle. Solda her aşamanın hangi çekirdek/program adımına denk geldiğini, sağda o anda bellekte ne olduğunu göreceksin. Terminalde o aşamanın bıraktığı gerçek iz belirir.',
+    codeLabel: 'açılış zinciri', cmd: 'boot',
+    foot: 'Bu konteyner bir mikroVM (Firecracker) olduğu için PID 1 burada systemd değil, rdinit ile verilen özel bir init. Masaüstü/sunucuda PID 1 genelde systemd olur; aşağıdaki "Kendin dene" ikisini de gösterir.',
+    code: [
+      { t: '<span class="cm">güç açılır</span>' },
+      { t: 'firmware  <span class="cm">(UEFI/BIOS)</span>' },
+      { t: '  └─ <span class="f">bootloader</span>  <span class="cm">(GRUB)</span>' },
+      { t: '       ├─ kernel + initramfs → bellek' },
+      { t: '       └─ <span class="f">start_kernel</span>()  <span class="cm">init/main.c</span>' },
+      { t: '            ├─ initramfs (geçici kök)' },
+      { t: '            ├─ <span class="f">pivot_root</span> → gerçek kök' },
+      { t: '            └─ <span class="f">exec</span> /sbin/init  <span class="cm">PID 1</span>' }
+    ],
+    steps: [
+      { pc: 2, idx: 0, term: ['[firmware] POST tamam, önyükleyici aranıyor'],
+        text: 'Güç açılır. Firmware (UEFI ya da eski BIOS) donanımı sınar (POST), açılış diskini bulur ve oradaki önyükleyiciyi belleğe alıp ona kontrolü verir. Henüz ne çekirdek ne de işletim sistemi var.',
+        mem: 'Bellekte yalnızca firmware ve az sonra yüklenecek önyükleyici var.' },
+      { pc: 3, idx: 1, term: ['[grub] vmlinuz + initramfs yükleniyor', '[grub] cmdline: ro quiet splash'],
+        text: 'Önyükleyici (bootloader, çoğunlukla GRUB) iki şeyi belleğe yükler: sıkıştırılmış çekirdek (vmlinuz) ve başlangıç ram diski (initramfs). Çekirdeğe komut satırını (cmdline) geçirir, çekirdeği açar ve giriş noktasına atlar.',
+        mem: 'Bellekte: önyükleyici + çekirdek görüntüsü + initramfs arşivi. cmdline çekirdeğe parametreleri taşır.' },
+      { pc: 5, idx: 2, term: ['[    0.000000] Linux version 6.x ...', '[    0.000000] Command line: ...'],
+        text: 'Çekirdek <code>start_kernel()</code> ile hayata başlar: bellek yönetimi, kesmeler (interrupts), zamanlayıcı (scheduler) ve temel sürücüler kurulur. Bu noktada <code>dmesg</code>\'in ilk satırları yazılır.',
+        mem: 'Çekirdek artık bellekte kurulu ve CPU\'yu yönetiyor. Henüz tek bir kullanıcı süreci bile yok.' },
+      { pc: 6, idx: 3, term: ['[    1.2] Run /init as init process'],
+        text: 'Çekirdek ilk kullanıcı sürecini initramfs içindeki <code>/init</code> ile başlatır. Bu geçici kök (temporary rootfs) bellektedir; görevi gerçek diski okumak için gereken sürücü ve modülleri yüklemektir (LVM, RAID, şifreli disk vb.).',
+        mem: 'Bellekte geçici kök dosya sistemi çalışıyor; gerçek disk henüz mount edilmedi.' },
+      { pc: 7, idx: 4, term: ['[    2.1] switching root, initramfs bırakıldı'],
+        text: 'Gerçek kök dosya sistemi mount edilir ve <code>pivot_root</code> / <code>switch_root</code> ile kök ona taşınır. initramfs\'in kapladığı bellek serbest bırakılır. Artık asıl sistemin diski üzerindeyiz.',
+        mem: 'Gerçek kök (/) mount edildi; geçici initramfs belleği geri verildi.' },
+      { pc: 8, idx: 5, term: ['[    2.4] systemd[1]: PID 1 çalışıyor', '[    2.4] systemd[1]: servisler başlatılıyor'],
+        text: 'Çekirdek <code>/sbin/init</code>\'i (çoğu dağıtımda systemd) PID 1 olarak çalıştırır. PID 1 servisleri (ağ, günlük/logging, oturum yöneticisi) başlatır ve sistem kullanıma hazır hale gelir. Bu süreç, fork modülündeki ağacın köküdür.',
+        mem: 'PID 1 çalışıyor; fork/exec ile tüm diğer süreçler ondan türeyecek.' }
+    ],
+    render: function (s, stateEl, u) {
+      var rows = STAGES.map(function (st, i) {
+        var cls = i === s.idx ? 'tstage active' : (i < s.idx ? 'tstage done' : 'tstage');
+        return '<div class="' + cls + '"><div class="tn">' + st.tn + '</div><div><b>' + u.esc(st.name) + '</b>' +
+          ' <span class="tloc">' + u.esc(st.loc) + '</span><div class="td">' + u.esc(st.d) + '</div></div></div>';
+      }).join('');
+      stateEl.innerHTML =
+        '<p class="lab-label">Açılış zinciri</p><div class="timeline">' + rows + '</div>' +
+        '<div class="memnote"><b>O an bellekte</b>' + u.esc(s.mem) + '</div>';
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: boot zinciri ve kernel command line",
+    html: `<p class="lead">Boot, her halkanın bir sonrakini belleğe yükleyip kontrolü devrettiği bir güven ve yetenek zinciridir. "Nasıl oluyor da çekirdek daha hiçbir sürücü yokken diski okuyup init'i çalıştırıyor?" sorusunun yanıtı bu bölümde. Anlatı büyük ölçüde boot(7) ve bootparam(7) man sayfalarına dayanır.</p>
+
+<h3>1. Zincirin tamamı: firmware → OS loader → kernel → init</h3>
+<p>Her aşama belleğe daha fazla kod getirir ve bir sonrakine atlar. En altta donanım/ROM, en üstte ilk user space süreci (PID 1) vardır.</p>
+<div class="deflist">
+<div><dt>firmware / ROM</dt><dd>Güç açılınca kontrol, ROM'daki (genelde PROM/UEFI) sabit bir programa verilir; donanımı sınar ve boot loader'ı belleğe alır.</dd></div>
+<div><dt>boot loader</dt><dd>Tek işi çekirdeği (kernel image) bir aygıtta bulup belleğe yükleyip çalıştırmaktır. GRUB ayrıca initramfs'i yükler ve kernel command line'ı geçirir.</dd></div>
+<div><dt>kernel</dt><dd>Kendini açar (decompress), alt sistemleri kurar, bir root filesystem'i <code>/</code> yoluna mount eder ve ilk user space sürecini yaratır.</dd></div>
+<div><dt>init (PID 1)</dt><dd>İlk user space sürecidir; PID'i 1'dir. Servisleri başlatır ve fork modülündeki süreç ağacının kökü olur.</dd></div>
+</div>
+<div class="manpage"><div class="ref">7 boot · DESCRIPTION</div><p class="orig">After power-on or hard reset, control is given to a program stored in read-only memory (normally PROM).</p><p>Boot, yazılımdan önce donanımla başlar: CPU, ROM'daki sabit bir adresten çalışmaya başlar. Bu kod diski veya ağı okuyup boot loader'ı belleğe getirir — henüz ne çekirdek ne de işletim sistemi vardır.</p></div>
+<div class="manpage"><div class="ref">7 boot · DESCRIPTION</div><p class="orig">Only then does the kernel create the initial user-space process, which is given the number 1 as its PID (process ID).</p><p>Çekirdek, root filesystem'i <code>/</code>'a mount ettikten <em>sonra</em> ilk user space sürecini yaratır ve ona PID 1 verir. Bu sıralama önemlidir: PID 1 çalışabilmek için bir kök dosya sistemine ihtiyaç duyar.</p></div>
+
+<h3>2. initramfs: tavuk-yumurta problemi</h3>
+<p>Gerçek kök dosya sistemi şifreli bir LVM/RAID birimin üzerinde olabilir. Ama o birimi açacak sürücü ve araçlar da kök dosya sistemindedir — yani çekirdeğin diski okuyabilmek için zaten diski okumuş olması gerekir. Bu döngüyü <strong>initramfs</strong> kırar.</p>
+<p>initramfs, boot loader'ın çekirdekle birlikte belleğe yüklediği, sıkıştırılmış bir <code>cpio</code> arşividir. Çekirdek onu bellekte geçici bir root filesystem (tmpfs) olarak açar ve içindeki <code>/init</code>'i çalıştırır. Bu erken user space'in görevi: gerçek diski görünür kılacak kernel module'leri yüklemek, şifreli/LVM birimi açmak, ardından gerçek kökü mount edip <code>pivot_root</code> (veya <code>switch_root</code>) ile köke taşınmak. Bu noktada initramfs'in tuttuğu bellek geri verilir.</p>
+
+<h3>3. Kernel command line: çekirdeğe ve init'e ayar geçirmek</h3>
+<p>Boot loader çekirdeğe tek bir metin satırı geçirir: kernel command line. Bu satır hem çekirdeği ayarlar hem de çekirdeğin tanımadığı parçaları init'e ve ortama (environment) devreder. Çalışan bir sistemde onu <code>/proc/cmdline</code>'dan okuyabilirsin.</p>
+<div class="manpage"><div class="ref">7 bootparam · DESCRIPTION</div><p class="orig">The Linux kernel accepts certain 'command-line options' or 'boot time parameters' at the moment it is started.</p><p>Komut satırı, açılış anında davranışı belirler: hangi kök aygıt (<code>root=</code>), kök salt okunur mu (<code>ro</code>), log seviyesi, sürücü parametreleri… Derlenmiş çekirdeği değiştirmeden sistemi ayarlamanın yoludur.</p></div>
+<div class="manpage"><div class="ref">7 bootparam · init=</div><p class="orig">This sets the initial command to be executed by the kernel. ... then interpreted as an environment variable to be set.</p><p>Çözümleme sırası şöyledir: çekirdek bir argümanı tanırsa kendi ayarına uygular; <code>foo=bar</code> biçiminde tanımadıklarını bir environment variable olarak ayarlar; geri kalan her şeyi PID 1'e argüman olarak geçirir. <code>init=/bin/sh</code> vererek kurtarma kabuğu açmak bu mekanizmanın ünlü kullanımıdır.</p></div>
+<div class="deflist">
+<div><dt>root=</dt><dd>Gerçek kök dosya sisteminin bulunduğu aygıt (örn. <code>root=/dev/sda2</code> veya <code>root=UUID=...</code>).</dd></div>
+<div><dt>ro / rw</dt><dd>Kök başta read-only mount edilir (fsck güvenliği için), sonra read-write'a geçirilir.</dd></div>
+<div><dt>init=</dt><dd>PID 1 olarak çalıştırılacak programı değiştirir; kurtarma için <code>init=/bin/sh</code>.</dd></div>
+<div><dt>quiet / loglevel=</dt><dd>Açılışta çekirdek log çıktısının ayrıntı düzeyini ayarlar.</dd></div>
+</div>
+
+<h3>4. start_kernel'den init'e: çekirdek ilk süreci nasıl bulur</h3>
+<p>Mimariye özel erken assembly kodundan sonra çekirdeğin ilk C fonksiyonu <code>start_kernel()</code>'dir. Alt sistemleri (memory management, scheduler, interrupts) kurduktan sonra <code>kernel_init</code> yoluna girer ve <code>run_init_process()</code> ile ilk user space programını <code>execve</code> eder. Çekirdek init'i sırayla arar: önce command line'daki <code>init=</code>, yoksa <code>/sbin/init</code>, <code>/etc/init</code>, <code>/bin/init</code>, <code>/bin/sh</code>. Hiçbiri bulunamazsa ünlü <em>"No working init found"</em> kernel panic'i oluşur — çünkü PID 1 olmadan sistem anlamsızdır.</p>
+
+<h3>5. PID 1 olarak systemd: paralel başlatma</h3>
+<p>Çoğu modern dağıtımda <code>/sbin/init</code> aslında systemd'ye bir symlink'tir. Eski SysV init servisleri sıralı ve script'lerle başlatırken, systemd servisleri <strong>unit</strong> dosyalarıyla tanımlar ve bağımlılık grafiğine göre <strong>paralel</strong> başlatır; bir servis gerçekten gerekene kadar ertelenebilir (socket/D-Bus activation). Hedef durumlar <strong>target</strong> olarak ifade edilir (örn. <code>multi-user.target</code>, <code>graphical.target</code>).</p>
+<div class="manpage src-docs"><div class="ref">systemd · bootup(7)</div><p>systemd, PID 1 olarak kernel'in başlattığı ilk süreçtir; <code>initrd</code> aşamasından <code>basic.target</code> ve nihai hedefe kadar olan başlatma sırasını bağımlılıklarla yönetir. Aşamaları ve süreleri <code>systemd-analyze</code> ve <code>systemd-analyze blame</code> ile ölçebilirsin. Ayrıntı: freedesktop.org systemd <code>bootup(7)</code> belgesi.</p></div>`
+  },
+  underHood: {
+    html: '<p class="prose">Çekirdeğin ilk C fonksiyonu <code>start_kernel()</code>\'dir; alt sistemleri kurduktan sonra ilk kullanıcı sürecini çalıştıran yola iner. Fonksiyonlar Elixir\'deki kaynak tanımına gider.</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">firmware → GRUB</span><span class="where">donanım / disk</span><p>POST, önyükleyiciyi belleğe alır; GRUB çekirdeği + initramfs\'i yükleyip çekirdeğe atlar.</p></div></li>' +
+      '<li class="boundary"><div>önyükleyici → çekirdek</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/start_kernel" target="_blank" rel="noopener">start_kernel()</a><span class="where">init/main.c</span><p>Bellek, zamanlayıcı, kesmeler, temel sürücüler kurulur. Açılışın C tarafının başlangıcı.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/rest_init" target="_blank" rel="noopener">rest_init() → kernel_init</a><span class="where">init/main.c</span><p>İlk çekirdek iş parçacığını (kernel thread) ve ardından ilk kullanıcı sürecini oluşturacak yolu başlatır.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/run_init_process" target="_blank" rel="noopener">kernel_init → run_init_process()</a><span class="where">init/main.c</span><p>initramfs\'teki <code>/init</code> ya da diskteki <code>/sbin/init</code> çalıştırılır. Buradan sonrası tamamen kullanıcı alanı (user space).</p></div></li>' +
+      '</ol>' +
+      '<p class="prose" style="margin-top:14px">Çekirdek, <code>run_init_process</code> başarısız olursa sırayla birkaç yol dener (<code>/sbin/init</code>, <code>/etc/init</code>, <code>/bin/sh</code>); hiçbiri bulunamazsa ünlü <em>"No working init found"</em> paniğini (kernel panic) verir.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Çekirdeğe verilen komut satırını gör', p: 'Önyükleyicinin çekirdeğe geçirdiği parametreler burada durur; açılışta neyin nasıl ayarlandığını anlatır.',
+        shells: [{ label: 'terminal (gerçek çıktı)', copy: 'cat /proc/cmdline', pre: '<span class="c">$</span> cat /proc/cmdline\nconsole=ttyS0 reboot=k panic=1 ... rdinit=/process_api' }] },
+      { h3: '2. PID 1 kim?', p: 'İlk sürecin adını ve açılışın çekirdek günlüğündeki (dmesg) ilk satırlarını gör. Çoğu masaüstü/sunucuda PID 1 systemd\'dir.',
+        shells: [{ label: 'terminal (gerçek çıktı)', copy: 'ps -p 1 -o pid,comm= ; uname -r ; ls -l /sbin/init', pre: '<span class="c">$</span> ps -p 1 -o pid,comm=\n    1 process_api      <span class="c"># bu mikroVM; normal sistemde: systemd</span>\n<span class="c">$</span> uname -r\n6.18.44-fc-v139\n<span class="c">$</span> ls -l /sbin/init\n/sbin/init -> ../lib/systemd/systemd   <span class="c"># init aslında systemd</span>' }] },
+      { h3: '3. Açılış süresini çöz (systemd\'li sistemde)', p: 'systemd ile açılan bir sistemde her aşamanın ne kadar sürdüğünü görebilir, en yavaş servisleri bulabilirsin.',
+        shells: [{ label: 'terminal (temsilî)', copy: 'systemd-analyze ; systemd-analyze blame | head', pre: '<span class="c">$</span> systemd-analyze\nStartup finished in 2.1s (kernel) + 4.6s (userspace) = 6.7s\n<span class="c">$</span> systemd-analyze blame | head -3\n2.310s NetworkManager-wait-online.service\n0.820s docker.service\n0.410s snapd.service' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'initramfs neden vardır?', opts: ['Çekirdeği hızlandırmak için', 'Gerçek diski okuyacak sürücüler yüklenene kadar geçici kök sağlamak için', 'Ekran kartı için'], answer: 'Gerçek diski okuyacak sürücüler yüklenene kadar geçici kök sağlamak için',
+        ok: 'Doğru. Çekirdek gerçek diski (LVM/RAID/şifreli) okuyacak sürücüye henüz sahip olmayabilir; initramfs bellekte geçici bir kök sağlar, sürücüler yüklenince pivot_root ile gerçek köke geçilir.', no: 'İpucu: çekirdek açılışta gerçek diski okuyamayabilir. O boşluğu ne doldurur?' },
+      { q: 'PID 1\'in fork modülündeki süreç ağacıyla ilişkisi nedir?', opts: ['Ağacın kökü, tüm süreçlerin atası', 'Yapraklarından biri', 'Ağaçla ilgisi yok'], answer: 'Ağacın kökü, tüm süreçlerin atası',
+        ok: 'Doğru. PID 1 ilk kullanıcı sürecidir; diğer tüm süreçler doğrudan ya da dolaylı olarak ondan fork edilir. Öksüz kalan süreçleri de PID 1 evlat edinir.', no: 'İpucu: fork modülünde kökte kim vardı?' },
+      { q: 'Çekirdeğin ilk C fonksiyonu olarak kabul edilen hangisidir?', opts: ['main()', 'start_kernel()', 'fork()'], answer: 'start_kernel()',
+        ok: 'Doğru. Mimariye özel erken assembly kodundan sonra start_kernel() çalışır; bellek, zamanlayıcı ve sürücüleri kurup ilk kullanıcı sürecine giden yolu başlatır.', no: 'İpucu: init/main.c içinde, alt sistemleri kuran fonksiyon.' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Linux Modül 14', title: 'Namespace ve cgroup', desc: 'Konteynerlerin temeli: bir süreç kendi izole dünyasını (PID, ağ, mount) ve kaynak sınırlarını nasıl alır?' },
+  sources: [
+    { href: 'https://man7.org/linux/man-pages/man7/boot.7.html', text: 'man 7 boot', note: 'açılış aşamaları' },
+    { href: 'https://man7.org/linux/man-pages/man1/systemd-analyze.1.html', text: 'man systemd-analyze', note: 'açılış süresi analizi' },
+    { href: 'https://0xax.gitbooks.io/linux-insides/content/Initialization/', text: 'linux-insides: Booting & Initialization', note: 'kaynak gezintisi' },
+    { href: 'https://elixir.bootlin.com/linux/latest/source/init/main.c', text: 'init/main.c', note: 'start_kernel, Elixir' }
+  ],
+  pageTitle: 'Açılış Süreci'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

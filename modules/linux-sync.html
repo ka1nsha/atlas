@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Senkronizasyon primitifleri</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'linux',
+  crumbs: 'linux › senkronizasyon primitifleri › modül 16',
+  eyebrow: 'Modül 16 · Linux · Eşzamanlılık',
+  titleHTML: 'Senkronizasyon primitifleri: <code>spinlock</code>, <code>mutex</code>, <code>RCU</code>',
+  lede: 'futex bir mutex\'in kullanıcı-alanı yüzüydü. Peki çekirdeğin kendi içinde — aynı veriye birden çok CPU aynı anda dokunurken — tutarlılık nasıl sağlanır? Bu modülde bir race condition\'ı önce canlı kırılırken izleyecek, sonra spinlock\'tan RCU\'ya kadar çekirdeğin kilit araç kutusunu ve her birinin ne zaman doğru seçim olduğunu göreceksin.',
+  meta: ['~20 dk', 'ön koşul: thread\'ler, futex, zamanlayıcı', 'çekirdek: Linux 6.x'],
+  intuition: {
+    paras: [
+      'Bir CPU çekirdeği <code>counter++</code> yazdığında bu tek bir adım değildir: değeri <strong>oku</strong>, bir <strong>ekle</strong>, geri <strong>yaz</strong> (read-modify-write). İki CPU bunu aynı anda yaparsa ikisi de aynı eski değeri okur, ikisi de bir ekler, ikisi de aynı yeni değeri yazar — iki artış yapılmış görünür ama sayaç yalnızca bir artmıştır. Kaybolan güncelleme (lost update) budur; eşzamanlılığın temel tehlikesi.',
+      'Aynı veriye dokunan kod parçasına <strong>critical section</strong> denir. Çözüm onu bir kilitle korumaktır: aynı anda yalnızca bir thread-of-control içeri girebilir. Ama "kilit" tek bir şey değildir. Çekirdek, beklemenin maliyeti ile kritik bölümün süresine göre farklı primitifler sunar: çok kısa bölümler için dönerek bekleyen (busy-wait) <strong>spinlock</strong>, uzun/uyku-güvenli bölümler için uyuyan <strong>mutex</strong>, okuyucuların ezici çoğunlukta olduğu durumlar için neredeyse bedava okuma sağlayan <strong>RCU</strong>.',
+      'Yanlış primitif sadece yavaşlatmaz; interrupt context\'inde uyuyan bir kilit almak ya da kilitleri farklı sıralarla almak sistemi kilitleyebilir (deadlock). Bu yüzden "hangi kilit" sorusu, "kilit var mı" sorusu kadar önemlidir.'
+    ],
+    ideas: [
+      { b: 'Read-modify-write bölünür', span: 'counter++ = oku + ekle + yaz. Araya başka bir CPU girerse güncelleme kaybolur. Atomik işlem veya kilit bunu bütünler.' },
+      { b: 'Kritik bölümü kısa tut', span: 'Spinlock dönerek bekler, CPU harcar. Kritik bölüm ne kadar kısaysa çekişme o kadar ucuz.' },
+      { b: 'Uyku güvenli mi?', span: 'Interrupt context\'inde uyunamaz → orada sadece spinlock. Process context\'te uzun iş → mutex.' },
+      { b: 'Okuyucu-ağırlıklı → RCU', span: 'Okuma çok, yazma az ise RCU okuyuculara kilitsiz, neredeyse bedava erişim verir.' }
+    ]
+  },
+  lab: {
+    intro: 'İki işçi thread aynı <code>counter</code>\'ı artırıyor. Önce kilitsiz: iki CPU aynı değeri okuyup aynı değeri yazınca bir artış buharlaşıyor. Sonra bir spinlock ekleyince kritik bölüm serileşiyor ve sayaç doğru çıkıyor. Sağda iki CPU\'nun gördüğü yerel değeri, paylaşılan sayacı ve kilidin durumunu izle.',
+    codeLabel: 'counter.c', cmd: './count',
+    foot: 'Değerler iki işçi, iki artış senaryosuyla sadeleştirilmiştir; gerçekte kayıp milyonlarca artışta istatistiksel olarak birikir. Aşağıdaki "Kendin dene" bunu gerçek ThreadSanitizer çıktısıyla gösterir.',
+    code: [
+      { t: '<span class="t">long</span> counter = <span class="n">0</span>;            <span class="cm">// paylaşılan sayaç (global memory)</span>' },
+      { t: '<span class="t">pthread_spinlock_t</span> lock;     <span class="cm">// spinlock</span>' },
+      { t: '' },
+      { t: '<span class="t">void</span> *<span class="f">worker</span>() {' },
+      { t: '    <span class="cm">// --- kilitsiz sürüm (race) ---</span>' },
+      { t: '    <span class="t">long</span> t = counter;          <span class="cm">// OKU  (load)</span>' },
+      { t: '    t = t + <span class="n">1</span>;                 <span class="cm">// EKLE (add)</span>' },
+      { t: '    counter = t;               <span class="cm">// YAZ  (store)</span>' },
+      { t: '' },
+      { t: '    <span class="cm">// --- kilitli sürüm (doğru) ---</span>' },
+      { t: '    <span class="f">pthread_spin_lock</span>(&amp;lock);   <span class="cm">// kritik bölüme gir</span>' },
+      { t: '    counter++;                 <span class="cm">// oku-artır-yaz, bölünmez</span>' },
+      { t: '    <span class="f">pthread_spin_unlock</span>(&amp;lock); <span class="cm">// çık</span>' }
+    ],
+    steps: [
+      { pc: [1], title: 'Başlangıç', term: [],
+        text: 'Paylaşılan <code>counter</code> sıfır. İki işçi thread birazdan onu birer kez artıracak; beklenen sonuç <strong>2</strong>. Önce kilitsiz sürümü izleyelim.',
+        cpus: [{ n: 'CPU 0 · worker A', local: '—', k: 'idle' }, { n: 'CPU 1 · worker B', local: '—', k: 'idle' }],
+        counter: 0, lock: null, note: 'Beklenen final: 2' },
+      { pc: 6, title: 'İkisi de aynı değeri OKUR', term: [],
+        text: 'Her iki CPU da kritik bölümü koruyan bir kilit olmadığı için <code>counter</code>\'ı neredeyse aynı anda okur. İkisi de <strong>0</strong> görür. Sorun burada doğar: ikisinin elinde de "eski" değer vardır.',
+        cpus: [{ n: 'CPU 0 · worker A', local: 0, k: 'run' }, { n: 'CPU 1 · worker B', local: 0, k: 'run' }],
+        counter: 0, lock: null, note: 'Her iki yerel t = 0' },
+      { pc: 7, title: 'İkisi de EKLER', term: [],
+        text: 'Her CPU kendi yerel kopyasına 1 ekler. İkisinin de yerel sonucu <strong>1</strong>. Henüz paylaşılan sayaç değişmedi; değişiklikler CPU\'ların yazmaçlarında (register) bekliyor.',
+        cpus: [{ n: 'CPU 0 · worker A', local: 1, k: 'run' }, { n: 'CPU 1 · worker B', local: 1, k: 'run' }],
+        counter: 0, lock: null, note: 'Her iki yerel t = 1' },
+      { pc: 8, title: 'İkisi de aynı değeri YAZAR → kayıp', term: ['counter = 1  (beklenen 2!)'],
+        text: 'Her iki CPU da yerel <strong>1</strong>\'ini paylaşılan sayaca yazar. İkinci yazma birincinin üstüne biner; iki ayrı artış yapıldı ama sayaç yalnızca <strong>1</strong>. Bir güncelleme kayboldu (lost update) — klasik race condition.',
+        cpus: [{ n: 'CPU 0 · worker A', local: 1, k: 'bad' }, { n: 'CPU 1 · worker B', local: 1, k: 'bad' }],
+        counter: 1, lock: null, bad: true, note: 'İki artış → +1. Bir tanesi buharlaştı.' },
+      { pc: [10, 11], title: 'Kilitli sürüm: A kritik bölümde', term: ['CPU 0: spin_lock() alındı'],
+        text: 'Şimdi spinlock\'lu sürüm. worker A <code>pthread_spin_lock</code> ile kilidi alır ve kritik bölüme girer. worker B aynı kilidi almaya çalışır ama kilit meşgul: B, CPU\'yu döndürerek (busy-wait / spin) bekler. Kritik bölüm çok kısa olduğundan bu bekleme de çok kısadır.',
+        cpus: [{ n: 'CPU 0 · worker A', local: 'kilitte', k: 'run' }, { n: 'CPU 1 · worker B', local: 'spin...', k: 'wait' }],
+        counter: 1, lock: 'worker A', note: 'B meşgul kilidi bekliyor (spin)' },
+      { pc: [11, 12], title: 'A artırır ve kilidi bırakır', term: ['counter: 1 → 2', 'CPU 0: spin_unlock()'],
+        text: 'A, <code>counter++</code>\'ı bölünmeden tamamlar (1→2) ve kilidi bırakır. Artık B kilidi alabilir; o da güvenle artırıp 3 yapar. Kilit, read-modify-write\'ı serileştirdiği için hiçbir güncelleme kaybolmaz.',
+        cpus: [{ n: 'CPU 0 · worker A', local: 'bitti', k: 'ok' }, { n: 'CPU 1 · worker B', local: 'kilit sırası onda', k: 'run' }],
+        counter: 2, lock: null, good: true, note: 'Doğru sonuç: her artış sayılıyor' }
+    ],
+    render: function (s, stateEl, u) {
+      var cpus = s.cpus.map(function (c) {
+        return '<div class="proc"><div class="proc-h"><b>' + u.esc(c.n) + '</b></div>' +
+          '<span class="chip ' + c.k + '">yerel t = ' + u.esc(String(c.local)) + '</span></div>';
+      }).join('');
+      var lockCls = s.lock ? ' hi' : (s.bad ? ' warn' : (s.good ? ' good' : ''));
+      var lockTxt = s.lock ? ('tutuluyor · ' + s.lock) : 'serbest';
+      var cntCls = s.bad ? ' warn' : (s.good ? ' good' : (s.lock ? ' hi' : ''));
+      var boxes =
+        '<div class="box' + cntCls + '"><b>paylaşılan counter</b><span class="mono">' + s.counter + '</span></div>' +
+        '<div class="box' + lockCls + '"><b>spinlock</b><span class="mono">' + u.esc(lockTxt) + '</span></div>' +
+        '<div class="box"><b>durum</b><span class="mono">' + u.esc(s.note || '') + '</span></div>';
+      stateEl.innerHTML =
+        '<p class="lab-label">CPU çekirdekleri (eşzamanlı)</p><div class="procs">' + cpus + '</div>' +
+        '<p class="lab-label" style="margin-top:14px">Paylaşılan durum ve kilit</p><div class="boxgrid" id="cEl"><div class="boxrow">' + boxes + '</div></div>';
+      if (s.bad) ATLAS.flash(document.getElementById('cEl'), true);
+      if (s.good) ATLAS.flash(document.getElementById('cEl'), false);
+    }
+  },
+  deepDive: {
+    heading: 'Derinlemesine: çekirdeğin kilit araç kutusu',
+    html: `<p class="lead">Tek bir "kilit" yoktur. Linux kernel'i, kritik bölümün ne kadar sürdüğüne, çağrının interrupt context'inde mi process context'inde mi olduğuna ve okuma/yazma oranına göre bir dizi senkronizasyon primitifi sunar. Yanlış seçim ya performansı öldürür ya da sistemi kilitler (deadlock). Bu bölüm kernel.org kilitleme belgelerine dayanır.</p>
+
+<h3>1. Neden kilit? Critical section ve race condition</h3>
+<p>Birden çok CPU aynı veriye dokunduğunda, <code>counter++</code> gibi "basit" bir işlem bile bölünebilir (load/add/store) ve araya başka bir CPU girerse güncelleme kaybolur. Aynı paylaşılan veriye erişen kod bölgesine <strong>critical section</strong> denir; amaç aynı anda yalnızca bir thread-of-control'ün orada olmasını garanti etmektir.</p>
+<div class="manpage src-docs"><div class="ref">docs · locking/spinlocks</div><p class="orig">the spinlock itself will guarantee the global lock, so it will guarantee that there is only one thread-of-control within the region(s) protected by that lock.</p><p>Bir kilidin tek işi budur: koruduğu bölge(ler)e aynı anda tek bir yürütme akışının girmesini sağlamak. Geri kalan her şey (dönerek mi beklesin, uyusun mu, okuyucuya izin versin mi) bu temel garantinin üzerine kurulan mühendislik tercihleridir.</p></div>
+
+<h3>2. Atomic operations ve memory ordering</h3>
+<p>En hafif araç, hiç kilit kullanmamaktır: tek bir değişkeni bölünmez (atomic) bir komutla güncellemek. <code>atomic_t</code> ve <code>atomic_inc()</code>/<code>cmpxchg()</code> gibi işlemler donanımın atomik komutlarına çevrilir; counter örneğindeki üç adımı tek, bölünmez adıma indirir.</p>
+<p>Ama atomiklik tek sorun değildir: modern CPU ve derleyiciler, sıralı görünen bellek işlemlerini performans için <strong>yeniden sıralayabilir</strong> (reordering). Bir thread'in yazdıklarının başka bir thread'ce doğru sırada görülmesini garanti etmek için <strong>memory barrier</strong> (bellek bariyeri) gerekir.</p>
+<div class="deflist">
+<div><dt>atomic_t / cmpxchg</dt><dd>Tek değişken üzerinde bölünmez oku-değiştir-yaz. Sayaç, bayrak, referans sayımı için kilitten ucuzdur.</dd></div>
+<div><dt>smp_mb() / smp_rmb() / smp_wmb()</dt><dd>Full / read / write memory barrier. İşlemlerin bariyerin iki yanında yeniden sıralanmasını engeller.</dd></div>
+<div><dt>READ_ONCE / WRITE_ONCE</dt><dd>Derleyicinin erişimi önbelleğe almasını/bölmesini engeller; lockless desenlerin yapı taşı.</dd></div>
+</div>
+
+<h3>3. Spinlock: dönerek bekleyen kilit</h3>
+<p>En temel kilit <strong>spinlock</strong>'tur. Kilit meşgulse bekleyen CPU uyumaz; bir döngüde dönerek (busy-wait) kilidin boşalmasını bekler. Uyumadığı için interrupt context'inde bile kullanılabilir; ama CPU harcadığı için yalnızca <strong>çok kısa</strong> kritik bölümler için uygundur.</p>
+<div class="manpage src-docs"><div class="ref">docs · locking/spinlocks</div><p class="orig">the most basic primitive for locking ... are most easily added to places that are completely independent of other code.</p><p>Spinlock'un demiri budur. Kritik bölümde uyku-tetikleyen (blocking) hiçbir işlem yapılamaz: spinlock tutarken bir mutex almak ya da kullanıcı belleğine kopyalamak gibi uyuyabilecek bir iş yapmak ölümcüldür.</p></div>
+<p>Bir spinlock'u hem process context hem de interrupt handler kullanıyorsa, interrupt'ların araya girip deadlock yaratmaması için interrupt'ları yerel olarak kapatan varyant gerekir:</p>
+<div class="manpage src-docs"><div class="ref">docs · locking/spinlocks · irqsave</div><p class="orig">It will disable interrupts _locally_, but the spinlock itself will guarantee the global lock ... The above is always safe.</p><p><code>spin_lock_irqsave()</code> yerel CPU'da interrupt'ları kapatıp kilidi alır, <code>spin_unlock_irqrestore()</code> eski durumu geri yükler. Kilit yalnızca process context'ten kullanılıyorsa sade <code>spin_lock()</code> yeter.</p></div>
+<div class="deflist">
+<div><dt>ticket spinlock</dt><dd>Her bekleyen bir "sıra numarası" alır; kilit sırayla verilir. Açlığı (starvation) önler, adalet getirir.</dd></div>
+<div><dt>qspinlock (queued)</dt><dd>Modern Linux'un varsayılanı. Bekleyenler CPU-yerel bir kuyrukta beklediği için çok çekirdekli sistemlerde cache-line çekişmesini azaltır.</dd></div>
+</div>
+
+<h3>4. Uyuyan kilitler: semaphore ve mutex</h3>
+<p>Kritik bölüm uzunsa ya da içinde uyku gerekiyorsa, dönerek beklemek israftır. O zaman bekleyen thread'i uyutan <strong>sleeping lock</strong>'lar kullanılır. Bunlar yalnızca process context'te geçerlidir — interrupt context uyuyamaz.</p>
+<div class="manpage src-docs"><div class="ref">docs · locking/mutex-design</div><p class="orig">Mutexes are sleeping locks which behave similarly to binary semaphores ... Only one task can hold the mutex at a time ... Only the owner can unlock the mutex.</p><p>Mutex, sahiplik (ownership) kavramı olan uyuyan bir kilittir: kimse onu tutarken başka bir task bekler (uyur), ve yalnızca kilidi alan task onu bırakabilir. Bu sahiplik kuralı, semaphore'dan en büyük farkıdır ve lockdep gibi doğrulayıcıların hataları yakalamasını sağlar.</p></div>
+<div class="manpage src-docs"><div class="ref">docs · locking/mutex-design · kısıtlar</div><p class="orig">Mutexes may not be used in hardware or software interrupt contexts such as tasklets and timers.</p><p>Bu yüzden bir timer callback'inde ya da IRQ handler'da mutex alınamaz; orada ya spinlock ya da hiç uyumayan bir mekanizma gerekir. Mutex ayrıca performans için bir "spin optimizasyonu" içerir: sahip başka bir CPU'da çalışıyorsa, kısa bir süre uyumadan dönebilir (hybrid davranış).</p></div>
+<div class="deflist">
+<div><dt>semaphore</dt><dd>Sayaçlı uyuyan kilit. N eşzamanlı erişime izin verebilir (counting semaphore). Sahiplik kavramı yoktur; bir task alıp başka bir task bırakabilir.</dd></div>
+<div><dt>mutex</dt><dd>Tek sahipli ikili kilit. Daha basit arayüz, sahiplik doğrulaması, interrupt'ta kullanılamaz. Kernel'in tercih ettiği genel amaçlı kilit.</dd></div>
+<div><dt>rw_semaphore</dt><dd>Okuyucu/yazıcı uyuyan kilit: birden çok okuyucu aynı anda girebilir, yazıcı tek başına. Okuma çoğunlukta ama RCU fazla karmaşıksa uygundur.</dd></div>
+</div>
+
+<h3>5. seqlock ve RCU: okuyucu-ağırlıklı dünyalar</h3>
+<p>Okumaların ezici çoğunlukta, yazmaların nadir olduğu veriler için okuyucuyu hiç kilitletmemek en büyük kazançtır. İki klasik yaklaşım: <strong>seqlock</strong> ve <strong>RCU</strong>.</p>
+<p><strong>seqlock</strong> bir sıra sayacı (sequence counter) kullanır: yazıcı sayacı artırır, okuyucu okumadan önce ve sonra sayaca bakar; sayac değişmişse (yazıcı araya girmişse) okumayı tekrarlar. Okuyucu kilit almaz ama tutarsız gördüğünde yeniden dener; bu yüzden yan etkisiz, kısa okumalar için uygundur.</p>
+<div class="manpage src-docs"><div class="ref">docs · RCU/whatisRCU</div><p class="orig">The basic idea behind RCU is to split updates into "removal" and "reclamation" phases ... The ability to wait until all readers are done allows RCU readers to use much lighter-weight synchronization.</p><p>RCU'da okuyucular <code>rcu_read_lock()</code> ile işaretlenir ama bu neredeyse bedavadır (çoğu yapılandırmada hiçbir atomik işlem/ bariyer yoktur). Yazıcı veriyi <em>yerinde değiştirmez</em>: yeni bir kopya hazırlar, işaretçiyi atomik olarak yeni kopyaya çevirir (removal), eski kopyayı ancak tüm mevcut okuyucular bitince serbest bırakır (reclamation).</p></div>
+<div class="manpage src-docs"><div class="ref">docs · RCU/whatisRCU · grace period</div><p class="orig">[synchronize_rcu blocks] until all pre-existing RCU read-side critical sections on all CPUs have completed ... RCU is optimized for read-mostly situations.</p><p>Eski kopyanın güvenle silinebileceği "tüm eski okuyucular bitti" anına <strong>grace period</strong> denir. Okuyucu bir eski kopyayı okurken yazıcı yeni kopyayı yayınlamış olabilir; ikisi bir süre yan yana yaşar. Bu yüzden RCU, okuma çok / yazma az olan (dizin, routing table, config) veriler için idealdir.</p></div>
+
+<h3>6. Hangisini ne zaman? ve lockdep</h3>
+<p>Doğru primitif üç soruyla seçilir: (a) kritik bölümde uyku gerekir mi? (b) interrupt context'te mi çağrılıyor? (c) okuma/yazma oranı nedir?</p>
+<div class="deflist">
+<div><dt>çok kısa, interrupt context olası</dt><dd>spinlock (gerekirse irqsave). Uyku yasak.</dd></div>
+<div><dt>uzun / uyku gerekli, process context</dt><dd>mutex (genel), semaphore (sayaçlı erişim).</dd></div>
+<div><dt>okuma ağırlıklı, yazma nadir</dt><dd>RCU (en hafif okuyucu) ya da rw_semaphore / seqlock.</dd></div>
+<div><dt>tek değişken sayaç/bayrak</dt><dd>atomic_t — kilit bile gerekmez.</dd></div>
+</div>
+<p>Birden çok kilit kullanıldığında en büyük tehlike <strong>deadlock</strong>'tur: iki CPU kilitleri ters sırayla alırsa birbirini sonsuza kadar bekler. Linux bunu <strong>lockdep</strong> (lock dependency validator) ile yakalar: çalışma anında kilit alım sıralarını izler, tehlikeli bir sıralama (lock ordering) gördüğünde henüz deadlock olmadan uyarır. Kural basittir: kilitleri her yerde aynı sırayla al.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">Kullanıcı-alanı <code>pthread_mutex</code> futex\'e inerken, çekirdeğin kendi içi tamamen bu primitiflerle örülüdür: scheduler run-queue\'ları spinlock ile, dosya sistemi yapıları mutex ile, RCU ise dcache ve ağ yollarında okuyucuları hiç kilitletmeden korunur. Aynı "maliyet/çekişme" dengesi her katmanda tekrar eder.</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/raw_spin_lock" target="_blank" rel="noopener">spin_lock / qspinlock</a><span class="where">kernel/locking/qspinlock.c</span><p>Dönerek bekleyen kilit; interrupt context\'te tek güvenli seçenek. Varsayılanı kuyruklu (queued) sürümdür.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/mutex_lock" target="_blank" rel="noopener">mutex_lock</a><span class="where">kernel/locking/mutex.c</span><p>Uyuyan, tek sahipli kilit. Çekişmede sahip başka CPU\'da çalışıyorsa kısa süre döner (optimistic spinning), yoksa uyur.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/synchronize_rcu" target="_blank" rel="noopener">rcu_read_lock / synchronize_rcu</a><span class="where">kernel/rcu/</span><p>Okuyucuya neredeyse bedava erişim; yazıcı grace period boyunca eski kopyanın serbest kalmasını bekler.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://docs.kernel.org/locking/lockdep-design.html" target="_blank" rel="noopener">lockdep</a><span class="where">kernel/locking/lockdep.c</span><p>Kilit alım sıralarını izler; tehlikeli lock ordering\'i deadlock oluşmadan rapor eder.</p></div></li>' +
+      '</ol>' +
+      '<p class="prose" style="margin-top:14px">Tek cümlede: <strong>spinlock döner, mutex uyur, RCU okuyucuyu hiç bekletmez, atomic kilit bile istemez.</strong> Doğru seçim; çekişme süresi, context ve okuma/yazma oranının bir fonksiyonudur.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Kilitsiz yarışı yakala', p: 'Bir sayacı çok thread\'le kilitsiz artır, sonucun beklenenden küçük çıktığını gör; ThreadSanitizer ile yarışı ismiyle yakala. Bu çıktı bu konteynerde gerçek çalıştırılabilir.',
+        shells: [{ label: 'terminal', copy: 'gcc -O0 -pthread -fsanitize=thread -o race race.c && ./race', pre: '<span class="c">$</span> gcc -O0 -pthread -fsanitize=thread -o race race.c &amp;&amp; ./race\n<span class="hi">WARNING: ThreadSanitizer: data race</span>\n  Write of size 8 ... counter\n  Previous write of size 8 ... counter\n<span class="c"># beklenen 4000000, gercek: 2731145 (kayip guncellemeler)</span>' }] },
+      { h3: '2. Çekirdekte hangi kilitler tutuluyor?', p: 'Lockdep ve kilit istatistikleri çekirdekte canlı kilit davranışını gösterir (uygun .config ile).',
+        shells: [{ label: 'terminal', copy: 'cat /proc/lock_stat 2>/dev/null | head; dmesg | grep -i lockdep | head', pre: '<span class="c">$</span> sudo cat /proc/lock_stat | head\n<span class="c"># lock_stat: her kilidin cekisme sayisi, bekleme suresi</span>\n<span class="c"># CONFIG_LOCK_STAT ve CONFIG_PROVE_LOCKING gerekir</span>' }] },
+      { h3: '3. atomic vs kilit farkını ölç', p: 'Aynı sayacı bir kez mutex ile, bir kez __atomic ile artırıp süreyi karşılaştır; tek değişkende atomik işlemin neden kilitten ucuz olduğunu gör.',
+        shells: [{ label: 'terminal', copy: 'gcc -O2 -pthread -o bench bench.c && ./bench', pre: '<span class="c">$</span> ./bench\natomic_fetch_add : 0.08 s\npthread_mutex    : 0.41 s\n<span class="c"># tek sayacta atomik, kilitten belirgin hizli</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Bir <strong>interrupt handler</strong> içinde paylaşılan bir listeyi korumak için hangisi kullanılabilir?', opts: ['mutex', 'spinlock (irqsave)', 'semaphore'], answer: 'spinlock (irqsave)',
+        ok: 'Doğru. Interrupt context uyuyamaz; mutex ve semaphore uyuyan kilitlerdir, orada yasaktır. Dönerek bekleyen spinlock (gerekirse irqsave varyantı) tek güvenli seçenektir.', no: 'İpucu: interrupt context\'te uyunamaz. Hangi kilit uyumaz?' },
+      { q: 'Okumaların %99, yazmaların %1 olduğu bir routing tablosu için en hafif okuyucu hangisinde olur?', opts: ['spinlock', 'RCU', 'binary semaphore'], answer: 'RCU',
+        ok: 'Doğru. RCU "read-mostly" durumlar için optimizedir: okuyucular neredeyse bedava erişir, yazıcı grace period boyunca eski kopyayı bekletir.', no: 'İpucu: okuyucuyu hiç kilitletmeyen, okuma-ağırlıklı için tasarlanmış primitif hangisi?' },
+      { q: '<code>counter++</code> iki CPU\'da kilitsiz çalışınca neden sonuç eksik çıkar?', opts: ['CPU yavaştır', 'Read-modify-write bölünür, güncelleme kaybolur', 'Derleyici hatası'], answer: 'Read-modify-write bölünür, güncelleme kaybolur',
+        ok: 'Doğru. counter++ = oku+ekle+yaz. İki CPU aynı eski değeri okur, ikisi de aynı yeni değeri yazar; bir artış diğerinin üstüne biner (lost update). Kilit ya da atomic bunu bütünler.', no: 'İpucu: counter++ tek adım değildir. Araya başka CPU girerse ne olur?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Linux', title: 'Zaman ve zamanlayıcılar', href: 'linux-time.html', desc: 'Çekirdek zamanı nasıl tutar? clocksource, clockevents, dyntick ve timer\'lar.' },
+  sources: [
+    { href: 'https://docs.kernel.org/locking/spinlocks.html', text: 'kernel.org — Spinlocks', note: 'temel kilit, irqsave' },
+    { href: 'https://docs.kernel.org/locking/mutex-design.html', text: 'kernel.org — Mutex design', note: 'sahiplik, uyku, kısıtlar' },
+    { href: 'https://docs.kernel.org/RCU/whatisRCU.html', text: 'kernel.org — What is RCU?', note: 'removal/reclamation, grace period' },
+    { href: 'https://docs.kernel.org/locking/seqlock.html', text: 'kernel.org — Sequence counters & seqlock' },
+    { href: 'https://docs.kernel.org/locking/lockdep-design.html', text: 'kernel.org — Lockdep', note: 'kilit sırası doğrulama' },
+    { href: 'https://0xax.gitbooks.io/linux-insides/content/SyncPrim/', text: 'linux-insides — Synchronization primitives' }
+  ],
+  pageTitle: 'Senkronizasyon primitifleri'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

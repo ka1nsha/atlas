@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Mobil Trafik ve Pinning</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: TLS el sıkışması ve pin kontrolü akışı */
+.flow { display: grid; grid-template-columns: 1fr auto 1fr; gap: 0 10px; align-items: start; }
+.node { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 9px 11px; }
+.node b { font-family: var(--f-display); font-size: 13.5px; display: block; }
+.node .pl { font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.node.act { border-color: var(--track); background: var(--track-soft); }
+.node.bad { border-color: var(--bad); background: var(--bad-soft); }
+.node.bad b { color: var(--bad); }
+.node.ok { border-color: var(--ok); background: var(--ok-soft); }
+.node.ok b { color: var(--ok); }
+.wire { grid-column: 2; align-self: center; font-family: var(--f-mono); font-size: 16px; color: var(--muted); padding: 14px 0; text-align: center; }
+.wire.act { color: var(--track); font-weight: 700; }
+.wire.bad { color: var(--bad); font-weight: 700; }
+.pinbox { margin-top: 14px; border: 1px solid var(--line); border-radius: var(--r); background: var(--sunk); padding: 11px 12px; display: grid; gap: 7px; }
+.pinbox .dh { font-family: var(--f-mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.pinrow { display: flex; justify-content: space-between; gap: 8px; font-family: var(--f-mono); font-size: 11.5px; flex-wrap: wrap; }
+.pinrow .lbl { color: var(--muted); }
+.pinrow .val { font-weight: 600; }
+.pinrow .val.match { color: var(--ok); }
+.pinrow .val.mis { color: var(--bad); }
+.verdict { font-family: var(--f-mono); font-size: 12.5px; font-weight: 700; padding: 7px 10px; border-radius: 8px; }
+.verdict.ok { color: var(--ok); background: var(--ok-soft); }
+.verdict.bad { color: var(--bad); background: var(--bad-soft); }
+.verdict.wait { color: var(--muted); background: var(--surface); border: 1px dashed var(--line); }
+.flow-col { display: grid; gap: 8px; }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+// TLS + pinning akışı için istemci/sunucu/araya-giren durumları render'da kullanılıyor.
+var MODULE = {
+  track: 'offensive',
+  crumbs: 'ofansif › mobil trafik ve pinning › modül 15',
+  eyebrow: 'Ofansif izlek · Modül 15 · Mobil uygulama katmanı',
+  titleHTML: 'Mobil trafik ve <code>certificate pinning</code>',
+  lede: 'Mobil güvenlik testinin ilk adımı uygulamanın ağ trafiğini görebilmektir. Bu modül trafik denetimi mimarisini (proxy, MITM test ortamı), TLS güven zincirini ve certificate pinning\'in bu zinciri nasıl sertleştirdiğini anlatır. Odak güvenli ağ tasarımı; çalışır bir bypass aracı değil, pinning\'in neden bir bütünlük (integrity) kontrolü olduğu ve nerede kırılganlaştığı.',
+  meta: ['~15 dk', 'ön koşul: tehdit modeli', 'mobil uygulama katmanı'],
+  ethic: '<b>İlke.</b> Bu modül güvenli ağ tasarımını ve test metodolojisini kavram düzeyinde öğretir; somut bir pinning-bypass reçetesi içermez. Trafik denetimini yalnızca <b>kendi uygulamanda veya açık izinli (yetkili) hedeflerde</b> yap.',
+  intuition: {
+    paras: [
+      'Bir mobil uygulamanın güvenliğini denetlemek için önce ne konuştuğunu duymak gerekir. Bunun standart yolu, cihaz ile sunucu arasına bir <strong>proxy</strong> koymaktır: trafik proxy üzerinden akar, test eden kişi istek ve yanıtları görür. Ama trafik TLS ile şifreli olduğundan, proxy\'nin araya girebilmesi için cihazın proxy\'nin sertifikasına güvenmesi gerekir. İşte bu noktada <strong>certificate pinning</strong> devreye girer.',
+      'Pinning basit bir fikirdir: uygulama, sunucudan gelen sertifikaya körü körüne güvenmek yerine, <em>yalnızca önceden bildiği belirli bir sertifika ya da public key</em> ile konuşmayı kabul eder. Araya giren proxy\'nin sertifikası bu beklenenle eşleşmediği için bağlantı reddedilir. Yani pinning, "işletim sisteminin güvendiği herhangi bir CA yeter" varsayımını "yalnızca benim beklediğim anahtar yeter"e daraltır.'
+    ],
+    ideas: [
+      { b: 'Proxy (MITM test ortamı)', span: 'Cihaz ile sunucu arasına konan, trafiği görünür kılan aracı. Meşru güvenlik testinin temel aracıdır; aynı konum kötü niyetli bir MITM saldırganının da konumudur.' },
+      { b: 'TLS güven zinciri', span: 'Sunucu sertifikası → ara CA → kök CA. Normalde cihazın güvendiği herhangi bir kök CA\'ya zincirlenen sertifika kabul edilir — bu geniş güven, pinning\'in daralttığı şeydir.' },
+      { b: 'Certificate pinning', span: 'Uygulamanın yalnızca belirli bir sertifikayı/anahtarı kabul etmesi. Bir bütünlük (integrity) ve MITM-direnci kontrolüdür; gizlilik (confidentiality) eklemez.' }
+    ]
+  },
+  lab: {
+    intro: 'Bir TLS bağlantısında pinning kontrolünün tam olarak nereye oturduğunu altı adımda izleyelim. Sağda istemci, sunucu ve (dördüncü adımdan sonra) araya giren proxy ile uygulamanın pin karşılaştırmasının sonucunu gör.',
+    codeLabel: 'pin-kontrolü (sözde-kod)', cmd: 'tls-connect api.ornek.com',
+    foot: 'Bu sözde-koddur; pin karşılaştırması gerçek uygulamada TLS kütüphanesinin doğrulama geri çağrısında (callback) yapılır. Kendi trafiğini aşağıdaki komutlarla gerçekten inceleyebilirsin.',
+    code: [
+      { t: '<span class="cm">// TLS + certificate pinning akışı</span>' },
+      { t: 'conn   = tls_connect(<span class="s">"api.ornek.com"</span>);' },
+      { t: 'sunucu = conn.<span class="f">peer_certificate</span>();' },
+      { t: 'zincir = <span class="f">dogrula_ca_zinciri</span>(sunucu);  <span class="cm">// OS güven deposu</span>' },
+      { t: 'pin    = <span class="f">spki_sha256</span>(sunucu.public_key);' },
+      { t: 'beklenen = PINSET;  <span class="cm">// uygulamaya gömülü</span>' },
+      { t: '<span class="k">if</span> (pin != beklenen) conn.<span class="f">abort</span>();  <span class="cm">// pinning</span>' },
+      { t: '<span class="k">else</span> conn.<span class="f">proceed</span>();' }
+    ],
+    steps: [
+      { pc: 2, title: 'İstemci bağlanır', phase: 'start',
+        text: 'Uygulama <code>api.ornek.com</code> adresine bir TLS bağlantısı açar. Sunucu, el sıkışma sırasında sertifikasını (certificate) gönderir. Bu sertifika bir public key ve onu imzalayan CA zincirini taşır.',
+        verdict: { t: 'bağlantı kuruluyor…', cls: 'wait' } },
+      { pc: 3, title: 'CA zinciri doğrulanır', phase: 'chain',
+        text: 'İlk kontrol işletim sisteminin yaptığıdır: sunucu sertifikası, cihazın güvendiği bir kök CA\'ya (root CA) kadar geçerli biçimde zincirleniyor mu? Bu adım geçerse sertifika "güvenilir" sayılır — ama bu güven, <strong>cihazın güvendiği herhangi bir CA</strong> kadar geniştir.',
+        verdict: { t: 'CA zinciri geçerli — ama güven geniş', cls: 'wait' } },
+      { pc: 4, title: 'Pin hesaplanır', phase: 'pin',
+        text: 'Pinning yapan uygulama burada durmaz. Sunucunun public key\'inden bir parmak izi (genelde <code>SPKI</code>\'nin SHA-256\'sı) hesaplar ve bunu uygulamanın içine gömülü <strong>pinset</strong> ile karşılaştırmaya hazırlanır. OWASP\'ın deyişiyle pinning, bir host\'u beklenen sertifika/anahtarıyla ilişkilendirmektir.',
+        verdict: { t: 'pin hesaplandı, karşılaştırılacak', cls: 'wait' } },
+      { pc: 6, title: 'Meşru sunucu: pin eşleşir', phase: 'match',
+        text: 'Gerçek sunucuda hesaplanan pin, gömülü beklenen değerle eşleşir. Bağlantı sürer. Normal kullanımda pinning görünmezdir; yalnızca beklenen anahtar değiştiğinde (sertifika yenileme) devreye girer — bu yüzden pinset genelde birden çok anahtar tutar.',
+        verdict: { t: '✓ pin eşleşti — bağlantı güvenli', cls: 'ok' } },
+      { pc: 7, title: 'Araya giren proxy: pin tutmaz', phase: 'mitm',
+        text: 'Şimdi araya bir proxy girsin. Proxy\'nin sertifikası, cihaza elle kurulmuş bir CA tarafından imzalanmış olsa bile <strong>farklı bir public key</strong> taşır. CA zinciri doğrulaması geçse de pin karşılaştırması başarısız olur: hesaplanan parmak izi pinset\'te yok. Uygulama bağlantıyı keser.',
+        verdict: { t: '✗ pin tutmadı — bağlantı reddedildi', cls: 'bad' } },
+      { pc: 7, title: 'Pinning neyi garanti eder, neyi etmez', phase: 'note',
+        text: 'Pinning\'in başarısı burada görünür: CA zinciri kandırılsa bile bağlantı düşer. Ama pinning kontrolü <strong>istemci kodundadır</strong>; cihazın tam kontrolü ele geçmiş bir ortamda (jailbreak/root + enstrümantasyon) bu kontrol kavramsal olarak devre dışı bırakılabilir. Bu yüzden pinning tek başına bir duvar değil, derinlemesine savunmanın (defense in depth) bir katmanıdır.',
+        verdict: { t: 'pinning: bütünlük katmanı, mutlak duvar değil', cls: 'wait' } }
+    ],
+    render: function (s, stateEl, u) {
+      var ph = s.phase;
+      var mitm = (ph === 'mitm' || ph === 'note');
+      var client = { cls: 'node', b: 'İstemci (uygulama)', pl: 'pinset gömülü' };
+      var server = { cls: 'node', b: 'Sunucu', pl: 'api.ornek.com' };
+      if (ph === 'start') { client.cls = 'node act'; }
+      if (ph === 'chain' || ph === 'pin') { client.cls = 'node act'; server.cls = 'node act'; }
+      if (ph === 'match') { client.cls = 'node ok'; server.cls = 'node ok'; }
+      if (mitm) { client.cls = 'node bad'; }
+      var wireCls = 'wire' + (ph === 'start' || ph === 'chain' || ph === 'pin' ? ' act' : '') + (mitm ? ' bad' : '') + (ph === 'match' ? ' act' : '');
+      var mid = mitm ? '⟶ 🛰 ⟶' : '⟷';
+
+      var html = '<p class="lab-label">TLS bağlantısı ve pin kontrolü</p><div class="flow">';
+      html += '<div class="flow-col"><div class="' + client.cls + '"><b>' + u.esc(client.b) + '</b><span class="pl">' + u.esc(client.pl) + '</span></div></div>';
+      html += '<div class="' + wireCls + '">' + mid + '</div>';
+      html += '<div class="flow-col"><div class="' + server.cls + '"><b>' + u.esc(server.b) + '</b><span class="pl">' + u.esc(server.pl) + '</span></div>';
+      if (mitm) html += '<div class="node bad" style="margin-top:8px"><b>Araya giren proxy</b><span class="pl">farklı public key</span></div>';
+      html += '</div></div>';
+
+      // pin karşılaştırma kutusu
+      if (ph === 'pin' || ph === 'match' || ph === 'mitm' || ph === 'note') {
+        var got, cls2;
+        if (ph === 'match') { got = 'sha256/Ab3…meşru'; cls2 = 'val match'; }
+        else if (ph === 'pin') { got = 'sha256/Ab3…meşru'; cls2 = 'val'; }
+        else { got = 'sha256/Zx9…proxy'; cls2 = 'val mis'; }
+        html += '<div class="pinbox"><span class="dh">Pin karşılaştırması (SPKI SHA-256)</span>' +
+          '<div class="pinrow"><span class="lbl">beklenen (pinset)</span><span class="val">sha256/Ab3…meşru</span></div>' +
+          '<div class="pinrow"><span class="lbl">sunucudan gelen</span><span class="' + cls2 + '">' + u.esc(got) + '</span></div></div>';
+      }
+      var v = s.verdict;
+      if (v) html += '<div class="verdict ' + v.cls + '" style="margin-top:12px">' + u.esc(v.t) + '</div>';
+      stateEl.innerHTML = html;
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: pinning bir bütünlük kontrolüdür",
+    html: `<p class="lead">Certificate pinning sık yanlış anlaşılır: trafiği "daha çok şifrelediği" sanılır. Oysa TLS trafiği zaten şifreler; pinning\'in eklediği şey <strong>kiminle konuşulduğunun bütünlüğüdür</strong> (integrity) — araya giren bir tarafın geçerli ama sahte bir sertifikayla kendini sunucu yerine koymasını (MITM) engeller. Bu bölüm OWASP\'ın kamuya açık Pinning Cheat Sheet\'ine dayanır; somut bir bypass tarifi değil, pinning\'in ne yaptığını ve sınırını açar.</p>
+
+<h3>1. Pinning tam olarak nedir?</h3>
+<p>Pinning, bir host\'u beklediği sertifika ya da public key ile ilişkilendirmektir. Birden çok kabul edilebilir anahtar varsa bunların kümesine <strong>pinset</strong> denir — sertifika yenileme sırasında bağlantının kopmaması için pratikte neredeyse her zaman birden çok pin tutulur.</p>
+<div class="manpage src-docs"><div class="ref">OWASP · Pinning Cheat Sheet</div><p class="orig">Pinning is the process of associating a host with their expected X509 certificate or public key. … If more than one certificate or public key is acceptable, then the program holds a pinset.</p><p>Pinning, bir host\'u beklenen X509 sertifikası veya public key\'i ile ilişkilendirme sürecidir. Birden fazla sertifika/anahtar kabul edilebilirse program bir pinset tutar. Dikkat: pinlenen şey tercihen sertifikanın tamamı değil, içindeki <strong>public key</strong>\'tir — çünkü sertifika yenilendiğinde anahtar aynı kalabilir ve pin bozulmaz.</p></div>
+
+<h3>2. Neyi çözer: güven deposunun kötüye kullanımı</h3>
+<p>Standart TLS\'te bir sertifika, cihazın güvendiği <em>herhangi bir</em> kök CA\'ya zincirleniyorsa kabul edilir. Sorun şudur: bu güven deposu geniştir ve bir noktası ele geçerse (hileli CA, cihaza elle kurulan sertifika, kurumsal MITM kutusu) saldırgan geçerli görünen bir sertifika üretebilir. Pinning tam da bu "herhangi bir CA yeter" varsayımını hedefler.</p>
+<div class="manpage src-docs"><div class="ref">OWASP · neden pinning</div><p class="orig">… can be vulnerable to Man-in-the-Middle (MITM) attacks if certificate-based trusts are misused.</p><p>Sertifika temelli güvenler kötüye kullanılırsa kanallar MITM saldırılarına açık hâle gelebilir. Pinning, kabul edilen anahtar kümesini tek bir bilinen değere daraltarak bu riski azaltır: araya giren taraf geçerli bir CA zinciri sunabilse bile, public key pinset\'te olmadığı için reddedilir. Lab\'daki son iki adım tam olarak bu farkı gösterir.</p></div>
+
+<h3>3. Nasıl uygulanır: doğrulama geri çağrısında</h3>
+<p>Pinning yeni bir protokol icat etmez; mevcut TLS altyapısını sertleştirerek kullanır. Kontrol, bağlantı kurulurken kütüphanenin sunduğu bir doğrulama geri çağrısında (callback) yapılır: gelen sertifika ya da anahtar, programa gömülü değerle karşılaştırılır.</p>
+<div class="manpage src-docs"><div class="ref">OWASP · uygulama</div><p class="orig">The idea is to reuse the existing protocols and infrastructure, but use them in a hardened manner. … Within the callback, you compare the retrieved certificate with the certificate embedded within the program.</p><p>Fikir, var olan protokol ve altyapıyı yeniden kullanmak ama sertleştirilmiş biçimde işletmektir. Geri çağrının (callback) içinde, alınan sertifika program içine gömülü sertifikayla karşılaştırılır. Buradaki kritik gerçek şudur: <strong>karşılaştırma istemci tarafındadır.</strong> Bu, pinning\'in hem gücü (sunucuya güvenmeden çalışır) hem de sınırıdır (istemci ortamı tümüyle ele geçerse kontrol de ele geçer).</p></div>
+
+<h3>4. Pinning bypass neden "mümkün" kabul edilir?</h3>
+<p>Saldırı yüzeyi bakışıyla kritik nokta ikinci kez vurgulanmalı: pin karşılaştırması uygulamanın kendi kodunda çalışan bir <code>if</code>\'tir. Saldırganın cihaz üzerinde tam kontrolü varsa (root/jailbreak + dinamik enstrümantasyon), bu karşılaştırmayı yapan fonksiyonun davranışı kavramsal olarak değiştirilebilir — yani pinning, <strong>uç noktanın kendisi düşman olduğunda</strong> koruma sağlamaz. Bu bir pinning kusuru değil, bir tehdit modeli gerçeğidir: istemci tarafı hiçbir kontrol, istemciyi tümüyle kontrol eden bir saldırgana karşı mutlak değildir. (Bu modül o değişikliğin <em>nasıl</em> yapıldığını anlatmaz; amacı sınırı doğru yere koymaktır.)</p>
+<p>Ayrı bir pratik ayrıntı: bazı uygulamalar sistem proxy ayarını hiç dikkate almaz (<strong>proxy-unaware</strong> — örneğin kendi ağ yığınını taşıyan bazı Flutter uygulamaları). Burada trafiğin test için görünür kılınması, pinning\'den bağımsız olarak, ağ seviyesinde yönlendirme gerektirir; bu da yine yalnızca yetkili test ortamında yapılır.</p>
+
+<h3>5. Doğru savunma duruşu</h3>
+<p>OWASP pinning\'i herkes için varsayılan önermez; yanlış yönetilirse (pin kaybı → uygulama sunucusuna hiç bağlanamaz) kırılgandır. Savunma duruşu katmanlıdır:</p>
+<div class="deflist">
+<div><dt>Önce temel</dt><dd>Her yerde TLS, sertifika doğrulamasını asla kapatma, güncel protokol sürümleri. Pinning bunların yerine değil, üstüne gelir.</dd></div>
+<div><dt>Public key pin + yedek</dt><dd>Sertifika yerine public key pinle ve pinset\'te yedek anahtar tut; rotasyonda uygulamayı kilitlememek için.</dd></div>
+<div><dt>Sunucu tarafı doğrulama</dt><dd>Kritik kararları yalnızca istemciye bırakma. İstemci kontrolü kullanıcı deneyimi ve maliyet içindir; güvenlik kararının son mercii sunucudur.</dd></div>
+<div><dt>Anti-fraud sinyalleri</dt><dd>Anormal istemci davranışını (ele geçmiş ortam belirtileri) tespit edip risk bazlı yanıt vermek — pinning\'i tamamlayan, onun yerini almayan bir katman.</dd></div>
+</div>
+<p>Özet: pinning, MITM\'e karşı güçlü bir <strong>bütünlük</strong> katmanıdır ve geniş CA güvenini daraltır; ama istemci tarafı olduğu için tek başına yeterli değildir. Doğru kullanım, onu derinlemesine savunmanın bir parçası olarak konumlandırmaktır.</p>`
+  },
+  quiz: {
+    questions: [
+      { q: 'Certificate pinning TLS\'e temel olarak ne ekler?', opts: ['Trafiği ikinci kez şifreler', 'Kiminle konuşulduğunun bütünlüğünü (geniş CA güvenini daraltır)', 'Bağlantıyı hızlandırır'], answer: 'Kiminle konuşulduğunun bütünlüğünü (geniş CA güvenini daraltır)',
+        ok: 'Doğru. TLS zaten şifreler; pinning "herhangi bir güvenilir CA yeter" varsayımını "yalnızca beklenen anahtar yeter"e daraltır — bu bir integrity/MITM-direnci kontrolüdür.', no: 'İpucu: trafik zaten TLS ile şifreli. Pinning şifrelemeyi değil, kabul edilen anahtar kümesini değiştirir.' },
+      { q: 'Pinning neden tek başına mutlak bir koruma değildir?', opts: ['Çünkü TLS\'i zayıflatır', 'Çünkü pin karşılaştırması istemci kodundadır; istemci tümüyle ele geçerse kontrol de ele geçer', 'Çünkü sunucu pinning\'i kapatabilir'], answer: 'Çünkü pin karşılaştırması istemci kodundadır; istemci tümüyle ele geçerse kontrol de ele geçer',
+        ok: 'Doğru. Kontrol istemci tarafındaki bir karşılaştırmadır; cihazın tam kontrolü ele geçmiş bir ortamda kavramsal olarak etkisiz kılınabilir. Bu yüzden derinlemesine savunmanın bir katmanıdır.', no: 'İpucu: pin karşılaştırması nerede çalışıyor — istemcide mi sunucuda mı?' },
+      { q: 'Pratikte neden tek bir sertifika yerine public key ve bir pinset pinlenir?', opts: ['Daha hızlı olduğu için', 'Sertifika yenilendiğinde anahtar aynı kalabilir ve yedek pin bağlantıyı kilitlenmekten kurtarır', 'Zorunlu olduğu için'], answer: 'Sertifika yenilendiğinde anahtar aynı kalabilir ve yedek pin bağlantıyı kilitlenmekten kurtarır',
+        ok: 'Doğru. Public key pin sertifika rotasyonuna dayanıklıdır; pinset\'teki yedek anahtar, rotasyon sırasında uygulamanın sunucuya hiç bağlanamaması riskini önler.', no: 'İpucu: sertifikalar süreli; yenilenince ne olur? Pinset neden birden çok değer tutar?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Ofansif Modül 16', title: 'Heap grooming ve feng shui', desc: 'Güvenilir sömürü neden deterministik bir heap ister; savunma onu nasıl rastgeleleştirir?', href: 'offensive-heap-grooming.html' },
+  sources: [
+    { href: 'https://cheatsheetseries.owasp.org/cheatsheets/Pinning_Cheat_Sheet.html', text: 'OWASP — Pinning Cheat Sheet' },
+    { href: 'https://mas.owasp.org/MASTG/', text: 'OWASP MASTG', note: 'mobil ağ güvenliği testleri' },
+    { href: 'https://owasp.org/www-project-mobile-app-security/', text: 'OWASP MASVS / MAS projesi' },
+    { href: 'https://academy.8ksec.io/course/practical-mobile-application-exploitation', text: '8kSec — Practical Mobile Application Exploitation', note: 'trafik denetimi, pinning' }
+  ],
+  pageTitle: 'Mobil Trafik ve Pinning'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

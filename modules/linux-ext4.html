@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>ext4 İç Yapısı</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: yoldan veriye akış + extent ağacı */
+.flow4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+@media (max-width: 560px) { .flow4 { grid-template-columns: 1fr 1fr; } }
+.f4 { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 8px; display: grid; gap: 2px; min-width: 0; text-align: center; }
+.f4 b { font-family: var(--f-display); font-size: 13px; } .f4 span { font-size: 11px; color: var(--muted); }
+.f4.hi { border-color: var(--track); background: var(--track-soft); } .f4.hi b { color: var(--track); }
+.detail { margin-top: 12px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); overflow: hidden; }
+.detail-h { font-family: var(--f-mono); font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); padding: 7px 10px; border-bottom: 1px solid var(--line); background: var(--sunk); }
+.drow { display: grid; grid-template-columns: 150px 1fr; gap: 8px; padding: 6px 10px; border-top: 1px solid var(--line); font-size: 12.5px; min-width: 0; }
+.drow:first-of-type { border-top: none; }
+.drow .dk { font-family: var(--f-mono); font-size: 12px; color: var(--muted); } .drow .dv { font-family: var(--f-mono); overflow-wrap: anywhere; }
+.drow.hi { background: var(--track-soft); } .drow.hi .dv { color: var(--track); font-weight: 700; }
+.blocks { display: flex; flex-wrap: wrap; gap: 5px; padding: 10px; }
+.blk { border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font-family: var(--f-mono); font-size: 11px; background: var(--sunk); min-width: 54px; text-align: center; }
+.blk.data { border-color: var(--track); background: var(--track-soft); color: var(--track); }
+.blk.jrn { border-color: var(--warn); background: var(--warn-soft); color: var(--warn); }
+.ext-tree { padding: 10px; display: grid; gap: 8px; }
+.ext-node { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-family: var(--f-mono); font-size: 12px; background: var(--sunk); }
+.ext-node.root { border-color: var(--track); background: var(--track-soft); }
+.ext-leaf { margin-left: 18px; border-left: 2px solid var(--line); padding-left: 12px; display: grid; gap: 6px; }
+.ext-rec { border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font-family: var(--f-mono); font-size: 11.5px; background: var(--surface); min-width: 0; overflow-wrap: anywhere; }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'linux',
+  crumbs: 'linux › ext4 › modül 9',
+  eyebrow: 'Modül 9 · Linux · Dosya sistemi',
+  titleHTML: 'Bir isim veriye nasıl ulaşır? <code>ext4</code> iç yapısı',
+  lede: 'Bir dosyanın adını yazarsın; çekirdek birkaç katman inip diskteki baytlara ulaşır. Bu modülde dizin girdisinden (directory entry) düğüme (inode), oradan uzam ağacına (extent tree) ve veri bloklarına kadar yolu adım adım izleyecek, sonra günlüklemenin (journaling) çökmelere karşı dosya sistemini nasıl koruduğunu göreceksin.',
+  meta: ['~18 dk', 'ön koşul: VFS, inode kavramı', 'bağlam: ext4'],
+  intuition: {
+    paras: [
+      'VFS modülünde bir düğümün (inode) dosyanın üst verisini (metadata) tuttuğunu gördük: boyut, sahip, izinler ve verinin nerede olduğu. ext4, bu düğümü ve veriyi diskte nasıl düzenlediğini belirleyen somut bir dosya sistemidir. Disk, eşit boyutlu <strong>blok gruplarına (block groups)</strong> bölünür; her grup kendi düğüm tablosunu ve veri bloklarını taşır.',
+      'ext4\'ün en önemli yeniliği <strong>uzam (extent)</strong> kavramıdır. Eski ext2/ext3 her veri bloğunu tek tek bir blok eşlemesinde (block map) listelerdi; büyük dosyalarda bu dolaylı bloklara (indirect blocks) ve yavaşlığa yol açardı. ext4 ise "mantıksal blok 0\'dan başla, diskte N. bloktan itibaren ardışık M blok" diyen uzam kayıtları tutar — ardışık (contiguous) veriyi birkaç kayıtla ifade eder.'
+    ],
+    ideas: [
+      { b: 'İsim ayrı, düğüm ayrı', span: 'Dizin girdisi (directory entry) yalnızca "isim → düğüm numarası" eşlemesidir. Düğüm numarası (inode number) dosyanın kimliğidir.' },
+      { b: 'Uzam = aralık', span: 'Bir uzam (extent) ardışık blok aralığını tek kayıtla anlatır; büyük dosyalar birkaç uzamla ifade edilir.' },
+      { b: 'Önce günlüğe', span: 'Günlükleme (journaling) üst veri değişikliklerini önce bir günlüğe yazar; çökme olursa yeniden oynatılarak (replay) tutarlılık korunur.' }
+    ]
+  },
+  lab: {
+    intro: 'Bir dosyanın adından içeriğine ulaşıyoruz. Üstte dört aşamalı yol (dizin girdisi → düğüm → uzam ağacı → veri), altta o aşamanın ayrıntısı. Son adımlarda büyük dosyada uzam ağacının derinleşmesini ve bir yazmanın önce günlüğe gidişini izle.',
+    codeLabel: 'okuma yolu', cmd: 'cat /tmp/ext4demo.txt',
+    foot: 'Düğüm ve blok numaraları örnektir (gerçek stat çıktısı aşağıda). ← → ile ilerleyebilirsin.',
+    code: [
+      { t: '<span class="cm"># 1) isim -> dizin girdisinde cozulur</span>' },
+      { t: 'open(<span class="s">"/tmp/ext4demo.txt"</span>)' },
+      { t: '<span class="cm"># 2) dugum (inode 950451) okunur</span>' },
+      { t: '<span class="cm"># 3) dugumun uzam agaci gezilir</span>' },
+      { t: '<span class="cm"># 4) uzamin gosterdigi bloklardan veri</span>' },
+      { t: 'read(fd, buf, n)   <span class="cm">// bloklar -> buf</span>' }
+    ],
+    steps: [
+      { pc: 1, stage: 0, title: 'İsim → düğüm numarası',
+        text: 'Çekirdek /tmp dizininin düğümünü okur ve girdilerinde "ext4demo.txt" adını arar. Dizin (directory) aslında bir "isim → düğüm numarası" tablosudur; büyük dizinlerde bu arama bir HTree (karma ağaç) ile hızlandırılır. Eşleşme: düğüm 950451.',
+        detail: { h: 'Dizin girdileri · /tmp', rows: [
+          { k: 'notlar.md', v: '→ inode 950120' },
+          { k: 'ext4demo.txt', v: '→ inode 950451', hi: true },
+          { k: 'build/', v: '→ inode 948003 (dizin)' }
+        ] } },
+      { pc: 2, stage: 1, title: 'Düğüm (inode) okunur',
+        text: 'Düğüm numarası, bulunduğu blok grubundaki düğüm tablosunda (inode table) bir satıra denk gelir. Düğüm; boyutu, sahibini, izinleri ve verinin yerini tutar. ext4\'te verinin yeri, düğümün içindeki 60 baytlık <code>i_block</code> alanına gömülü bir uzam ağacının köküdür.',
+        detail: { h: 'inode 950451', rows: [
+          { k: 'mode', v: '0644 (-rw-r--r--)' },
+          { k: 'size', v: '21 bayt' },
+          { k: 'blocks', v: '8 × 512 = 1 blok (4 KiB)' },
+          { k: 'i_block[]', v: 'uzam ağacı kökü →', hi: true }
+        ] } },
+      { pc: 3, stage: 2, title: 'Uzam ağacı (küçük dosya)',
+        text: 'Küçük dosyada uzam ağacı tek düzeydir: düğümün içindeki başlık (<code>eh_magic=0xF30A</code>) + tek bir uzam kaydı. Kayıt diyor ki: "mantıksal blok 0\'dan başla, diskte fiziksel blok 230144\'ten itibaren 1 blok." Dolaylı blok yok, ek okuma yok.',
+        tree: { root: 'uzam başlığı · eh_entries=1 · eh_depth=0', leaves: [
+          'uzam: mantıksal 0 → fiziksel 230144, uzunluk 1'
+        ] } },
+      { pc: 5, stage: 3, title: 'Veri blokları',
+        text: 'Uzamın gösterdiği fiziksel bloktan veri okunur ve kullanıcının tamponuna (buffer) kopyalanır. 21 baytlık dosya tek 4 KiB\'lik bloğa sığar; gerisi kullanılmaz. İşte adımız sonunda diske indi.',
+        blocks: { label: 'Fiziksel bloklar (grup #7)', items: [
+          { n: '230142', c: '' }, { n: '230143', c: '' }, { n: '230144', c: 'data', t: '"merhaba\\next4..."' }, { n: '230145', c: '' }
+        ] } },
+      { pc: 0, stage: 2, title: 'Büyük dosya: ağaç derinleşir',
+        text: 'Dosya büyüyüp parçalanınca uzamlar düğümün içine sığmaz. ext4 o zaman çok düzeyli bir uzam ağacı kurar: düğümdeki kök artık iç düğümlere (index), onlar da yaprak uzamlara işaret eder. Yine de eski ext3\'ün tek tek blok listelemesine göre çok daha az kayıt tutulur.',
+        tree: { root: 'kök · eh_depth=1 · 2 iç düğüm', leaves: [
+          'index → blok 231000 (yaprak)  |  yaprak: 0→500000 uz=1024',
+          'index → blok 231001 (yaprak)  |  yaprak: 1024→712300 uz=2048'
+        ] } },
+      { pc: 0, stage: 1, title: 'Yazma: önce günlüğe (journaling)',
+        text: 'Bir yazma düğümü ve ayırma haritalarını (bitmap) değiştirir. ext4 bu üst veri değişikliklerini önce günlüğe (jbd2) yazar ve "commit" eder; ancak ondan sonra asıl yerlerine uygular. Çökme olursa açılışta günlük yeniden oynatılır (replay): ya işlem tümüyle uygulanır ya hiç — dosya sistemi yarıda kalmış durumda bırakılmaz.',
+        blocks: { label: 'Yazma sırası', items: [
+          { n: '1. journal', c: 'jrn', t: 'üst veri + commit' }, { n: '2. checkpoint', c: 'data', t: 'yerine yaz' }, { n: 'çökme?', c: 'jrn', t: 'replay' }
+        ] } }
+    ],
+    render: function (s, stateEl, u) {
+      var stages = ['Dizin girdisi', 'Düğüm (inode)', 'Uzam ağacı', 'Veri blokları'];
+      var subs = ['isim → numara', 'üst veri', 'blok eşleme', 'disk baytları'];
+      var flow = stages.map(function (t, i) {
+        return '<div class="f4' + (s.stage === i ? ' hi' : '') + '"><b>' + t + '</b><span>' + subs[i] + '</span></div>';
+      }).join('');
+      var detail = '';
+      if (s.detail) {
+        detail = '<div class="detail"><div class="detail-h">' + u.esc(s.detail.h) + '</div>' +
+          s.detail.rows.map(function (r) { return '<div class="drow' + (r.hi ? ' hi' : '') + '"><span class="dk">' + u.esc(r.k) + '</span><span class="dv">' + u.esc(r.v) + '</span></div>'; }).join('') + '</div>';
+      } else if (s.tree) {
+        detail = '<div class="detail"><div class="detail-h">i_block içindeki uzam ağacı</div><div class="ext-tree">' +
+          '<div class="ext-node root">' + u.esc(s.tree.root) + '</div><div class="ext-leaf">' +
+          s.tree.leaves.map(function (l) { return '<div class="ext-rec">' + u.esc(l) + '</div>'; }).join('') + '</div></div></div>';
+      } else if (s.blocks) {
+        detail = '<div class="detail"><div class="detail-h">' + u.esc(s.blocks.label) + '</div><div class="blocks">' +
+          s.blocks.items.map(function (b) { return '<div class="blk ' + (b.c || '') + '">' + u.esc(b.n) + (b.t ? '<br>' + u.esc(b.t) : '') + '</div>'; }).join('') + '</div></div>';
+      }
+      stateEl.innerHTML = '<p class="lab-label">Yoldan veriye</p><div class="flow4">' + flow + '</div>' + detail;
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: diskte bir dosya nasıl durur?",
+    html: `<p class="lead">ext4, bir dosyanın adından içeriğine ulaşmayı birkaç katmanlı bir yapıyla çözer. Bu bölüm diskteki asıl yerleşimi ayrıntılandırır: block group'lar, inode, extent tree ve journaling. Kaynak: Linux kernel ext4 belgeleri.</p>
+
+<h3>1. Disk nasıl bölünür: block group'lar</h3>
+<p>Bir ext4 bölümü eşit boyutlu <strong>block group</strong>'lara ayrılır. Her grup hem veriyi hem de o veriyi yöneten metadata'yı bir arada tutar; böylece ilişkili bloklar diskte yakın durur ve seek azalır. Modern ext4'te <code>flex_bg</code> özelliği birkaç grubun metadata'sını tek yerde toplayarak bunu iyileştirir.</p>
+<div class="deflist">
+<div><dt>superblock</dt><dd>Dosya sisteminin genel bilgisi: toplam inode/block sayısı, block boyutu, feature flag'ler. Grup 0'da asıl kopya, bazı gruplarda yedekleri bulunur.</dd></div>
+<div><dt>group descriptor</dt><dd>Her grubun bitmap ve inode table'ının yerini gösteren tablo.</dd></div>
+<div><dt>block bitmap</dt><dd>Gruptaki her data block'un boş mu dolu mu olduğunu tutan 1 bit/block harita.</dd></div>
+<div><dt>inode bitmap</dt><dd>Gruptaki inode slot'larının boş/dolu haritası.</dd></div>
+<div><dt>inode table</dt><dd>Gruba ait inode'ların asıl dizisi; her inode sabit boyutludur (genelde 256 bayt).</dd></div>
+<div><dt>data blocks</dt><dd>Dosyaların gerçek içeriğinin durduğu bloklar.</dd></div>
+</div>
+
+<h3>2. inode: dosyanın kimliği</h3>
+<p>Bir <strong>inode</strong>, dosyanın adını DEĞİL geri kalan her şeyini tutar: izinler, sahiplik, boyut, timestamp'ler ve verinin nerede olduğu. Ad, directory entry'de tutulur ve bir inode numarasına işaret eder — bu yüzden aynı inode'a birden çok ad (hard link) bağlanabilir.</p>
+<div class="deflist">
+<div><dt>i_mode</dt><dd>Dosya türü (regular/dir/symlink...) ve izin bitleri.</dd></div>
+<div><dt>i_uid / i_gid</dt><dd>Sahip user ve group.</dd></div>
+<div><dt>i_size</dt><dd>Dosya boyutu (bayt).</dd></div>
+<div><dt>timestamps</dt><dd>atime, ctime, mtime ve ext4'te crtime (oluşturma). ext4 nanosaniye çözünürlük ekler.</dd></div>
+<div><dt>i_block[15]</dt><dd>ext2/3'te blok işaretçileri dizisiydi; ext4'te bu 60 baytlık alan extent tree'nin kökünü tutar.</dd></div>
+</div>
+
+<h3>3. extent tree: ext4'ün ext2/3'ten en büyük farkı</h3>
+<p>ext2/3 büyük dosyaları <strong>indirect block</strong> zinciriyle haritalardı: her blok tek tek işaretlenirdi, bu da büyük dosyalarda hem yavaş hem yer israfıydı. ext4 yerine <strong>extent</strong> kullanır — "şu mantıksal bloktan başlayan şu kadar bitişik blok, şu fiziksel adreste" diyen tek bir kayıt. Bitişik büyük bir dosya, binlerce işaretçi yerine tek bir extent'le haritalanabilir.</p>
+<div class="deflist">
+<div><dt>ext4_extent_header</dt><dd>Her düğümün başı: eh_magic (0xF30A), eh_entries, eh_max, eh_depth (0 = leaf).</dd></div>
+<div><dt>ext4_extent (leaf)</dt><dd>Bitişik bir blok aralığını eşler: mantıksal başlangıç, uzunluk (en çok 32768 block), fiziksel başlangıç.</dd></div>
+<div><dt>ext4_extent_idx (internal)</dt><dd>Dosya parçalandıkça ağaç derinleşir; bu düğüm bir sonraki seviyeye işaret eder.</dd></div>
+</div>
+
+<h3>4. Directory: linear vs htree</h3>
+<p>Küçük dizinler, directory entry'lerin basit bir listesidir (<code>ext4_dir_entry_2</code>): her girdi bir ad + inode numarası tutar. Dizin büyüdükçe doğrusal arama yavaşlar; bu yüzden <code>dir_index</code> özelliğiyle ext4 bir <strong>htree</strong> (hashed B-tree) kurar: adın hash'i üzerinden indeksli, neredeyse sabit zamanlı arama. htree kullanıcıya hâlâ sıradan bir dizin gibi görünür.</p>
+
+<h3>5. journaling: çökmeye karşı tutarlılık (jbd2)</h3>
+<p>Bir yazma işlemi birden çok bloğu (bitmap, inode, data) güncellediğinden, tam ortasında elektrik kesilirse dosya sistemi tutarsız kalır. ext4 bunu <strong>journaling</strong> ile çözer: değişiklikler önce bir journal alanına yazılır, oraya tam işlendikten (commit) sonra asıl yerlerine uygulanır (checkpoint). Çökme sonrası açılışta journal tekrar oynatılır (replay); bu yüzden ext4 bölümleri tam fsck gerektirmeden hızlı kurtarılır.</p>
+<div class="deflist">
+<div><dt>journal mode</dt><dd>Hem metadata hem data journal'a yazılır — en güvenli, en yavaş.</dd></div>
+<div><dt>ordered mode</dt><dd>Varsayılan. Yalnızca metadata journal'a yazılır; ama data, metadata commit'inden ÖNCE diske yazılır, böylece bir inode'a çöp/eski data bağlanmaz.</dd></div>
+<div><dt>writeback mode</dt><dd>Yalnızca metadata journal'a; data'nın sırası garanti edilmez — en hızlı, en riskli.</dd></div>
+</div>
+<p>jbd2 (journaling block device), bu mekanizmayı sağlayan ayrı çekirdek katmanıdır ve başka dosya sistemlerince de kullanılabilir.</p>
+
+<h3>6. delayed allocation: yazarken değil, boşaltırken yerleştir</h3>
+<p>ext4, bir yazma geldiğinde block'u hemen ayırmaz; veriyi bir süre page cache'te tutar ve asıl writeback anında tüm parçayı birden görerek <strong>bitişik</strong> yerleştirmeye çalışır. Buna <strong>delayed allocation</strong> (delalloc) denir; fragmentation'ı azaltır ama çökme anında henüz yazılmamış veriyi riske atabilir.</p>
+
+<p style="font-size:14px;color:var(--muted)">Kaynak: <a href="https://docs.kernel.org/filesystems/ext4/" target="_blank" rel="noopener">Linux kernel — ext4 Data Structures and Algorithms</a>.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">ext4, VFS\'nin <code>inode</code> ve <code>file</code> soyutlamalarını kendi disk düzenine bağlar. Bir okumanın çekirdekteki yolu, VFS\'den ext4\'e ve uzam aramasına iner:</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/ext4_lookup" target="_blank" rel="noopener">ext4_lookup()</a><span class="where">fs/ext4/namei.c</span><p>Dizin bloklarında (veya HTree\'de) adı arar, düğüm numarasını bulur.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/ext4_iget" target="_blank" rel="noopener">ext4_iget()</a><span class="where">fs/ext4/inode.c</span><p>Düğüm tablosundan düğümü okur, VFS inode\'unu doldurur.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/ext4_map_blocks" target="_blank" rel="noopener">ext4_map_blocks()</a><span class="where">fs/ext4/inode.c</span><p>Mantıksal bloğu fiziksel bloğa çevirir; uzam tabanlı dosyalarda ext4_ext_map_blocks\'a gider.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/ext4_ext_find_extent" target="_blank" rel="noopener">ext4_find_extent()</a><span class="where">fs/ext4/extents.c</span><p>Uzam ağacında mantıksal bloğu kapsayan uzamı bulur.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/source/fs/jbd2/" target="_blank" rel="noopener">jbd2</a><span class="where">fs/jbd2/</span><p>Yazmada: günlük işlemini (transaction) açar, üst veriyi günlüğe yazar, commit eder.</p></div></li>' +
+      '</ol>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Yapı</th><th>Görevi</th></tr></thead><tbody>' +
+      '<tr><td><b>superblock</b></td><td>Dosya sistemi geneli: blok boyutu, grup sayısı, özellik bayrakları</td></tr>' +
+      '<tr><td><b>blok grubu (block group)</b></td><td>Disk bölümü: düğüm tablosu + veri blokları + bitmap\'ler</td></tr>' +
+      '<tr><td><b>düğüm (inode)</b></td><td>Dosyanın üst verisi + uzam ağacının kökü (i_block)</td></tr>' +
+      '<tr><td><b>uzam (extent)</b></td><td>Ardışık blok aralığı: mantıksal blok → fiziksel blok + uzunluk</td></tr>' +
+      '<tr><td><b>jbd2 günlüğü</b></td><td>Üst veri değişikliklerini atomik yapan günlük (journal)</td></tr>' +
+      '</tbody></table></div>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Dosyanın düğümüne ve bloklarına bak', p: '`stat` düğüm numarasını, boyutu ve kaç 512 baytlık blok kapladığını gösterir. Aşağıdaki çıktı bu konteynerde gerçek alındı.',
+        shells: [{ label: 'terminal · gerçek çıktı', copy: 'printf "merhaba ext4 dunyasi\\n" > ext4demo.txt && stat ext4demo.txt', pre: '<span class="c">$</span> stat ext4demo.txt\n  File: ext4demo.txt\n  Size: 21        Blocks: 8          IO Block: 4096   regular file\nDevice: 254,0   <span class="y">Inode: 950451</span>      Links: 1\nAccess: (0644/-rw-r--r--)  Uid: (0/root)   Gid: (0/root)' }] },
+      { h3: '2. Dosya sistemi tipini doğrula', p: 'Kök dosya sisteminin ext4 olduğunu ve blok boyutunu gör.',
+        shells: [{ label: 'terminal · gerçek çıktı', copy: 'df -T / && stat -f -c "tip=%T blok=%s" /', pre: '<span class="c">$</span> df -T /\nFilesystem   Type  1K-blocks  Used  ...  Mounted on\n/dev/vda     <span class="g">ext4</span>  264212084 ...  /\n<span class="c">$</span> stat -f -c "blok=%s" /\nblok=4096' }] },
+      { h3: '3. Uzam ağacını oku (debugfs)', p: 'debugfs, düğümün uzam kayıtlarını ham olarak gösterir (root ve ham cihaz erişimi gerekir). Aşağısı temsilî bir çıktıdır — kendi makinende `debugfs -R "stat <dosya>" /dev/sdaX` ile deneyebilirsin.',
+        shells: [{ label: 'temsilî çıktı', copy: 'sudo debugfs -R "stat /tmp/ext4demo.txt" /dev/vda', pre: '<span class="c">$</span> sudo debugfs -R "stat &lt;dosya&gt;" /dev/sdaX   <span class="c"># temsilî</span>\nInode: 950451   Type: regular    Size: 21\nEXTENTS:\n(0):230144    <span class="c"># mantıksal 0 → fiziksel blok 230144</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Bir dizin (directory) aslında ne tutar?', opts: ['Dosyaların içeriğini', 'İsim → düğüm numarası eşlemelerini', 'Uzam ağaçlarını'], answer: 'İsim → düğüm numarası eşlemelerini',
+        ok: 'Doğru. Dizin bir "isim → inode" tablosudur; içerik düğümün gösterdiği bloklardadır. Bu yüzden sabit bağ (hard link) aynı düğüme ikinci bir isim verebilir.', no: 'İpucu: "ext4demo.txt" adını arayınca ne buluyoruz — içerik mi, bir numara mı?' },
+      { q: 'ext4 uzamı (extent) eski ext3 blok eşlemesine göre neyi iyileştirir?', opts: ['Şifrelemeyi', 'Ardışık veriyi az kayıtla ifade etmeyi', 'Dosya adı uzunluğunu'], answer: 'Ardışık veriyi az kayıtla ifade etmeyi',
+        ok: 'Doğru. Bir uzam "şu fiziksel bloktan N blok ardışık" der; büyük, ardışık dosyalar birkaç kayıtla anlatılır, dolaylı bloklara gerek kalmaz.', no: 'İpucu: ext3 her bloğu tek tek listeliyordu. Uzam neyi aralık olarak saklıyor?' },
+      { q: 'Günlükleme (journaling) çökme sonrası tutarlılığı nasıl sağlar?', opts: ['Veriyi iki kez yazarak', 'Üst veriyi önce günlüğe yazıp replay ederek', 'Her yazmada yedek alarak'], answer: 'Üst veriyi önce günlüğe yazıp replay ederek',
+        ok: 'Doğru. Değişiklik önce günlüğe yazılıp commit edilir; çökme olursa açılışta yeniden oynatılır (replay) — işlem ya tümüyle uygulanır ya hiç.', no: 'İpucu: "önce günlüğe, sonra yerine" — çökünce günlükle ne yapılır?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Linux Modül 10', title: 'IPC: pipe, socket, paylaşılan bellek', desc: 'Süreçler veriyi birbirine nasıl aktarır? Çekirdek tamponu, soketler ve paylaşımlı bellek.', href: 'linux-ipc.html' },
+  sources: [
+    { href: 'https://www.kernel.org/doc/html/latest/filesystems/ext4/index.html', text: 'ext4 Data Structures (kernel.org)', note: 'resmi disk düzeni' },
+    { href: 'https://man7.org/linux/man-pages/man5/ext4.5.html', text: 'man 5 ext4', note: 'bağlama seçenekleri' },
+    { href: 'https://0xax.gitbooks.io/linux-insides/content/', text: 'linux-insides' },
+    { href: 'https://elixir.bootlin.com/linux/latest/source/fs/ext4/extents.c', text: 'fs/ext4/extents.c', note: 'Elixir' }
+  ],
+  pageTitle: 'ext4 İç Yapısı'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

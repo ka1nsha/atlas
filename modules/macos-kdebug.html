@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Kernel Debugging ve Triage</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: panic log + triage şeridi */
+.plog { background: #0f1115; color: #d8dde6; border-radius: var(--r); font-family: var(--f-mono); font-size: 12px; line-height: 1.55; overflow-x: auto; padding: 10px 12px; }
+.plog .pl { white-space: pre; display: block; padding: 1px 4px; border-radius: 4px; }
+.plog .pl.hot { background: rgba(255,138,128,.16); }
+.plog .pl .sec { color: #8a93a3; }
+.plog .pl .adr { color: #9db1ff; }
+.plog .pl .sym { color: #6fe0b5; }
+.plog .pl .warn { color: #ffd479; }
+.plog .pl .bad { color: #ff8a80; font-weight: 700; }
+.triage { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; margin-top: 12px; }
+@media (max-width: 640px) { .triage { grid-template-columns: 1fr 1fr 1fr; } }
+.ts { border: 1.5px solid var(--line); border-radius: 8px; padding: 7px 6px; text-align: center; font-size: 11px; background: var(--surface); color: var(--muted); min-width: 0; }
+.ts b { display: block; font-family: var(--f-mono); font-size: 10px; }
+.ts.on { border-color: var(--track); background: var(--track-soft); color: var(--track); font-weight: 700; }
+.ts.done { border-color: var(--ok); color: var(--ok); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'macos',
+  crumbs: 'macos › kernel debugging ve triage › modül 23',
+  eyebrow: 'Modül 23 · macOS / iOS · İleri çekirdek güvenliği',
+  titleHTML: 'Çekirdek paniğini çözmek: <code>panic log</code> ve triage',
+  lede: 'Bir çekirdek çöktüğünde geriye bir panic log kalır. Bu modülde o loğu okumayı, adresleri fonksiyon adlarına çevirmeyi (sembolleştirme), kök nedeni tahmin etmeyi ve bir debugger ile doğrulamayı — yani bir güvenlik araştırmacısının günlük triage akışını — adım adım izleyeceksin.',
+  meta: ['~18 dk', 'ön koşul: kalloc (Modül 20), tersine mühendislik', 'bağlam: XNU, KDK, Antid0te izleği'],
+  ethic: '<b>İlke.</b> Bu modül çekirdek çökmelerini <b>anlamayı ve analiz etmeyi</b> öğretir — savunma, bug düzeltme ve araştırma için temel beceri. Çalışır/silahlandırılmış exploit kodu, adres ya da offset içermez; panic log örnekleri temsilîdir.',
+  intuition: {
+    paras: [
+      'Kullanıcı alanında bir program çökünce geriye bir core dump ya da tombstone kalırdı (Linux sinyaller, Android Bionic modülleri). Çekirdek çökünce buna <strong>kernel panic (çekirdek paniği)</strong> denir: çekirdek güvenli şekilde devam edemeyeceğini anlar, durur ve bir <strong>panic log</strong> yazıp yeniden başlar. Bu log, ne olduğunu anlamak için elimizdeki ilk kanıttır.',
+      'Panic log ham adresler içerir; bunları anlamlı fonksiyon adlarına çevirmek için <strong>sembolleştirme (symbolication)</strong> ve Apple\'ın <strong>KDK (Kernel Debug Kit)</strong>\'i gerekir. Bir hipotez kurduktan sonra, çökmeyi bir <strong>debugger (hata ayıklayıcı)</strong> ile — ikinci bir makineden KDP ile ya da Apple Virtualization.framework\'ün GDB stub\'ıyla tek makinede — yeniden üretip doğrularız. Bu döngü, bir çökmeyi kök nedene bağlamanın (root cause analysis) yoludur.'
+    ],
+    ideas: [
+      { b: 'Panic log = ilk kanıt', span: 'Panic string, fault adresi, backtrace (geri iz), register\'lar ve zone bilgisi: çökmenin fotoğrafı.' },
+      { b: 'Sembolleştirme şart', span: 'Ham adresler (0xfffffff0…) KDK ile fonksiyon+offset\'e çevrilmeden log okunamaz.' },
+      { b: 'Debugger ile doğrula', span: 'Hipotezi KDP (iki makine) ya da VM GDB stub (tek makine) ile yeniden üretip kanıtlarsın.' }
+    ]
+  },
+  lab: {
+    intro: 'Bir çekirdek use-after-free\'inden (Modül 20) gelen temsilî bir panic\'i triage edeceğiz: loğu oku → kritik alanları ayır → sembolleştir → kök nedeni tahmin et → debugger ile doğrula → raporla. Sağda panic log ve triage şeridini izle.',
+    codeLabel: 'triage (kavramsal)', cmd: 'macOS panic triage',
+    foot: 'Panic log, adresler ve çıktılar temsilîdir. Somut offset/exploit yoktur.',
+    code: [
+      { t: '<span class="cm"># 1) panic log\'u bul</span>' },
+      { t: 'ls /Library/Logs/DiagnosticReports/*.panic' },
+      { t: '' },
+      { t: '<span class="cm"># 2) KDK ile sembolleştir</span>' },
+      { t: 'lldb -o <span class="s">"target create --arch arm64e kernel.dSYM"</span>' },
+      { t: '' },
+      { t: '<span class="cm"># 3) debugger ile bağlan (VM GDB stub / KDP)</span>' },
+      { t: '(lldb) kdp-remote <span class="s">"localhost:8000"</span>' },
+      { t: '(lldb) <span class="f">bt</span>            <span class="cm"># geri iz</span>' },
+      { t: '(lldb) <span class="f">zprint</span>        <span class="cm"># zone durumu</span>' }
+    ],
+    steps: [
+      { pc: [1,2], title: 'Panic oluşur', stage: 0, hot: 'panic',
+        text: 'Çekirdek bir veri erişim hatası (data abort) yaşar ve güvenle devam edemez: <code>panic()</code> çağrılır. Çekirdek durur, bir panic log yazar ve yeniden başlar. Log diski/NVRAM\'de birikir.',
+        term: ['panic yakalandı → /Library/Logs/DiagnosticReports/*.panic'],
+        note: 'Panic string ilk ipucudur: ne tür bir hata (data abort / page fault) ve hangi CPU.' },
+      { pc: [4,5], title: 'Logu oku: kritik alanlar', stage: 1, hot: 'all',
+        text: 'Panic log beş kritik alan taşır: <strong>panic string</strong> (ne oldu), <strong>fault adresi</strong> (nereye erişilmeye çalışıldı), <strong>backtrace (geri iz)</strong> (hangi çağrı zinciri), <strong>zone bilgisi</strong> (hangi ayırıcı) ve <strong>register</strong>\'lar. Fault adresi <code>0xdeadbeef</code> gibi "işaretlenmiş" bir çöp değer, serbest bırakılmış belleğe erişimin klasik imzasıdır.',
+        term: ['beş alan ayrıldı: panic / fault / backtrace / zone / register'],
+        note: 'Fault adresinin tanınır bir çöp desen olması (poison), bir use-after-free\'i güçlü biçimde işaret eder.' },
+      { pc: [4,5], title: 'Sembolleştirme', stage: 2, hot: 'bt', sym: true,
+        text: 'Backtrace\'teki ham adresler (<code>0xfffffff0…</code>) tek başına anlamsız. KDK ve doğru çekirdek sürümüyle <strong>sembolleştirme</strong> yaparız: her adres <em>fonksiyon + offset</em>\'e döner. Artık zincir okunur: <code>obj_release</code> içinde, <code>my_ioctl</code> tarafından çağrılmış.',
+        term: ['sembolleştirildi: lr adresleri → fonksiyon+offset'],
+        note: 'Sembolleştirme olmadan triage yapılamaz; doğru KDK sürümü (build numarası eşleşmeli) kritiktir.' },
+      { pc: [8,9], title: 'Kök neden hipotezi', stage: 3, hot: 'zone', sym: true,
+        text: 'İpuçlarını birleştir: poison fault adresi + <code>obj_release</code>\'te çökme + zone bilgisinde "freed element" → hipotez: <strong>use-after-free</strong>. Nesne serbest bırakıldı ama bir işaretçi hâlâ ona bakıyordu (Modül 20\'deki kalloc senaryosu).',
+        term: ['hipotez: kalloc.64 nesnesinde use-after-free'],
+        note: 'Zone adı (kalloc.64) nesnenin boyut sınıfını, "freed element" ise serbest bir yuvaya erişildiğini söyler.' },
+      { pc: [7,8], title: 'Debugger ile doğrula', stage: 4, hot: 'reg', sym: true,
+        text: 'Hipotezi kanıtlamak için çökmeyi yeniden üretiriz: ikinci makineden <strong>KDP</strong> ile ya da Apple Virtualization.framework\'ün <strong>GDB stub</strong>\'ıyla tek makinede çekirdeğe bağlanırız. Breakpoint koyar, <code>bt</code> ve <code>zprint</code> ile belleği canlı inceleriz; register\'lar hipotezle tutarlı mı diye bakarız.',
+        term: ['(lldb) kdp-remote bağlandı → bt / zprint ile doğrulandı'],
+        note: 'VM GDB stub, ikinci bir fiziksel makine olmadan çekirdek hata ayıklamayı mümkün kılar — araştırma için büyük kolaylık.' },
+      { pc: [8,9], title: 'Raporla / düzelt', stage: 5, hot: 'none', sym: true,
+        text: 'Kök neden netleşti: sahiplik (ownership) hatası bir nesneyi erken serbest bırakıyor. Düzeltme (işaretçiyi sıfırla / referans say) ya da güvenlik raporu (sorumlu açıklama) ile süreç kapanır. kalloc_type gibi savunmalar (Modül 20) bu sınıfı baştan zorlaştırır.',
+        term: ['kök neden: erken kfree → UAF. Düzeltme + rapor.'],
+        note: 'Triage çıktısı tek cümlede: "hangi nesne, nerede, neden erken serbest kaldı." İyi bir rapor bunu kanıtla gösterir.' }
+    ],
+    render: function (s, stateEl, u) {
+      var bt0 = '0xfffffff007b4a044', bt1 = '0xfffffff007c12120';
+      var rows = [
+        { sec: 'panic', t: '<span class="bad">panic</span>(cpu 2): Kernel data abort (UAF?)' },
+        { sec: 'fault', t: 'Fault address: <span class="bad">0x00000000deadbeef</span>  <span class="sec"># poison değer</span>' },
+        { sec: 'bt', t: 'Backtrace:' },
+        { sec: 'bt', t: s.sym ? '  0  lr: <span class="adr">' + bt0 + '</span> <span class="sym">obj_release+0x44</span>'
+                              : '  0  lr: <span class="adr">' + bt0 + '</span> <span class="sec">???</span>' },
+        { sec: 'bt', t: s.sym ? '  1  lr: <span class="adr">' + bt1 + '</span> <span class="sym">my_ioctl+0x120</span>'
+                              : '  1  lr: <span class="adr">' + bt1 + '</span> <span class="sec">???</span>' },
+        { sec: 'zone', t: 'Zone info: <span class="warn">kalloc.64</span> (<span class="bad">freed element</span>)' },
+        { sec: 'reg', t: 'Registers: x0=0xdeadbeef pc=' + bt0 },
+        { sec: 'ver', t: '<span class="sec">Kernel version: Darwin 23.x (arm64e)</span>' }
+      ];
+      var log = rows.map(function (r) {
+        var hot = (s.hot === 'all' && r.sec !== 'ver') || s.hot === r.sec;
+        return '<span class="pl' + (hot ? ' hot' : '') + '">' + r.t + '</span>';
+      }).join('');
+      var stages = ['panic', 'logu oku', 'sembolleştir', 'hipotez', 'doğrula', 'rapor'];
+      var strip = stages.map(function (name, i) {
+        var cls = i === s.stage ? 'ts on' : (i < s.stage ? 'ts done' : 'ts');
+        return '<div class="' + cls + '"><b>' + (i + 1) + '</b>' + u.esc(name) + '</div>';
+      }).join('');
+      var html = '<p class="lab-label">Panic log (temsilî)</p><div class="plog">' + log + '</div>' +
+        '<div class="triage">' + strip + '</div>';
+      if (s.note) html += '<p class="note" style="margin-top:12px">' + u.esc(s.note) + '</p>';
+      stateEl.innerHTML = html;
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: panic log'tan kök nedene",
+    html: `<p class="lead">Bir çekirdek çöktüğünde elimizde tek bir kanıt kalır: panic log. Bir güvenlik araştırmacısının işi bu ham metni okunur hâle getirmek (symbolication), içindeki ipuçlarını bir kök neden hipotezine bağlamak ve o hipotezi canlı bir debugger ile kanıtlamaktır. Bu bölüm Apple'ın geliştirici belgelerine, Xcode araç man sayfalarına ve Antid0te'un kernel internals eğitim izleğine dayanır; panic log alanları ve adresler temsilîdir.</p>
+
+<h3>1. Panic log anatomisi: çökmenin fotoğrafı</h3>
+<p>Bir user-space process çökünce yalnızca o process ölür ve geriye bir crash report kalır; çekirdek çökünce sistem durur ve geriye bir <strong>panic log</strong> kalır. Bu log, çökme anının dondurulmuş bir fotoğrafıdır: hangi hata, nerede, hangi çağrı zinciriyle. Triage'ın tamamı bu alanları doğru okumakla başlar.</p>
+<div class="deflist">
+<div><dt>panic string</dt><dd>İnsan-okunur ilk satır: hata türü (örn. <code>Kernel data abort</code>, <code>page fault</code>) ve hangi CPU. İlk sınıflandırmayı buradan yaparsın.</dd></div>
+<div><dt>fault address</dt><dd>Çekirdeğin erişmeye çalıştığı ve başarısız olduğu adres. Tanınır bir <strong>poison</strong> deseni (ör. <code>0xdeadbeef</code>, <code>0xdeadbeefdeadbeef</code>) use-after-free'in klasik imzasıdır — serbest bırakılan bellek bilerek bu desenle doldurulur.</dd></div>
+<div><dt>backtrace</dt><dd>Çökme anındaki çağrı zinciri (call chain), ham <code>lr</code> (link register) adresleri olarak. Henüz anlamsız sayılardır; okunur hâle gelmesi için symbolication şarttır.</dd></div>
+<div><dt>register state</dt><dd><code>pc</code>, <code>lr</code>, <code>x0..x30</code> ve <code>sp</code> gibi register'ların çökme anındaki değerleri. Hangi değerin kirli olduğunu (ör. serbest nesne işaretçisi <code>x0</code>'da) gösterir.</dd></div>
+<div><dt>panicked task</dt><dd>Çöktüğü sırada CPU'da çalışan task/thread — hangi alt sistemin veya sürücünün (kext) sorumlu olduğuna dair ilk işaret.</dd></div>
+<div><dt>kernel slide</dt><dd>KASLR'nin açılışta çekirdeği kaydırdığı offset. Log'daki runtime adresleri static adreslere geri çevirmek (symbolication) için bu slide'ı çıkarmak gerekir.</dd></div>
+<div><dt>zone info</dt><dd>Hangi allocator bölgesinin (ör. <code>kalloc.64</code>) ve o bölgede serbest bir element'in mi işin içinde olduğu. UAF hipotezini doğrudan destekleyen alandır (bkz. kalloc modülü).</dd></div>
+</div>
+
+<h3>2. Symbolication: ham adresten fonksiyon adına</h3>
+<p>Backtrace'teki <code>0xfffffff0…</code> adresleri tek başına okunamaz. <strong>Symbolication</strong>, önce kernel slide'ı çıkarıp runtime adresini static adrese indirger, sonra o adresi doğru sürümün sembol tablosuyla <em>fonksiyon + offset</em>'e çevirir. macOS'ta bu dönüşümü yapan temel araç <code>atos</code>'tur.</p>
+<div class="manpage"><div class="ref">1 atos · DESCRIPTION</div><p class="orig">converts numeric addresses to their symbolic equivalents</p><p><code>atos</code>, sayısal adresleri sembolik karşılıklarına çevirir — yani bir backtrace adresini hangi fonksiyonun içine düştüğüne eşler. Girdi olarak ham adresleri ve doğru binary image'ı/slide'ı alır.</p></div>
+<div class="manpage"><div class="ref">1 atos · output</div><p class="orig">include file name and source line number information</p><p>Debug sembolleri (dSYM) mevcutsa çıktı yalnızca fonksiyon adını değil, kaynak dosya adı ve satır numarası bilgisini de içerir. Çekirdek için bu dSYM'leri sağlayan paket <strong>KDK</strong>'dir.</p></div>
+<div class="deflist">
+<div><dt>KDK (Kernel Debug Kit)</dt><dd>Apple'ın belirli bir çekirdek build'i için yayımladığı, sembolize edilmiş çekirdek + dSYM paketi. Symbolication'ın anlamlı olması için KDK'nin build numarasının çöken sisteminkiyle <strong>tam eşleşmesi</strong> gerekir.</dd></div>
+<div><dt>kernel slide'ı geri alma</dt><dd>runtime_addr − kernel_slide = static_addr. Log çoğu zaman slide'ı başlıkta verir; symbolication aracı static adresi KDK sembollleriyle eşler.</dd></div>
+<div><dt>build eşleşmesi</dt><dd>Yanlış KDK ile yapılan symbolication sessizce <em>yanlış</em> fonksiyon adları üretir — en sinsi triage hatalarından biri. Önce build numarası doğrulanır.</dd></div>
+</div>
+
+<h3>3. Kernel debugging: iki makine (KDP) vs tek makine (GDB stub)</h3>
+<p>Panic log statik bir fotoğraftır; hipotezi kanıtlamak için çökmeyi canlı bir debugger altında yeniden üretmek gerekir. Çekirdeği hata ayıklamak user-space'ten farklıdır: debugger'ın çalıştığı ortam ile hata ayıklanan çekirdek ayrı olmalıdır. Klasik yöntem iki makinedir; modern araştırma akışı bunu tek makinede bir VM ile çözer.</p>
+<div class="manpage src-apple"><div class="ref">apple · Antid0te kernel internals</div><p class="orig">Built-in kernel debugging facilities and how to use them effectively</p><p>XNU, gömülü (built-in) çekirdek hata ayıklama olanakları taşır; bunları etkili kullanmak triage'ın temelidir. Klasik kurulum <strong>KDP (Kernel Debugging Protocol)</strong> üzerinden ikinci bir makineden ağ/USB ile çekirdeğe bağlanıp <code>bt</code>, bellek ve register inceleme yapmaktır.</p></div>
+<div class="manpage src-apple"><div class="ref">apple · Antid0te kernel internals</div><p class="orig">Debugging via Apple Virtualization framework using a GDB stub</p><p>İkinci bir fiziksel makine gerektirmeyen modern yol: çekirdeği Apple <strong>Virtualization.framework</strong> içinde bir VM olarak çalıştırıp VM'in sunduğu <strong>GDB stub</strong>'ına lldb/gdb ile bağlanmak. Tek makinede tam çekirdek hata ayıklama sağlar.</p></div>
+<div class="manpage src-docs"><div class="ref">docs · Virtualization · VZVirtualMachine</div><p class="orig">A VZVirtualMachine object emulates a complete hardware machine of the same architecture as the underlying Mac computer. Use the VM to execute a guest operating system</p><p>Virtualization.framework, altındaki Mac ile aynı mimariden (arm64) tam bir donanım makinesini emüle eder ve içinde bir guest işletim sistemi — yani hata ayıklanacak çekirdek — çalıştırır. Araştırmacı bu VM'e bir GDB stub üzerinden bağlanarak breakpoint koyar, belleği ve register'ları canlı inceler.</p></div>
+<div class="deflist">
+<div><dt>KDP (iki makine)</dt><dd>Debug edilen çekirdek bir makinede, lldb başka makinede; ağ (veya USB) üzerinden <code>kdp-remote</code> ile bağlanır. Donanım gerçeğine en yakın ama iki cihaz ister.</dd></div>
+<div><dt>VM GDB stub (tek makine)</dt><dd>Çekirdek bir VM içinde; lldb aynı Mac'te VM'in GDB stub'ına bağlanır. Araştırma için hızlı ve ucuz; snapshot/restore ile tekrarlanabilir deney imkânı verir.</dd></div>
+</div>
+
+<h3>4. Zone/heap inceleme: zprint ve corruption tespiti</h3>
+<p>UAF ve heap taşması gibi hatalarda asıl kanıt allocator'ın durumundadır. Canlı bir debugger altında zone (kalloc bölgeleri) incelenerek hangi bölgenin, hangi element'in ve hangi serbest-liste durumunun söz konusu olduğu görülür.</p>
+<div class="manpage src-apple"><div class="ref">apple · Antid0te kernel internals</div><p class="orig">Kernel heap debugging and visualization techniques</p><p>Çekirdek heap'ini hata ayıklama ve görselleştirme teknikleri, bir çökmeyi belirli bir allocator bölgesine ve nesneye bağlamayı sağlar. <code>zprint</code> bölge başına eleman boyutu, kullanım ve serbest sayıları verir; bir zone'daki anormallik (beklenmedik freed element, bozuk serbest liste) corruption'ın imzasıdır.</p></div>
+<div class="deflist">
+<div><dt>zprint</dt><dd>Zone (kalloc) bölgelerinin durum dökümü: boyut sınıfı, toplam/kullanılan/serbest eleman sayıları. Hangi boyut sınıfında anormallik olduğunu gösterir.</dd></div>
+<div><dt>zone corruption imzası</dt><dd>Serbest bir element'e yapılan yazma, bozuk bir serbest-liste işaretçisi ya da poison deseninin üzerine yazılmış olması — hepsi bellek güvenliği hatasının canlı kanıtıdır.</dd></div>
+</div>
+
+<h3>5. Panic'ten kök nedene: tekrarlanabilir triage</h3>
+<p>İyi triage sezgi değil, tekrarlanabilir bir süreçtir. Aynı adımlar her çökmede uygulanır; çıktı tek bir cümleye iner: <em>hangi nesne, nerede, neden erken serbest kaldı (ya da taştı)</em>.</p>
+<div class="manpage src-apple"><div class="ref">apple · Antid0te kernel internals</div><p class="orig">A repeatable approach for inspection and root cause analysis</p><p>İnceleme ve kök neden analizi için tekrarlanabilir bir yaklaşım: panic log'u oku → kritik alanları ayır → symbolicate et → ipuçlarını bir hipoteze bağla → debugger + zprint ile doğrula → raporla/düzelt. Bu disiplin, bir fuzzer'ın (bkz. fuzzing modülü) ürettiği binlerce çökmeyi "aynı bug mı, kök nedeni ne" diye eleyebilmenin tek yoludur.</p></div>
+<p>Buradaki debugger refleksleri — breakpoint, backtrace, register ve bellek inceleme — user-space'teki tersine mühendislik modülünden (<code>offensive-re</code>) gelir; çekirdek triage, o becerilerin KDK + KDP/VM GDB stub ile çekirdeğe ölçeklenmiş hâlidir. Triage bir silah değil, ham bir çökmeyi ya bir güvenlik düzeltmesine ya da sorumlu bir araştırma bulgusuna dönüştüren köprüdür.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">macOS/iOS çekirdek hata ayıklama, panic altyapısı (<code>osfmk/kern/debug.c</code>), KDP (Kernel Debugging Protocol) ve kullanıcı-alanı araçları (lldb + KDK) üstünde yürür. Tersine mühendislik modülündeki (Ofansif Modül 12) debugger becerileri burada çekirdeğe taşınır.</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Araç</th><th>Ne için</th><th>Ne verir</th></tr></thead><tbody>' +
+      '<tr><td><b>Panic log</b></td><td>Çökme anının fotoğrafı</td><td>Panic string, fault adresi, backtrace, zone, register</td></tr>' +
+      '<tr><td><b>KDK + sembolleştirme</b></td><td>Ham adresleri anlamlandırma</td><td>Adres → fonksiyon+offset (doğru build gerekli)</td></tr>' +
+      '<tr><td><b>KDP (iki makine)</b></td><td>Canlı çekirdek hata ayıklama</td><td>Ağ üzerinden lldb; breakpoint, bellek, register</td></tr>' +
+      '<tr><td><b>Virtualization.framework GDB stub</b></td><td>Tek makinede çekirdek debug</td><td>VM içindeki çekirdeğe GDB/lldb bağlantısı</td></tr>' +
+      '<tr><td><b>zprint</b></td><td>Zone durumu/bozulma tespiti</td><td>Bölge boyutları, eleman sayıları, kalloc.* kullanımı</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px"><strong>Neden güvenlik araştırmasının günlük işi?</strong> Bir fuzzer (Ofansif Modül 11) binlerce çökme üretir; her birini triage edip "aynı bug mı, sömürülebilir mi, kök nedeni ne" sorusunu yanıtlamak bu beceriyle olur. Triage, ham bir çökmeyi ya bir güvenlik düzeltmesine ya da bir araştırma bulgusuna dönüştüren köprüdür.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Panic logları nerede (macOS)', p: 'macOS panic loglarını DiagnosticReports altında tutar; bir çökme sonrası ilk bakılacak yer burasıdır.',
+        shells: [{ label: 'terminal (macOS · temsilî)', copy: 'ls -1 /Library/Logs/DiagnosticReports/*.panic 2>/dev/null; log show --last 1h --predicate "eventMessage CONTAINS \'panic\'"', pre: '<span class="c">$</span> ls /Library/Logs/DiagnosticReports/*.panic\n<span class="c"># Kernel-2026-...-.panic  → panic string + backtrace</span>' }] },
+      { h3: '2. Kullanıcı-alanında triage provası', p: 'Çekirdeğe geçmeden önce aynı refleksi kullanıcı alanında çalış: bir çökmeyi lldb/gdb ile aç, backtrace al, register\'lara bak. Çekirdek triage\'ı bunun KDK + KDP ile ölçeklenmiş hâlidir (Ofansif Modül 12 köprüsü).',
+        shells: [{ label: 'terminal (kendi makinende güvenli)', copy: 'gcc -g -o crash crash.c && lldb ./crash -o run -o bt', pre: '<span class="c">$</span> lldb ./crash -o run -o bt\n<span class="c"># Process stopped: EXC_BAD_ACCESS → bt ile çağrı zinciri</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Bir panic log\'undaki ham backtrace adreslerini okunur hale getiren adım hangisidir?', opts: ['Fuzzing', 'Sembolleştirme (KDK ile)', 'Şifre çözme'], answer: 'Sembolleştirme (KDK ile)',
+        ok: 'Doğru. Sembolleştirme, adresleri doğru build\'in KDK\'siyle fonksiyon+offset\'e çevirir; onsuz backtrace okunamaz.', no: 'İpucu: 0xfffffff0… adresini fonksiyon adına çeviren işlem hangisi?' },
+      { q: 'Fault adresinin <code>0xdeadbeef</code> gibi tanınır bir "poison" değer olması neyi işaret eder?', opts: ['Donanım arızası', 'Serbest bırakılmış belleğe erişim (UAF olasılığı)', 'Ağ hatası'], answer: 'Serbest bırakılmış belleğe erişim (UAF olasılığı)',
+        ok: 'Doğru. Çekirdek serbest kalan belleği tanınır bir desenle doldurur; o desene erişimde çökme, use-after-free\'i güçlü biçimde işaret eder.', no: 'İpucu: çekirdek serbest kalan belleği neden işaretli bir desenle doldurur?' },
+      { q: 'Apple Virtualization.framework\'ün GDB stub\'ı neyi mümkün kılar?', opts: ['İki fiziksel makine olmadan çekirdek hata ayıklama', 'Daha hızlı açılış', 'Kod imzalamayı kapatma'], answer: 'İki fiziksel makine olmadan çekirdek hata ayıklama',
+        ok: 'Doğru. VM içindeki çekirdeğe tek makinede lldb/gdb ile bağlanırsın; klasik KDP iki makine isterdi.', no: 'İpucu: klasik KDP iki makine ister; GDB stub bunu nasıl değiştirir?' }
+    ]
+  },
+  next: { eyebrow: 'İzlek tamam · Çekirdek Atlası', title: 'Başa dön ve derinleş', desc: 'macOS/iOS izleğinin son modülü. Ana sayfadan başka bir izleğe geçebilir ya da ofansif izlekle öğrendiklerini birleştirebilirsin.', href: '../index.html' },
+  sources: [
+    { href: 'https://www.antid0te.com/training/kernel-internals.html', text: 'Antid0te — Kernel Internals', note: 'kernel debugging, VM GDB stub, heap görselleştirme' },
+    { href: 'https://developer.apple.com/documentation/kernel', text: 'Apple — Kernel & KDK', note: 'Kernel Debug Kit, sembolleştirme' },
+    { href: 'https://newosxbook.com/TOC2-2.html', text: 'Levin — OS Internals Cilt II', note: 'panic, çekirdek hata ayıklama' },
+    { href: 'https://github.com/apple-oss-distributions/xnu', text: 'XNU kaynağı', note: 'osfmk/kern/debug.c' }
+  ],
+  pageTitle: 'Kernel Debugging ve Triage'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

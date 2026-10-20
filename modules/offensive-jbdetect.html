@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Jailbreak / Root Tespiti</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: tespit sinyali listesi + istemci-tarafı güven akışı */
+.sig { display: grid; gap: 0; }
+.srow { border: 1.5px solid var(--line); background: var(--surface); padding: 10px 14px; display: flex; justify-content: space-between; gap: 10px; align-items: center; flex-wrap: wrap; min-width: 0; }
+.srow:first-child { border-radius: var(--r) var(--r) 0 0; }
+.srow:last-child { border-radius: 0 0 var(--r) var(--r); }
+.srow + .srow { border-top: none; }
+.srow .sname { font-family: var(--f-mono); font-size: 12.5px; }
+.srow .sname small { display: block; color: var(--muted); font-family: var(--f-display); font-size: 11.5px; margin-top: 2px; }
+.srow .sval { font-family: var(--f-mono); font-size: 11px; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+.sval.clean { background: var(--ok-soft); color: var(--ok); }
+.sval.trip { background: var(--bad-soft); color: var(--bad); }
+.sval.spoof { background: var(--track-soft); color: var(--track); }
+.srow.dim { opacity: .38; }
+.flow { display: grid; gap: 8px; margin-top: 12px; }
+.fstep { border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; font-size: 12.5px; display: flex; gap: 10px; align-items: baseline; }
+.fstep .fn { font-family: var(--f-mono); font-size: 11px; color: var(--track); flex: none; }
+.fstep.on { border-color: var(--track); background: var(--track-soft); }
+.verdict { margin-top: 12px; border-radius: var(--r); padding: 9px 12px; font-size: 13px; font-family: var(--f-mono); }
+.verdict.block { border: 1px solid var(--bad); background: var(--bad-soft); color: var(--bad); }
+.verdict.pass { border: 1px solid var(--ok); background: var(--ok-soft); color: var(--ok); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'offensive',
+  crumbs: 'ofansif › jailbreak/root tespiti › modül 14',
+  eyebrow: 'Ofansif izlek · Modül 14 · İstemci-tarafı güven',
+  titleHTML: '<code>jailbreak/root</code> tespiti neden bir duvar değil?',
+  lede: 'Birçok uygulama "güvenilmeyen ortamda" çalışıp çalışmadığını anlamak için jailbreak/root tespiti yapar. Bu modül o tespitin hangi sinyallere baktığını, neden kaçınılmaz olarak atlatılabildiğini ve bu yüzden neden tek başına değil, katmanlı savunmanın (defense in depth) bir parçası olarak düşünülmesi gerektiğini gösterir. Somut bypass kodu yoktur; odak, savunma mühendisliği dersidir.',
+  meta: ['~15 dk', 'ön koşul: tehdit modeli + sandbox', 'bağlam: kavramsal / savunma'],
+  ethic: '<b>İlke.</b> Bu modül tespit mekanizmalarının <b>mantığını</b> ve sınırlarını anlatır; çalışır bir bypass scripti, araç reçetesi veya belirli bir uygulamaya yönelik talimat <b>içermez</b>. Amaç, istemci-tarafı güvenin neden kırılgan olduğunu kavrayıp daha sağlam (sunucu-tarafı, attestation temelli) savunmalar tasarlamaktır.',
+  intuition: {
+    paras: [
+      'Bir uygulama, kullanıcının cihazını kontrol ettiği bir dünyada çalışır. Jailbreak\'li (iOS) veya root\'lu (Android) bir cihazda, işletim sisteminin normalde garanti ettiği sınırlar — sandbox, kod imzalama, dosya izinleri — gevşemiş ya da tamamen kalkmış olabilir. Uygulama bunu sezip daha temkinli davranmak (ör. hassas işlemi reddetmek) isteyebilir.',
+      'Ama buradaki temel çelişki şudur: tespit kodu, <strong>tespit etmeye çalıştığı ortamın içinde</strong> çalışır. Saldırgan o ortamın tam hâkimidir; dosya sistemini, çağrı yanıtlarını, hatta uygulamanın kendi fonksiyonlarının dönüş değerlerini değiştirebilir. Yani tespit, <strong>client-side</strong> (istemci tarafı) bir kontroldür ve istemci düşmanın elindedir. Bu yüzden soru "tespit atlatılabilir mi" değil, "atlatılması ne kadar pahalı ve biz bunu neyle destekliyoruz"dur.'
+    ],
+    ideas: [
+      { b: 'Güvenilmeyen ortam', span: 'Jailbreak/root, OS\'in sağladığı sınırları zayıflatır; uygulama artık düşman bir zeminde çalışır.' },
+      { b: 'İstemci düşmanın elinde', span: 'Tespit kodu saldırganın kontrol ettiği cihazda koşar; girdileri ve çıktıları değiştirilebilir (client-side trust problemi).' },
+      { b: 'Duvar değil, katman', span: 'Tespit mutlak güvenlik değildir; eforu artıran bir detective/responsive kontroldür. Asıl güven sunucu tarafında ve attestation ile kurulur.' }
+    ]
+  },
+  lab: {
+    intro: 'Aşağıda tipik bir jailbreak/root tespit akışı kavramsal olarak işliyor: uygulama birkaç sinyale bakar, sonra bir karar verir. İkinci turda aynı akış, saldırganın kontrol ettiği bir ortamda nasıl "temiz" görünmeye zorlandığını gösterir. Burada hiçbir gerçek bypass kodu yok — yalnızca istemci-tarafı güvenin neden çöktüğünün mantığı.',
+    codeLabel: 'tespit mantığı (sözde-kod)', cmd: '# jailbreak/root tespiti — kavramsal',
+    foot: 'Gerçek uygulamalar onlarca sinyali birleştirir; ama hepsi aynı zemindedir: saldırganın kontrol ettiği cihaz. Bu yüzden tespit "ne kadar pahalı" sorusudur, "mümkün mü" değil.',
+    code: [
+      { t: '<span class="cm">// istemci tarafında çalışan tespit — kavramsal</span>' },
+      { t: 'func ortamGuvenilir() -> Bool {' },
+      { t: '  if dosyaVar("/bin/bash") { return false }   <span class="cm">// bilinen JB izi</span>', danger: true },
+      { t: '  if yazilabilir("/private") { return false }  <span class="cm">// sistem yolu R/W?</span>', danger: true },
+      { t: '  if supheliDylibYuklu()   { return false }   <span class="cm">// enjekte kütüphane</span>', danger: true },
+      { t: '  if ptraceTakiliyor()     { return false }   <span class="cm">// debugger/hook</span>', danger: true },
+      { t: '  return true' },
+      { t: '}' },
+      { t: 'if !ortamGuvenilir() { hassasIslemiReddet() }  <span class="cm">// karar istemcide</span>' }
+    ],
+    steps: [
+      { i: 0, phase: 'detect', title: 'Dosya/yol izleri',
+        term: ['[kontrol] /bin/bash, /Applications/Cydia.app ...'],
+        text: 'En yaygın sinyal: jailbreak araçlarının bıraktığı bilinen dosya ve yolların varlığını yoklamak. Temiz bir cihazda bu yollar yoktur; jailbreak\'li cihazda tipik olarak vardır. Ama bu yalnızca bir <em>varsayılan</em>: dosyanın adı ve yeri saldırganca bilinir, dolayısıyla gizlenebilir.',
+        sig: 0, verdict: null },
+      { i: 1, phase: 'detect', title: 'Yazılabilir sistem yolları',
+        term: ['[kontrol] /private yazılabilir mi?'],
+        text: 'İkinci sinyal: normalde salt-okunur olan sistem bölümlerine yazılabiliyor mu? Jailbreak çoğu zaman kök dosya sistemini yeniden bağlar (remount). Yine de bu, ortamın bir <em>yan etkisini</em> ölçer — doğrudan "jailbreak var" demez ve taklit edilebilir.',
+        sig: 1, verdict: null },
+      { i: 2, phase: 'detect', title: 'Şüpheli dylib / enjekte kod + ptrace',
+        term: ['[kontrol] yüklü kütüphaneler taranıyor', '[kontrol] ptrace / anti-debug'],
+        text: 'Daha derin sinyaller: sürece enjekte edilmiş bilinen kütüphaneler (ör. hooking framework\'leri), beklenmeyen semboller, ya da sürece bir debugger\'ın takılı olup olmadığı (ptrace). Bunlar tespiti zorlaştırır ama hepsi hâlâ <em>aynı süreç içinde</em>, yani saldırganın erişebildiği bellekte çalışır.',
+        sig: 2, verdict: null },
+      { i: 3, phase: 'detect', title: 'Karar: istemcide verilir',
+        term: ['[karar] ortamGuvenilir() = false', '[eylem] hassas işlem reddedildi'],
+        text: 'Sinyaller birleşir ve uygulama bir karar verir. Temiz cihazda akış "güvenilir" döner. Dikkat: bu kararın kendisi de istemcide, yani saldırganın kontrol ettiği bellekte hesaplanır. İşte kırılma noktası tam burasıdır.',
+        sig: 3, verdict: 'block' },
+      { i: 4, phase: 'bypass', title: 'Aynı akış, düşman zeminde',
+        term: ['[ortam] dosya varlığı sorgusu → "yok" yanıtı', '[ortam] ptrace sorgusu → "takılı değil"', '[karar] ortamGuvenilir() → true (zorlandı)'],
+        text: 'Saldırgan tespit kodunu değiştirmez bile; <em>altındaki ortamı</em> değiştirir. Dosya varlığı sorgusu "yok" yanıtı verecek şekilde, fonksiyon dönüşü <code>true</code> olacak şekilde çalışma zamanında yönlendirilebilir (runtime instrumentation — kavramsal). Kod aynı kaldı; yanıtları değişti. Bu yüzden istemci-tarafı tespit mutlak değildir.',
+        sig: -1, verdict: 'pass' }
+    ],
+    render: function (s, stateEl, u) {
+      var SIGS = [
+        ['dosyaVar("/bin/bash")', 'bilinen jailbreak izi'],
+        ['yazilabilir("/private")', 'sistem yolu R/W?'],
+        ['supheliDylib + ptrace', 'enjekte kod / debugger'],
+        ['ortamGuvenilir() kararı', 'istemcide hesaplanır']
+      ];
+      var bypass = (s.phase === 'bypass');
+      var rows = SIGS.map(function (sg, k) {
+        var state, cls;
+        if (bypass) { state = 'spoof'; cls = 'spoof'; }
+        else if (k < s.sig) { state = 'tripped'; cls = 'trip'; }
+        else if (k === s.sig) { state = 'tripped'; cls = 'trip'; }
+        else { state = '—'; cls = 'clean'; }
+        var label = bypass ? 'yanıt sahte' : (k <= s.sig ? '✗ tetiklendi' : '◦ bekliyor');
+        var dim = (!bypass && k > s.sig) ? ' dim' : '';
+        return '<div class="srow' + dim + '"><div class="sname">' + u.esc(sg[0]) + '<small>' + u.esc(sg[1]) + '</small></div>' +
+          '<span class="sval ' + cls + '">' + u.esc(label) + '</span></div>';
+      }).join('');
+      var flow = bypass
+        ? '<div class="flow">' +
+            '<div class="fstep on"><span class="fn">1</span>uygulama ortamı sorgular (kod değişmedi)</div>' +
+            '<div class="fstep on"><span class="fn">2</span>saldırganın kontrol ettiği ortam sahte yanıt döner</div>' +
+            '<div class="fstep on"><span class="fn">3</span>karar <code>true</code>\'ya zorlanır → kontrol atlanır</div>' +
+          '</div>'
+        : '<div class="flow">' +
+            '<div class="fstep' + (s.sig >= 0 ? ' on' : '') + '"><span class="fn">1</span>uygulama sinyalleri tek tek yoklar</div>' +
+            '<div class="fstep' + (s.sig >= 3 ? ' on' : '') + '"><span class="fn">2</span>sinyaller birleşip bir karara dönüşür</div>' +
+            '<div class="fstep"><span class="fn">3</span>karar istemcide verilir ← kırılma noktası</div>' +
+          '</div>';
+      var verdict = '';
+      if (s.verdict === 'block') verdict = '<div class="verdict block">SONUÇ: ortam güvenilmez → hassas işlem reddedildi</div>';
+      else if (s.verdict === 'pass') verdict = '<div class="verdict pass">SONUÇ: "temiz" → kontrol atlatıldı (kod değil, ortam değişti)</div>';
+      stateEl.innerHTML =
+        '<p class="lab-label">' + (bypass ? 'Düşman zeminde: yanıtlar sahte' : 'Tespit sinyalleri') + '</p>' +
+        '<div class="sig">' + rows + '</div>' + flow + verdict;
+    }
+  },
+  underHood: {
+    heading: 'Kaputun altında: sinyaller ve neden hepsi aynı zeminde',
+    html: '<p class="prose">Tespit sinyalleri çeşitlenir ama ortak bir zayıflıkları vardır: hepsi uygulamanın kendi süreci içinde, yani saldırganın tam erişebildiği bir bellekte çalışır. Aşağıdaki tablo yaygın sinyal sınıflarını ve her birinin neyi ölçtüğünü — ve neden taklit edilebildiğini — özetler.</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Sinyal sınıfı</th><th>Ne ölçer</th><th>Neden kırılgan</th></tr></thead><tbody>' +
+      '<tr><td><b>Dosya/yol varlığı</b></td><td>Bilinen jailbreak/root dosyaları (ör. paket yöneticisi izleri)</td><td>İsim ve yol bilinir; dosya varlığı sorgusu yönlendirilebilir</td></tr>' +
+      '<tr><td><b>Yazılabilir yollar</b></td><td>Normalde salt-okunur sistem bölümlerine yazma</td><td>Ortamın yan etkisi; doğrudan kanıt değil, taklit edilebilir</td></tr>' +
+      '<tr><td><b>Enjekte kütüphane</b></td><td>Sürece yüklü beklenmeyen dylib/so, hooking framework izleri</td><td>Aynı bellekte çalışır; yüklü modül listesi filtrelenebilir</td></tr>' +
+      '<tr><td><b>Anti-debug (ptrace)</b></td><td>Sürece debugger/instrumentation takılı mı</td><td>Syscall yanıtı değiştirilebilir; kontrol istemcide</td></tr>' +
+      '<tr><td><b>Kod imzası / bütünlük</b></td><td>İkilinin değişip değişmediği</td><td>İstemcide doğrulanırsa doğrulama da atlatılabilir</td></tr>' +
+      '<tr><td><b>Sandbox bütünlüğü</b></td><td>Beklenen kısıtların hâlâ yürürlükte olması</td><td>Jailbreak bu kısıtları zaten gevşetir; ölçüm güvenilmezleşir</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px">Sonuç hep aynıdır: her sinyal eforu biraz daha artırır, ama hiçbiri "kesin" değildir çünkü hepsi düşmanın kontrol ettiği zeminde ölçülür. Bu, savunmanın sinyalleri atması gerektiği anlamına gelmez — tersine, <strong>çok sinyalin birleşimi</strong> maliyeti ciddi biçimde yükseltir. Ama güvenin <em>kökü</em> başka yerde olmalıdır.</p>'
+  },
+  deepDive: {
+    heading: 'Derinlemesine: istemci-tarafı güven ve attestation',
+    html: '<p class="lead">Jailbreak/root tespitini doğru konumlandırmak için OWASP\'ın mobil güvenlik standardı MASVS, bu tür kontrolleri ayrı bir kategoride — <strong>MASVS-RESILIENCE</strong> — toplar ve onları net bir dille "ikinci savunma hattı" olarak tanımlar. Buradaki ayrım, bu modülün tüm mesajını taşır: dayanıklılık (resilience) kontrolleri, güvenlik kontrollerinin <em>yerine</em> geçmez; eforu artırır. Bu bölüm o çerçeveye ve istemci-tarafı güvenin neden sunucu-tarafı doğrulama ile desteklenmesi gerektiğine dayanır.</p>' +
+
+      '<h3>1. Tehdit modeli: cihaza tam erişimi olan saldırgan</h3>' +
+      '<p>MASVS-RESILIENCE kontrollerinin varsaydığı tehdit modeli diğer kategorilerden farklıdır: burada saldırgan, uzaktaki bir yabancı değil, <strong>cihazın kendisine ve uygulamaya tam erişimi olan</strong> ve tersine mühendislik araçlarını kullanabilen biridir. Yani savunmanın koştuğu zemin, düşmanın kontrolündedir. Bu varsayım kabul edildiğinde, "tespit atlatılamaz" iddiası baştan anlamsızlaşır — soru eforun ne kadar yükseltildiğidir.</p>' +
+      '<div class="manpage src-docs"><div class="ref">OWASP MASVS · MASVS-RESILIENCE</div><p class="orig">The controls in this category are a second line of defense.</p><p>MASVS, dayanıklılık kontrollerini açıkça <em>ikinci bir savunma hattı</em> (second line of defense) olarak konumlar. Yani jailbreak/root tespiti, kimlik doğrulama veya şifreleme gibi birincil kontrollerin yerini tutmaz; onların üstüne oturan, saldırıyı pahalılaştıran bir katmandır. Birincil güvenlik başka kategorilerde (MASVS-AUTH, MASVS-CRYPTO, MASVS-NETWORK) kurulur.</p></div>' +
+
+      '<h3>2. İstemci-tarafı güven problemi (client-side trust)</h3>' +
+      '<p>Tespitin temel kısıtı mimaridir: kontrol, korumaya çalıştığı ortamın <em>içinde</em> çalışır. Bir fonksiyon "jailbreak var mı?" diye sorduğunda, bu sorunun yanıtını üreten her şey — dosya sistemi, syscall\'lar, hatta fonksiyonun kendi dönüş değeri — saldırganın değiştirebileceği bellekte durur. Dinamik enstrümantasyon (ör. bir hooking framework ile fonksiyon dönüşlerini değiştirmek — bkz. <code>offensive-instrumentation</code>) tam da bunu yapar: kodu değil, kodun gördüğü gerçekliği değiştirir.</p>' +
+      '<div class="deflist">' +
+      '<div><dt>client-side check</dt><dd>Kararın istemcide (cihazda) hesaplandığı kontrol. Hızlı ve çevrimdışı çalışır, ama sonucu saldırganca değiştirilebilir; çünkü hesaplama düşmanın zeminindedir.</dd></div>' +
+      '<div><dt>runtime hooking</dt><dd>Çalışan bir sürecin fonksiyon çağrılarını/dönüşlerini çalışma zamanında araya girip değiştirme (kavramsal). Tespit fonksiyonunun dönüşü <code>true</code>\'ya zorlanırsa, altındaki tüm sinyaller doğru olsa bile karar atlatılır.</dd></div>' +
+      '<div><dt>bar raising</dt><dd>İstemci kontrollerinin asıl değeri: saldırıyı imkânsız değil, <em>pahalı</em> kılmak. Çok sayıda, çeşitli ve obfuscate edilmiş sinyal, otomatik/toplu saldırıların maliyetini yükseltir.</dd></div>' +
+      '</div>' +
+
+      '<h3>3. Neden sunucu-tarafı ve attestation daha güçlü?</h3>' +
+      '<p>İstemci-tarafı güvenin çözümü, güvenin <em>kökünü</em> saldırganın kontrol etmediği bir yere taşımaktır. İki tamamlayıcı yaklaşım vardır:</p>' +
+      '<div class="deflist">' +
+      '<div><dt>server-side validation</dt><dd>Kritik kararı (ör. bir işlemin geçerliliği) sunucuda, saldırganın değiştiremediği bir ortamda vermek. İstemciden gelen her şeyi güvenilmez kabul etmek — güvenlik mühendisliğinin temel ilkesi.</dd></div>' +
+      '<div><dt>hardware-backed attestation</dt><dd>Cihazın bütünlüğü hakkındaki kanıtı, uygulamanın kendi koduyla değil, platformun donanım destekli güven kökü ile üretmek: Android\'de <strong>Play Integrity / Key Attestation</strong> (TEE/StrongBox imzalı), iOS\'ta <strong>App Attest / DeviceCheck</strong> (Secure Enclave destekli). Burada imzayı saldırganın cihazdaki uygulaması değil, ayrı bir güven alanı üretir; bu yüzden basit bir runtime hook ile taklit edilemez.</dd></div>' +
+      '</div>' +
+      '<p class="prose">Attestation da mutlak değildir (donanım güven kökü de araştırma hedefidir), ama güven kökünü uygulama belleğinden alıp ayrı bir güven alanına taşıdığı için istemci-tarafı tespitten kategorik olarak daha güçlüdür. Bu, <code>macos-sep</code> (Secure Enclave) ve <code>android-attestation</code> (Play Integrity, Key Attestation) modülleriyle doğrudan bağlanır.</p>' +
+
+      '<h3>4. Savunmanın dersi: katman olarak kullan, duvar sanma</h3>' +
+      '<p>Doğru zihinsel model şudur: jailbreak/root tespiti bir <strong>detective/responsive</strong> kontroldür — ortamı sezip riski azaltır (ör. ek doğrulama ister, hassas özelliği kısar), ama güvenliğin temeli değildir. Onu bir duvar sanmak tehlikelidir, çünkü atlatıldığında geriye hiçbir şey kalmaz. Katman olarak kurmak ise doğrudur: tespiti <em>sunucu-tarafı doğrulama ve attestation</em> ile birlikte kullanan bir uygulama, tek bir bypass ile çökmez.</p>' +
+      '<div class="manpage src-docs"><div class="ref">OWASP MASVS · RESILIENCE · kapsam</div><p class="orig">Resilience against reverse engineering and tampering.</p><p>Kategorinin adı bile amacını verir: tersine mühendislik ve kurcalamaya karşı <em>dayanıklılık</em>. "Önleme" değil, "dayanıklılık" — yani saldırganın işini zorlaştırıp maliyetini artırma. Bu çerçeveyi kabul etmek, tespiti doğru yere koymak demektir: birincil güvenliğin üstüne eklenen, onu güçlendiren ama onun yerini almayan bir katman.</p></div>' +
+      '<p class="prose">Özetle: istemci-tarafı tespit "mümkün mü" sorusuyla değil, "ne kadar pahalı ve neyle destekleniyor" sorusuyla değerlendirilir. Bir sonraki modül (<code>offensive-mobile-app</code>) aynı istemci-tarafı güven problemini ağ katmanında — trafik araya girme ve certificate pinning — inceliyor.</p>'
+  },
+  quiz: {
+    questions: [
+      { q: 'Jailbreak/root tespiti neden kaçınılmaz olarak atlatılabilir?', opts: ['Kod her zaman hatalıdır', 'Tespit, saldırganın kontrol ettiği ortamın içinde çalışır', 'Şifreleme zayıftır'], answer: 'Tespit, saldırganın kontrol ettiği ortamın içinde çalışır',
+        ok: 'Doğru. İstemci-tarafı (client-side) kontrol, korumaya çalıştığı cihazda koşar; saldırgan dosya yanıtlarını, syscall sonuçlarını, hatta fonksiyon dönüşlerini değiştirebilir. Kod değişmese bile gördüğü gerçeklik değişir.', no: 'İpucu: tespit kodu nerede, kimin kontrol ettiği bellekte çalışıyor?' },
+      { q: 'OWASP MASVS, jailbreak/root tespiti gibi dayanıklılık kontrollerini nasıl konumlar?', opts: ['Birincil güvenlik kontrolü', 'İkinci savunma hattı (eforu artıran katman)', 'Gereksiz ve zararlı'], answer: 'İkinci savunma hattı (eforu artıran katman)',
+        ok: 'Doğru. MASVS-RESILIENCE kontrolleri "second line of defense"tir: kimlik doğrulama/şifreleme gibi birincil kontrollerin yerini tutmaz, onları destekleyip saldırının maliyetini artırır.', no: 'İpucu: tespit, şifreleme ve kimlik doğrulamanın yerine mi geçer, üstüne mi eklenir?' },
+      { q: 'İstemci-tarafı tespitin eksiğini kapatan en sağlam yaklaşım hangisidir?', opts: ['Daha fazla dosya kontrolü', 'Donanım destekli attestation + sunucu-tarafı doğrulama', 'Kodu gizlemek (obfuscation)'], answer: 'Donanım destekli attestation + sunucu-tarafı doğrulama',
+        ok: 'Doğru. Güvenin kökünü uygulama belleğinden alıp ayrı bir güven alanına (Secure Enclave/TEE ile App Attest, Play Integrity) ve sunucuya taşımak, basit bir runtime hook ile taklit edilemez; bu yüzden kategorik olarak daha güçlüdür.', no: 'İpucu: güven kökünü saldırganın değiştiremediği bir yere taşımak için ne gerekir?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Ofansif Modül 15', title: 'Mobil uygulama katmanı: trafik ve pinning', desc: 'Aynı istemci-tarafı güven problemi ağ katmanında: TLS araya girme, certificate pinning ve neden sunucu güveni esastır.', href: 'offensive-mobile-app.html' },
+  sources: [
+    { href: 'https://mas.owasp.org/MASVS/11-MASVS-RESILIENCE/', text: 'OWASP MASVS — RESILIENCE', note: 'dayanıklılık kontrolleri = ikinci savunma hattı' },
+    { href: 'https://mas.owasp.org/MASTG/', text: 'OWASP MASTG', note: 'root/jailbreak tespiti ve bypass dirençliliği test rehberi' },
+    { href: 'https://developer.apple.com/documentation/devicecheck', text: 'Apple — DeviceCheck / App Attest', note: 'Secure Enclave destekli cihaz bütünlüğü' },
+    { href: 'https://developer.android.com/google/play/integrity', text: 'Android — Play Integrity API', note: 'donanım destekli cihaz/uygulama attestation' }
+  ],
+  pageTitle: 'Jailbreak / Root Tespiti'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

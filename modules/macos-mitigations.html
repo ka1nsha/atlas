@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Donanım Korumaları</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: bölge kilit rozeti + saldırı oku */
+.reg-lock { font-family: var(--f-mono); font-size: 10.5px; font-weight: 700; letter-spacing: .04em; }
+.box.good .reg-lock { color: var(--ok); }
+.box.warn .reg-lock { color: var(--warn); }
+.box.hi .reg-lock { color: var(--track); }
+.attempt { margin-top: 12px; border: 1px dashed var(--bad); background: var(--bad-soft); border-radius: var(--r); padding: 8px 10px; font-size: 13px; }
+.attempt b { color: var(--bad); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'macos',
+  crumbs: 'macos › donanım destekli korumalar › modül 21',
+  eyebrow: 'Modül 21 · macOS / iOS · Apple Silicon güvenliği',
+  titleHTML: 'Çekirdek R/W yetmez: <code>KTRR</code> ve PPL',
+  lede: 'Bir saldırgan çekirdek belleğinde keyfi okuma/yazma (arbitrary read/write) elde etse bile Apple Silicon\'da kalıcı kontrol kuramaz. Bu modülde, çekirdek kodunu salt okunur yapan KTRR/CTRR\'yi ve sayfa tablolarını çekirdekten bile koruyan PPL\'yi, bir saldırının bunlara nasıl çarptığını izleyerek göreceksin. ARM64 ve kalloc modüllerinin devamı.',
+  meta: ['~18 dk', 'ön koşul: sanal bellek, çekirdek R/W kavramı', 'bağlam: Apple Silicon'],
+  intuition: {
+    paras: [
+      'Klasik çekirdek sömürüsünde amaç, bir hatadan <strong>keyfi okuma/yazma (arbitrary read/write)</strong> primitifi çıkarmaktır: bununla çekirdek kodunu yamalar, sayfa izinlerini değiştirir ve kalıcı kontrol kurarsın. Apple Silicon bu "son adımı" donanımla keser.',
+      'Fikir şu: en kritik bellek bölgelerini yazılımın — çekirdeğin bile — değiştiremeyeceği hale getirmek. <strong>KTRR/CTRR</strong> çekirdek kodunu açılıştan sonra donanımca salt okunur (read-only) kilitler. <strong>PPL</strong> (Page Protection Layer) sayfa tablolarını ayrı, daha ayrıcalıklı bir yürütme bağlamına taşır; EL1\'deki çekirdek onlara doğrudan yazamaz. Böylece "çekirdekte R/W var" artık "her şeyi yapabilirim" demek olmaktan çıkar.'
+    ],
+    ideas: [
+      { b: 'Kod kilitli', span: 'KTRR/CTRR: çekirdek metni (kernel text) açılıştan sonra donanım register\'larıyla salt okunur; yazma denemesi istisna üretir.' },
+      { b: 'Sayfa tabloları ayrı', span: 'PPL: sayfa tablolarını yalnızca ayrıcalıklı PPL bağlamı değiştirebilir; EL1 çekirdeği bile dışarıda kalır.' },
+      { b: 'Hızlı güvenli geçiş', span: 'GXF (Guarded Exception Levels): çekirdek, PPL\'ye yalnızca denetimli bir giriş/çıkış (genter/gexit) ile geçer, keyfi değil.' }
+    ]
+  },
+  lab: {
+    intro: 'Saldırgan çekirdekte keyfi okuma/yazma elde etti. Şimdi bunu kalıcı kontrole çevirmeye çalışıyor. Her adımda bir bölgeye yazmayı deniyor; sağda bellek bölgelerinin kilit durumunu ve denemenin sonucunu izle.',
+    codeLabel: 'saldırı senaryosu (temsilî)', cmd: 'kernel R/W primitifi',
+    foot: 'Bölge adresleri ve register adları temsilîdir. KTRR Apple A10+/M1+\'da, PPL iOS 12+/Apple Silicon\'da kullanılır.',
+    code: [
+      { t: '<span class="cm">// saldırganın elindeki primitif</span>' },
+      { t: '<span class="t">void</span> <span class="f">kwrite</span>(addr, value);  <span class="cm">// keyfi çekirdek yazma</span>' },
+      { t: '' },
+      { t: '<span class="f">kwrite</span>(kernel_text, patch);   <span class="cm">// 1) kodu yamala?</span>', danger: true },
+      { t: '<span class="f">kwrite</span>(pte_addr, rwx);       <span class="cm">// 2) sayfa iznini çevir?</span>', danger: true },
+      { t: '<span class="f">kwrite</span>(ttbr_page, fake_pt);  <span class="cm">// 3) sayfa tablosu?</span>', danger: true }
+    ],
+    steps: [
+      { title: 'Çekirdek R/W elde edildi', pc: 1,
+        regions: [
+          { n: 'Çekirdek kodu', s: 'kernel text', st: 'locked' },
+          { n: 'Çekirdek verisi', s: 'kernel data', st: 'writable' },
+          { n: 'Sayfa tabloları', s: 'page tables', st: 'locked' },
+          { n: 'Kullanıcı belleği', s: 'user memory', st: 'writable' }
+        ],
+        verdict: { cls: 'breach', txt: 'saldırgan çekirdek belleğini okuyup yazabiliyor' },
+        term: ['kwrite primitifi hazır'],
+        text: 'Saldırgan bir çekirdek hatasından keyfi okuma/yazma çıkardı. Teoride artık çekirdeğin tüm belleğine erişebilir. Ama "yazabilmek" ile "istediğini değiştirebilmek" aynı şey değil: donanım bazı bölgeleri yazılamaz kılar.' },
+      { title: 'Çekirdek kodunu yamalamak', pc: 3, attempt: 'kwrite(kernel_text, patch) — bir sistem çağrısı işleyicisine kendi kodunu yazmaya çalışıyor.',
+        regions: [
+          { n: 'Çekirdek kodu', s: 'KTRR ile kilitli', st: 'target' },
+          { n: 'Çekirdek verisi', s: 'kernel data', st: 'writable' },
+          { n: 'Sayfa tabloları', s: 'page tables', st: 'locked' },
+          { n: 'Kullanıcı belleği', s: 'user memory', st: 'writable' }
+        ],
+        verdict: { cls: 'safe', txt: 'KTRR/CTRR: çekirdek kodu salt okunur → yazma reddedildi' },
+        term: ['kwrite(kernel_text, ...) → engellendi', 'KTRR bölgesi: write fault'],
+        text: 'İlk refleks: çekirdek koduna (kernel text) kendi talimatlarını yazıp sistem çağrılarını ele geçirmek. Ama <strong>KTRR/CTRR</strong> (Kernel Text Read-only Region) açılışta bu bölgeyi donanım register\'larıyla salt okunur (read-only) kilitledi. Donanım, bu adres aralığına yazmayı — çekirdek yapsa bile — reddeder. Kodu yamalamak kapalı.' },
+      { title: 'Sayfa iznini çevirmek', pc: 4, attempt: 'kwrite(pte_addr, rwx) — kod sayfasını yazılabilir+çalıştırılabilir yapmaya çalışıyor.',
+        regions: [
+          { n: 'Çekirdek kodu', s: 'KTRR ile kilitli', st: 'locked' },
+          { n: 'Çekirdek verisi', s: 'kernel data', st: 'writable' },
+          { n: 'Sayfa tabloları', s: 'APRR/SPRR kontrollü', st: 'target' },
+          { n: 'Kullanıcı belleği', s: 'user memory', st: 'writable' }
+        ],
+        verdict: { cls: 'safe', txt: 'APRR/SPRR: izinler donanım register\'ında → doğrudan çevrilemez' },
+        term: ['kwrite(pte, rwx) → etkisiz', 'kod sayfası izni APRR tarafından zorlanıyor'],
+        text: 'İkinci deneme: madem kod salt okunur, kod sayfasının <em>iznini</em> yazılabilir yapıp sonra yazmak. Ama Apple Silicon\'da sayfa izinleri yalnızca sayfa tablosundaki bite bağlı değil: <strong>APRR/SPRR</strong> donanım register\'ları bu izinleri ayrıca zorlar. Çekirdek bu register\'ı keyfi olarak değiştiremez; W^X (aynı anda yaz+çalıştır olmaz) donanımda korunur.' },
+      { title: 'Sayfa tablosunu değiştirmek', pc: 5, attempt: 'kwrite(ttbr_page, fake_pt) — kendi sahte sayfa tablosunu kurmaya çalışıyor.',
+        regions: [
+          { n: 'Çekirdek kodu', s: 'KTRR ile kilitli', st: 'locked' },
+          { n: 'Çekirdek verisi', s: 'kernel data', st: 'writable' },
+          { n: 'Sayfa tabloları', s: 'PPL ile korumalı', st: 'target' },
+          { n: 'Kullanıcı belleği', s: 'user memory', st: 'writable' }
+        ],
+        verdict: { cls: 'safe', txt: 'PPL: sayfa tablolarını yalnızca PPL bağlamı yazabilir → reddedildi' },
+        term: ['kwrite(page_table, ...) → engellendi', 'PPL korumalı sayfa: write fault'],
+        text: 'Son çare: sayfa tablolarını (page tables) doğrudan değiştirip belleğin haritasını kendine göre yeniden çizmek. Ama <strong>PPL</strong> (Page Protection Layer) sayfa tablolarını özel, korumalı sayfalara koyar. Bu sayfalara yalnızca PPL bağlamındaki küçük, denetlenmiş bir kod yazabilir; EL1\'deki çekirdek (ve içine sızmış saldırgan) dışarıda kalır. kwrite burada da tutmaz.' },
+      { title: 'GXF: denetimli geçiş', pc: 5,
+        regions: [
+          { n: 'Çekirdek kodu', s: 'KTRR ile kilitli', st: 'locked' },
+          { n: 'Çekirdek verisi', s: 'kernel data', st: 'writable' },
+          { n: 'Sayfa tabloları', s: 'PPL ile korumalı', st: 'locked' },
+          { n: 'PPL bağlamı', s: 'GXF ile girilir', st: 'hi' }
+        ],
+        verdict: { cls: 'safe', txt: 'PPL\'ye yalnızca genter/gexit ile, sabit giriş noktasından geçilir' },
+        term: ['genter → PPL bağlamı', 'yalnızca onaylı PPL rutinleri sayfa tablosu yazabilir', 'gexit → çekirdek'],
+        text: 'Peki çekirdek sayfa tablolarını hiç mi güncelleyemez? Güncelleyebilir, ama yalnızca <strong>GXF</strong> (Guarded Exception Levels) üzerinden: çekirdek <code>genter</code> ile PPL bağlamına sabit, denetlenmiş bir giriş noktasından geçer, orada küçük doğrulayıcı PPL rutinleri işi yapar, <code>gexit</code> ile döner. Saldırgan keyfi kod çalıştıramadığı için bu kapıyı istediği gibi kullanamaz — yalnızca PPL\'nin izin verdiği, doğrulanmış işlemler geçer.' },
+      { title: 'Sonuç: çıta yükseldi', pc: 1,
+        regions: [
+          { n: 'Çekirdek kodu', s: 'KTRR ile kilitli', st: 'locked' },
+          { n: 'Sayfa tabloları', s: 'PPL ile korumalı', st: 'locked' },
+          { n: 'Çekirdek verisi', s: 'hâlâ yazılabilir', st: 'writable' },
+          { n: 'Kullanıcı belleği', s: 'user memory', st: 'writable' }
+        ],
+        verdict: { cls: 'breach', txt: 'veri hâlâ hedef: saldırı artık veri odaklı (data-only) olmak zorunda' },
+        term: ['kod: yamalanamaz', 'sayfa tabloları: değiştirilemez', 'kalan yüzey: çekirdek veri yapıları'],
+        text: 'Tek bir çekirdek R/W primitifi artık yeterli değil. Kod yamalanamaz, sayfa tabloları değiştirilemez; saldırganın bu korumaları ayrıca yenmesi (ör. PPL\'nin kendisinde bir hata bulması) gerekir. Geriye kalan yüzey çoğunlukla <strong>veri odaklı (data-only)</strong> saldırılardır: kodu değil, çekirdek veri yapılarını (ör. kimlik/yetki alanları) bozmak. Donanım, "her şeye yazabilen" saldırganı "yalnızca veriye dokunabilen" saldırgana indirger — çıta ciddi biçimde yükselir.' }
+    ],
+    render: function (s, stateEl, u) {
+      var map = { locked: 'good', writable: 'warn', target: 'hi', hi: 'hi' };
+      var lockTxt = { locked: '🔒 salt okunur', writable: '✎ yazılabilir', target: '✗ hedef', hi: '→ geçiş' };
+      var boxes = '<p class="lab-label">Çekirdek bellek bölgeleri</p><div class="boxgrid"><div class="boxrow">' +
+        s.regions.map(function (r) {
+          var cls = map[r.st] || '';
+          return '<div class="box ' + cls + '"><b>' + u.esc(r.n) + '</b><span>' + u.esc(r.s) + '</span><span class="reg-lock">' + lockTxt[r.st] + '</span></div>';
+        }).join('') + '</div></div>';
+      var attempt = s.attempt ? '<div class="attempt" id="att"><b>Deneme:</b> ' + u.esc(s.attempt) + '</div>' : '';
+      var verdict = '<div class="read-out"><p class="lab-label" style="margin-bottom:6px">Sonuç</p>' +
+        '<div class="verdict ' + s.verdict.cls + '"><span class="dot"></span><span>' + u.esc(s.verdict.txt) + '</span></div></div>';
+      stateEl.innerHTML = boxes + attempt + verdict;
+      if (s.attempt) ATLAS.flash(document.getElementById('att'), true);
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: donanım çekirdeğe neden güvenmez?",
+    html: `<p class="lead">Apple Silicon'ın temel varsayımı çarpıcıdır: çekirdeğin kendisi ele geçirilmiş olabilir. Bu yüzden en kritik yazma yetkileri yazılımdan alınıp donanıma ya da çekirdekten daha ayrıcalıklı bir bağlama verilir. Bir saldırgan keyfi çekirdek okuma/yazma (kernel arbitrary read/write) elde etse bile kodu yamalayamaz, sayfa izinlerini çeviremez ve sayfa tablolarını değiştiremez. Bu bölüm Apple Platform Security belgesine ve Antid0te Kernel Internals izleğine dayanır.</p>
+
+<h3>1. KTRR / CTRR: çekirdek kodunu donanım kilitler</h3>
+<p>Açılış sırasında çekirdek kodu (kernel text) ve değişmez sabitler belleğe yerleşir. Yerleştikten sonra donanım, bu fiziksel aralığı salt okunur (read-only) olarak mühürler: bellek denetleyicisi (memory controller) o aralığa yapılan her yazmayı reddeder. Araştırmacıların <strong>KTRR</strong> (Kernel Text Read-only Region) ve genişletilmiş hâli <strong>CTRR</strong> (Configurable Text Read-only Region) dediği register'lar budur; Apple bu mekanizmayı <em>Kernel Integrity Protection (KIP)</em> adıyla belgeler.</p>
+<div class="manpage src-apple"><div class="ref">Apple Platform Security</div><p class="orig">Kernel Integrity Protection (KIP) is enabled to help prevent modifications of kernel and driver code.</p><p>KIP, çekirdek ve sürücü kodunun değiştirilmesini engeller. Kritik ayrıntı yazmanın <em>nerede</em> durdurulduğudur: koruma, sayfa tablosundaki bir bit değil, doğrudan bellek denetleyicisidir.</p></div>
+<div class="manpage src-apple"><div class="ref">Apple Platform Security</div><p class="orig">After startup is complete, the memory controller denies writes to the protected physical memory region.</p><p>Açılış bittikten sonra, korunan fiziksel bölgeye yapılan yazmalar donanımca reddedilir. Çekirdek kendi kod sayfasına yazmak istese bile bu istek donanım katmanında düşer.</p></div>
+<p>Peki saldırgan kilidi açamaz mı? Açamaz: KIP'i etkinleştiren donanım açılış bitince <em>kilitlenir</em> ve yeniden yapılandırılamaz. Bu, Linux'taki <code>CONFIG_STRICT_KERNEL_RWX</code> fikriyle aynı amacı taşır ama orada korumayı çekirdeğin kendi MMU ayarları zorlar; burada çekirdeğin ötesindeki bir donanım bloğu zorlar.</p>
+<div class="manpage src-apple"><div class="ref">Apple Platform Security</div><p class="orig">To prevent reconfiguration, the hardware used to enable KIP is locked after the boot process is complete.</p><p>Yeniden yapılandırmayı önlemek için KIP'i etkinleştiren donanım, açılış tamamlandıktan sonra kilitlenir. "Yeniden aç ve yaz" yolu da böylece kapanır.</p></div>
+
+<h3>2. APRR / SPRR: sayfa izinleri register'da zorlanır</h3>
+<p>Madem kod salt okunur, saldırganın bir sonraki refleksi kod sayfasının <em>iznini</em> değiştirmektir. Apple Silicon bunu da zorlaştırır: sayfa izinleri yalnızca sayfa tablosundaki bir bite bağlı değildir. <strong>APRR</strong> (Access Protection Rights Register) ve halefi <strong>SPRR</strong> (Secure Page Rights Register) bir indeks tablosu üzerinden izinleri donanımda yeniden eşler. Böylece W^X (bir sayfa aynı anda hem yazılabilir hem çalıştırılabilir olamaz) kuralı donanımda korunur; bu register JIT gibi meşru durumlarda hızlı izin değişimi için, PPL gibi korumalarda ise izinleri çekirdekten bağımsız dayatmak için kullanılır.</p>
+<div class="deflist">
+<div><dt>APRR / SPRR</dt><dd>Sayfa izinlerini bir register tablosu üzerinden yeniden eşleyen donanım. Sayfa tablosundaki ham izin biti tek başına geçerli değildir; gerçek izin bu tablodan geçer.</dd></div>
+<div><dt>W^X</dt><dd>Write XOR eXecute: bir sayfa ya yazılabilir ya çalıştırılabilir; ikisi birden değil. Donanımda zorlanınca "yaz, sonra çalıştır" saldırısı tek primitifle kurulamaz.</dd></div>
+</div>
+
+<h3>3. PPL: sayfa tablolarını çekirdekten bile ayırır</h3>
+<p>Son ve en güçlü kilit sayfa tablolarının (page tables) kendisidir. Saldırgan onları değiştirebilseydi belleğin haritasını keyfi olarak yeniden çizer, bütün diğer korumaları dolaşırdı. <strong>PPL</strong> (Page Protection Layer), sayfa tablolarını ve imzalanmış kullanıcı kodunu yalnızca kendi ayrıcalıklı bağlamının yazabileceği korumalı sayfalara koyar. EL1'deki çekirdek — ve içine sızmış saldırgan — bu sayfaların dışında kalır.</p>
+<div class="manpage src-apple"><div class="ref">Apple Platform Security</div><p class="orig">only the PPL can alter protected pages containing user code and page tables.</p><p>Korunan sayfaları — kullanıcı kodu ve sayfa tabloları — yalnızca PPL değiştirebilir. Çekirdekteki keyfi yazma primitifi bu sayfalara eriştiğinde yazma başarısız olur.</p></div>
+<p>PPL'nin tasarım hedefi doğrudan bu modülün tehdit modelidir: korumanın bütünü, çekirdek <em>düşmüş</em> olsa bile ayakta kalmalıdır.</p>
+<div class="manpage src-apple"><div class="ref">Apple Platform Security</div><p class="orig">systemwide code integrity enforcement, even in the face of a compromised kernel.</p><p>Sistem genelinde kod bütünlüğü, ele geçirilmiş bir çekirdek karşısında bile zorlanır. "Çekirdekte R/W var" artık "her şeyi yapabilirim" demek değildir.</p></div>
+
+<h3>4. GXF: PPL'ye yalnızca denetimli geçiş</h3>
+<p>Çekirdek sayfa tablolarını hiç mi güncelleyemez? Güncelleyebilir, ama kapıdan değil, turnikeden geçerek. <strong>GXF</strong> (Guarded Exception Feature / Guarded eXecution Feature), EL1 ile PPL arasına sabit, denetlenmiş bir geçiş koyar: çekirdek <code>genter</code> ile PPL bağlamına yalnızca önceden tanımlı giriş noktalarından girer, orada küçük ve doğrulanmış PPL rutinleri işi yapar, <code>gexit</code> ile döner. Saldırgan keyfi kod çalıştıramadığı için bu kapıyı istediği gibi kullanamaz; yalnızca PPL'nin onayladığı, doğrulanmış işlemler geçer.</p>
+<div class="deflist">
+<div><dt>genter / gexit</dt><dd>GXF'in giriş/çıkış komutları. PPL bağlamına yalnızca sabit giriş noktalarından girilir; keyfi bir adrese atlayıp PPL yetkisi kazanmak mümkün değildir.</dd></div>
+<div><dt>GL (Guarded Level)</dt><dd>EL1'in yanındaki, çekirdekten ayrık ayrıcalıklı yürütme seviyesi. PPL kodu burada koşar; normal çekirdek kodu buraya giremez.</dd></div>
+</div>
+
+<h3>5. Birlikte: saldırıyı "data-only"a indirgemek</h3>
+<p>Bu dört kilit üst üste bindiğinde tek bir çekirdek R/W primitifi artık kalıcı kontrole yetmez. Kod KTRR/CTRR ile yamalanamaz, izinler APRR/SPRR ile çevrilemez, sayfa tabloları PPL ile değiştirilemez, PPL'ye geçiş GXF ile denetlenir. Geriye kalan yüzey çoğunlukla <strong>veri odaklı (data-only)</strong> saldırılardır: kodu değil, çekirdek veri yapılarını (ör. kimlik/yetki alanları) bozmak. En yeni nesilde (SPTM/TXM) sayfa tablosu koruması, saldırgan çekirdek yazma yetkisine sahip olup kontrol akışı korumalarını aşsa bile sürdürülecek biçimde tasarlanır.</p>
+<div class="manpage src-apple"><div class="ref">Apple Platform Security</div><p class="orig">attackers have kernel write capabilities and can bypass control flow protections</p><p>SPTM ve TXM, saldırganların çekirdek yazma yeteneğine sahip olduğu ve kontrol akışı korumalarını aştığı senaryoyu bile hesaba katarak sayfa tablolarını korur. Tehdit modeli artık "saldırgan çekirdekte" varsayımıyla başlar — bir sonraki modülün konusu budur.</p></div>`
+  },
+  underHood: {
+    heading: 'Dört donanım kilidi',
+    html: '<p class="prose">Bu korumalar ortak bir fikri paylaşır: en kritik yazma yetkisini yazılımdan alıp donanıma ya da ayrı bir ayrıcalık bağlamına vermek. Böylece bir çekirdek R/W hatası tek başına kalıcı kontrole dönüşemez.</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Koruma</th><th>Neyi korur</th><th>Saldırganı nasıl durdurur</th></tr></thead><tbody>' +
+      '<tr><td><b>KTRR / CTRR</b></td><td>Çekirdek kodu (kernel text)</td><td>Açılıştan sonra donanımca salt okunur; kod yaması (patch) imkansız</td></tr>' +
+      '<tr><td><b>APRR / SPRR</b></td><td>Sayfa izinleri (W^X)</td><td>İzinler donanım register\'ında zorlanır; sayfayı keyfi yaz+çalıştır yapmayı engeller</td></tr>' +
+      '<tr><td><b>PPL</b></td><td>Sayfa tabloları (page tables)</td><td>Yalnızca PPL bağlamı yazabilir; EL1 çekirdeği bile dışarıda</td></tr>' +
+      '<tr><td><b>GXF</b></td><td>PPL\'ye geçiş</td><td>Çekirdek PPL\'ye yalnızca denetimli giriş/çıkış (genter/gexit) ile geçer</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px">Bu, ARM64 modülündeki PAC/PAN/MTE\'nin tamamlayıcısıdır: orada donanım <em>işaretçileri</em> ve <em>bellek erişimini</em> koruyordu; burada donanım <em>çekirdek kodunu ve sayfa tablolarını</em> koruyor. Birlikte, bir saldırganın bir bellek hatasından tam cihaz kontrolüne giden yolunu adım adım kapatırlar — modern iOS sömürülerinin neden onlarca ayrı hata gerektirdiğinin sebebi budur. İleri okuma için <a href="https://www.antid0te.com/training/kernel-internals.html" target="_blank" rel="noopener">Antid0te Kernel Internals</a> izleği (SPTM, TXM, Exclaves) bir sonraki modülde.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Kavramı doğrula: R/W ≠ kontrol', p: 'Tehdit modelini tersine çevir: "çekirdekte yazabiliyorum" varsayımından başla ve her kritik bölgenin neden hâlâ korunduğunu listele. Bu, savunmanın "en az ayrıcalık" (least privilege) ve "derinlemesine savunma" (defense in depth) ilkelerinin donanımdaki karşılığıdır.',
+        shells: [{ label: 'kavram', copy: 'R/W primitifi → hangi bölge hâlâ korunuyor?', pre: '<span class="c"># saldırgan: keyfi çekirdek yazma var</span>\nkod       → <span class="g">KTRR</span>   (yamalanamaz)\nsayfa izni → <span class="g">APRR</span>   (çevrilemez)\nsayfa tbl → <span class="g">PPL</span>    (yazılamaz)\nveri      → <span class="hi">açık</span>   (data-only saldırı)' }] },
+      { h3: '2. Karşılaştır: Linux tarafı', p: 'Linux\'ta benzer fikirler yazılım/donanım karışımıdır: lockdown, CONFIG_STRICT_KERNEL_RWX (çekirdek kodunu salt okunur yapar), ve ARM64\'te PAN. Apple\'ın farkı, bunları donanımda ve çekirdekten bile ayrık bir bağlamda (PPL) zorlamasıdır.',
+        shells: [{ label: 'terminal (Linux)', copy: 'grep -E "STRICT_KERNEL_RWX|STRICT_MODULE_RWX" /boot/config-$(uname -r) 2>/dev/null', pre: '<span class="c">$</span> grep STRICT_KERNEL_RWX /boot/config-$(uname -r)\n<span class="c"># CONFIG_STRICT_KERNEL_RWX=y → çekirdek kodu salt okunur (yazılım)</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'KTRR/CTRR çekirdek kodunu ne zaman salt okunur yapar?', opts: ['Derleme sırasında', 'Açılıştan (kurulumdan) sonra, donanımca', 'Her sistem çağrısında'], answer: 'Açılıştan (kurulumdan) sonra, donanımca',
+        ok: 'Doğru. Açılışta çekirdek metni yerine oturduktan sonra KTRR register\'ları kilitlenir; bundan sonra o aralığa yazma donanımca reddedilir.', no: 'İpucu: kod bir kez belleğe yüklenir; kilit ne zaman "artık değişmez" demeli?' },
+      { q: 'PPL (Page Protection Layer) neyi korur?', opts: ['Çekirdek kodunu', 'Sayfa tablolarını — çekirdekten bile', 'Kullanıcı parolalarını'], answer: 'Sayfa tablolarını — çekirdekten bile',
+        ok: 'Doğru. PPL sayfa tablolarını ayrı bir ayrıcalık bağlamına koyar; EL1 çekirdeği doğrudan yazamaz, yalnızca GXF ile denetimli geçişte PPL rutinleri yazar.', no: 'İpucu: saldırgan bellek haritasını değiştirmek için neye yazmak ister?' },
+      { q: 'Tüm bu korumalar varken, bir çekirdek R/W primitifiyle saldırgana kalan ana yüzey nedir?', opts: ['Çekirdek kodunu yamalamak', 'Veri odaklı (data-only) saldırılar', 'Hiçbir şey, sistem tamamen güvenli'], answer: 'Veri odaklı (data-only) saldırılar',
+        ok: 'Doğru. Kod ve sayfa tabloları kilitli olduğundan saldırgan kodu değil, çekirdek veri yapılarını (yetki/kimlik alanları gibi) bozmaya yönelir. Donanım saldırıyı zorlaştırır ama sıfırlamaz.', no: 'İpucu: kod ve sayfa tabloları yazılamıyor; geriye hangi bölge "yazılabilir" kalıyordu?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · macOS Modül 22', title: 'Yeni güvenlik bileşenleri', desc: 'SPTM, TXM, SK ve Exclaves: en yeni nesil Apple Silicon güvenlik katmanları ve çekirdekle ilişkileri.' },
+  sources: [
+    { href: 'https://www.antid0te.com/training/kernel-internals.html', text: 'Antid0te — Kernel Internals', note: 'KTRR, APRR/SPRR, PPL, GXF' },
+    { href: 'https://support.apple.com/guide/security/welcome/web', text: 'Apple Platform Security', note: 'bellek koruması, PPL' },
+    { href: 'https://newosxbook.com/', text: 'Jonathan Levin — *OS Internals', note: 'XNU çekirdek güvenliği' },
+    { href: 'https://developer.arm.com/documentation/', text: 'ARM Architecture Reference Manual' }
+  ],
+  pageTitle: 'Donanım Korumaları'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

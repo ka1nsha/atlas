@@ -1,0 +1,193 @@
+<title>Çekirdek Atlası</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="assets/site.css">
+
+<div class="wrap">
+  <div class="topbar">
+    <a class="brand" href="index.html">çekirdek<span>/</span>atlas</a>
+    <div class="crumbs">Türkçe · interaktif · kaynak kodlu</div>
+  </div>
+
+  <header class="site-hero">
+    <div class="kicker">Linux · Android · macOS / iOS internals</div>
+    <h1>İşletim sistemlerinin kaputunun altı</h1>
+    <p class="lede">Çekirdeğin nasıl çalıştığını kod örnekleri, adım adım animasyonlar ve gerçek araç çıktılarıyla anlatan Türkçe bir el kitabı. Her modül bir mekanizmayı önce gösterir, sonra kendi makinende denetir. Savunmayı anlamak için saldırıyı da öğreten bir ofansif izlek içerir.</p>
+    <div class="stats">
+      <span class="stat"><b>88</b> modül</span>
+      <span class="stat"><b>5</b> izlek</span>
+      <span class="stat"><b id="doneCount">—</b> yayında</span>
+      <span class="stat">her modül: kod · görsel · araç · quiz</span>
+    </div>
+  </header>
+</div>
+
+<div class="wrap" id="tracks"></div>
+
+<div class="wrap">
+  <div class="foot">
+    <p><b>Nasıl kullanılır.</b> Sıra Linux → Android → macOS; ofansif izlek üçünün üstüne oturur. Yayında olan modüller tıklanabilir; diğerleri yakında. Her modül kendi başına da okunabilir ama kavramlar bir öncekinin üstüne kurulur.</p>
+    <p style="margin-top:10px;font-size:13px">Ofansif içerik yalnızca mekanizmayı ve kamuya açık kavramları öğretir; silahlandırılmış kod içermez ve tüm deneyler kendi/kasıtlı zafiyetli hedeflerde yapılır.</p>
+  </div>
+</div>
+
+<script>
+var MODULES = {
+  linux: {
+    label: "Linux", sub: "Her şeyin temeli. Android ve macOS modülleri buradaki süreç, bellek ve IPC kavramlarına dayanır.",
+    items: [
+      [1, "Süreçler ve fork()", "Süreç yaratma, iki dönüş, copy-on-write, zombi.", "modules/linux-fork.html"],
+      [2, "exec() ve ELF yükleme", "Bir süreç kendini başka bir programa nasıl dönüştürür.", "modules/linux-exec.html"],
+      [3, "Sistem çağrıları", "Kullanıcı alanından (user space) çekirdeğe geçiş, syscall tablosu.", "modules/linux-syscalls.html"],
+      [4, "Sanal bellek ve sayfa tabloları", "Adres çevirisi, 4 seviyeli sayfa yürüyüşü, TLB.", "modules/linux-vm.html"],
+      [5, "brk, mmap ve malloc", "Öbek (heap) nasıl büyür, yonga (chunk) yapısı.", "modules/linux-malloc.html"],
+      [6, "Zamanlayıcı (EEVDF)", "CPU'yu kim ne kadar alır, nice ve öncelik.", "modules/linux-scheduler.html"],
+      [7, "Zaman ve zamanlayıcılar", "jiffies, clocksource/clockevents, hrtimer, NO_HZ tickless.", "modules/linux-time.html"],
+      [8, "Sinyaller", "Asenkron teslim, handler, sigreturn.", "modules/linux-signals.html"],
+      [9, "Dosya tanımlayıcıları ve VFS", "fd → açık dosya → inode katmanları, dup2.", "modules/linux-vfs.html"],
+      [10, "ext4 iç yapısı", "inode, extent ağacı, dizin girdisi, journaling.", "modules/linux-ext4.html"],
+      [11, "IPC: pipe, socket, paylaşılan bellek", "Süreçler arası veri aktarımı.", "modules/linux-ipc.html"],
+      [12, "Thread'ler ve futex", "clone bayrakları, kullanıcı-alanı kilitleri.", "modules/linux-threads.html"],
+      [13, "Senkronizasyon primitifleri", "spinlock, mutex, semaphore, RCU, seqlock, memory barrier.", "modules/linux-sync.html"],
+      [14, "Kesmeler ve aygıt sürücüleri", "IRQ, top/bottom half, karakter aygıtı.", "modules/linux-interrupts.html"],
+      [15, "Açılış süreci", "Firmware'den systemd'ye zincir.", "modules/linux-boot.html"],
+      [16, "Namespace ve cgroup", "Konteynerlerin temeli.", "modules/linux-namespaces.html"],
+      [17, "eBPF ile gözlem", "Çekirdeği canlı izlemek.", "modules/linux-ebpf.html"]
+    ]
+  },
+  android: {
+    label: "Android", sub: "Linux çekirdeğinin üstüne kurulu ayrı bir dünya. Levin'in Android Internals yapısını izler.",
+    items: [
+      [1, "Mimari ve evrim", "Android vs Linux, AOSP, Bionic, HAL, runtime.", "modules/android-arch.html"],
+      [2, "Bölümler ve dosya sistemleri", "A/B slot, dynamic partition, APEX.", "modules/android-partitions.html"],
+      [3, "Açılış süreci", "Boot ROM, bootloader, initramfs.", "modules/android-boot.html"],
+      [4, "init ve Zygote", "system properties, rc, Zygote/USAP, uygulama doğuşu.", "modules/android-zygote.html"],
+      [5, "Servis mimarisi", "Service Manager, system_server, çağrı deseni.", "modules/android-services.html"],
+      [6, "Uygulamaya Linux gözüyle", "/proc, USS/PSS/RSS/VSS, ELF.", "modules/android-proc.html"],
+      [7, "Loglama ve izleme", "logd, statsd, ptrace, eBPF.", "modules/android-logging.html"],
+      [8, "Güç yönetimi", "PowerManagerService, thermal, wakelock.", "modules/android-power.html"],
+      [9, "Bionic derinlemesine", "libc farkları, tombstone, core dump.", "modules/android-bionic.html"],
+      [10, "Paket yönetimi", "APK, installd, PackageManagerService.", "modules/android-packages.html"],
+      [11, "Uygulama anatomisi", "Activity/Service, Looper/Handler/MessageQueue.", "modules/android-app.html"],
+      [12, "Dalvik ve DEX", "DEX formatı, bytecode, DEX çalıştırma.", "modules/android-dex.html"],
+      [13, "ART internals", "OAT/VDEX/ART, AOT, JIT, GC.", "modules/android-art.html"],
+      [14, "Binder derinlemesine", "AIDL, Parcel, kernel sürücüsü, tek kopya (one-copy).", "modules/android-binder.html"],
+      [15, "Yazılım güvenliği", "Linux izinleri, AID, SELinux, seccomp.", "modules/android-selinux.html"],
+      [16, "Donanım destekli güvenlik", "TrustZone, TEE, Titan M.", "modules/android-trustzone.html"],
+      [17, "Kimlik doğrulama ve şifreleme", "Keystore, Gatekeeper, FBE.", "modules/android-crypto.html"],
+      [18, "Bütünlük ve attestation", "Verified Boot, dm-verity, Play Integrity.", "modules/android-attestation.html"],
+      [19, "Rooting ve tehdit modeli", "OEM unlock, Magisk vaka analizi.", "modules/android-rooting.html"],
+      [20, "HAL ve Treble", "HIDL/AIDL HAL, vendor ayrımı.", "modules/android-hal.html"],
+      [21, "Grafik ve giriş mimarisi", "SurfaceFlinger, InputDispatcher.", "modules/android-graphics.html"]
+    ]
+  },
+  macos: {
+    label: "macOS / iOS", sub: "XNU = Mach + BSD + IOKit. Levin'in OS Internals'ı ve Antid0te çekirdek güvenliği izleği.",
+    items: [
+      [1, "XNU genel yapısı", "Mach + BSD + IOKit, Darwin soyağacı.", "modules/macos-xnu.html"],
+      [2, "Mach task, thread ve port'lar", "Süreç kavramının Mach karşılığı, port hakları.", "modules/macos-mach-ports.html"],
+      [3, "Mach-O formatı", "Fat binary, header, load command'ler.", "modules/macos-macho.html"],
+      [4, "dyld ve paylaşılan önbellek", "Program başlangıcı, bind/rebase, shared cache.", "modules/macos-dyld.html"],
+      [5, "GCD ve dispatch", "Blok, kuyruk, dispatch source, QoS.", "modules/macos-gcd.html"],
+      [6, "Bellek: libmalloc ve sıkıştırma", "Nano zone, bölgeler, Jetsam.", "modules/macos-memory.html"],
+      [7, "XPC", "Servisler arası mesajlaşma, domain'ler.", "modules/macos-xpc.html"],
+      [8, "launchd", "PID 1, agent/daemon, plist.", "modules/macos-launchd.html"],
+      [9, "Çekirdek açılışı ve panic", "XNU kaynağı, boot argümanları, panic.", "modules/macos-kernel-boot.html"],
+      [10, "Çekirdek mimarisi", "User/kernel geçişi, syscall ve Mach trap.", "modules/macos-kernel-arch.html"],
+      [11, "Mach zamanlayıcı", "Run queue, task/thread, öncelik.", "modules/macos-scheduler.html"],
+      [12, "Mach sanal bellek", "VM object, pmap, zone allocator, pager.", "modules/macos-vm.html"],
+      [13, "BSD katmanı", "POSIX, süreç yaratma, Mach-O yükleme, sinyal.", "modules/macos-bsd.html"],
+      [14, "Ağ yığını (networking)", "socket, mbuf, protosw, dlil/ifnet, pf, socket filter.", "modules/macos-net.html"],
+      [15, "Dosya sistemleri: VFS ve APFS", "vnode/VOP, container/volume, copy-on-write, snapshot, şifreleme.", "modules/macos-fs.html"],
+      [16, "IOKit ve DriverKit", "I/O Registry, LibKern, sürücü modeli.", "modules/macos-iokit.html"],
+      [17, "Kod imzalama", "İmza formatı, requirement, code directory.", "modules/macos-codesign.html"],
+      [18, "AMFI ve trust cache", "amfid, provisioning profile, doğrulama.", "modules/macos-amfi.html"],
+      [19, "Sandbox", "Profil derleme, container, mac_syscall.", "modules/macos-sandbox.html"],
+      [20, "SIP ve TCC", "Sistem bütünlüğü, gizlilik izinleri.", "modules/macos-sip.html"],
+      [21, "EndpointSecurity", "ES client, NOTIFY/AUTH, es_message, davranışsal denetim.", "modules/macos-endpointsecurity.html"],
+      [22, "Secure Enclave (SEP)", "SEPOS izolasyonu, anahtar yönetimi, biyometri, Data Protection.", "modules/macos-sep.html"],
+      [23, "ARM64 düşük seviye temelleri", "Exception, sayfa tabloları, PAN/PAC/MTE.", "modules/macos-arm64.html"],
+      [24, "Kernel heap ve kalloc", "kalloc zone'ları, UAF/lifetime bug sınıfları.", "modules/macos-kalloc.html"],
+      [25, "Donanım destekli korumalar", "KTRR/CTRR, APRR/SPRR, PPL/GXF.", "modules/macos-mitigations.html"],
+      [26, "Yeni güvenlik bileşenleri", "SPTM, TXM, SK, Exclaves.", "modules/macos-newsec.html"],
+      [27, "Kernel debugging ve triage", "Panic log, Virtualization.framework GDB stub.", "modules/macos-kdebug.html"]
+    ]
+  },
+  offensive: {
+    label: "Ofansif izlek", sub: "Üç platformun üstüne oturan çapraz izlek. Savunmayı anlamak için saldırıyı anlamak. Kavram ve kamuya açık analiz; silahlandırılmış kod yok.",
+    items: [
+      [1, "Saldırgan bakışı ve tehdit modeli", "Saldırı yüzeyi, güven sınırları, STRIDE, hedef seçimi.", "modules/offensive-threat-model.html"],
+      [2, "Bellek güvenliği ihlalleri", "UAF, double-free, OOB, type confusion: bug sınıfları ve savunma.", "modules/offensive-uaf.html"],
+      [3, "Sömürü primitifleri", "Bilgi sızıntısı (info leak), keyfi okuma/yazma, kontrol akışı.", "modules/offensive-primitives.html"],
+      [4, "Korumalar ve neden varlar", "ASLR/KASLR, DEP/NX, canary, PAC, CFI.", "modules/offensive-mitigations.html"],
+      [5, "Korumaları aşma kavramları", "ROP/JOP ve code-reuse mantığı, neden tek koruma yetmez.", "modules/offensive-bypass.html"],
+      [6, "Heap grooming ve feng shui", "Neden güvenilir sömürü deterministik heap ister; randomizasyon savunması.", "modules/offensive-heap-grooming.html"],
+      [7, "Kod imzalama saldırgan gözüyle", "Bir bypass'ın neyi başarması gerekir.", "modules/offensive-codesign.html"],
+      [8, "Sandbox kaçışı kavramları", "Saldırı yüzeyi, IPC yolu.", "modules/offensive-sandbox.html"],
+      [9, "Kullanıcıdan çekirdeğe geçiş", "Kernel saldırı yüzeyi: syscall, IOKit.", "modules/offensive-kernel.html"],
+      [10, "Jailbreak anatomisi", "Güven zinciri, bootrom vs kernel, tethered/untethered.", "modules/offensive-jailbreak.html"],
+      [11, "Tarihsel vakalar (çapraz platform)", "Heartbleed, Dirty COW, Stagefright, checkm8 ve alınan dersler.", "modules/offensive-cases.html"],
+      [12, "Modern iOS zincirleri", "FORCEDENTRY, CVE-2020-27950, mach_portal, Pegasus — kavramsal anatomi.", "modules/offensive-ios-chains.html"],
+      [13, "Zafiyet keşfi: fuzzing", "Bug nasıl bulunur, coverage-guided, sanitizer.", "modules/offensive-fuzzing.html"],
+      [14, "Tersine mühendislik", "Statik/dinamik analiz, disassembly, patch diffing.", "modules/offensive-re.html"],
+      [15, "Dinamik enstrümantasyon (Frida)", "Hook/trace, runtime analiz ve uygulamanın bunu tespiti.", "modules/offensive-instrumentation.html"],
+      [16, "Jailbreak/root tespiti ve bypass", "İstemci-tarafı güvenin sınırı, attestation neden daha güçlü.", "modules/offensive-jbdetect.html"],
+      [17, "Mobil uygulama katmanı", "TLS denetimi, certificate pinning ve güvenli ağ tasarımı.", "modules/offensive-mobile-app.html"]
+    ]
+  },
+  windows: {
+    label: "Windows kernel", sub: "Ayrı bir çekirdek mimarisi. Sürücü modeli, yürütme ve uç nokta savunması (EDR/ETW). Saldırı teknikleri yalnızca kavramsal — savunmayı anlamak için.",
+    items: [
+      [1, "Kernel temelleri", "user/kernel mode, ntoskrnl, HAL, sürücü türleri, IOCTL/IRP.", "modules/win-fundamentals.html"],
+      [2, "Sürücü anatomisi", "DriverObject/DeviceObject, DriverEntry, IRP dispatch, pool bellek.", "modules/win-driver-anatomy.html"],
+      [3, "Yürütme: thread, APC, DPC, IRQL", "System thread, APC/DPC, IRQL merdiveni, syscall/fault yolu.", "modules/win-exec.html"],
+      [4, "Kernel callbacks ve ETW", "Notify routine'ler, ObRegisterCallbacks, ETW telemetrisi.", "modules/win-callbacks.html"],
+      [5, "Rootkit teknikleri (kavramsal)", "BYOVD, DKOM, callback tampering — ve her birinin savunması.", "modules/win-offense.html"],
+      [6, "Savunma: EDR, ETW, tespit", "AV/EPP/EDR/XDR, davranışsal tespit, PPL/HVCI/VBS.", "modules/win-defense.html"]
+    ]
+  }
+};
+
+(function () {
+  var order = ["linux", "android", "macos", "offensive", "windows"];
+  var host = document.getElementById("tracks");
+  var done = 0;
+  order.forEach(function (key) {
+    var T = MODULES[key];
+    var sec = document.createElement("section");
+    sec.className = "track-sec";
+    sec.setAttribute("data-track-color", key);
+    var cards = T.items.map(function (m) {
+      var num = String(m[0]).padStart(2, "0");
+      var href = m[3];
+      if (href) done++;
+      var badge = href
+        ? '<span class="badge b-done">yayında</span>'
+        : '<span class="badge b-soon">yakında</span>';
+      var inner =
+        '<div class="mnum"><span>' + num + "</span>" + badge + "</div>" +
+        "<h3>" + m[1] + "</h3><p>" + m[2] + "</p>";
+      if (href) return '<a class="mcard done" href="' + href + '" style="--track:' + colorFor(key) + '">' + inner + "</a>";
+      return '<div class="mcard soon">' + inner + "</div>";
+    }).join("");
+    sec.innerHTML =
+      '<div class="track-head" style="--track:' + colorFor(key) + '"><span class="tdot"></span>' +
+      "<h2>" + T.label + '</h2><span class="tcount">' + T.items.length + " modül</span></div>" +
+      '<p class="track-sub">' + T.sub + "</p>" +
+      '<div class="mcards">' + cards + "</div>";
+    host.appendChild(sec);
+  });
+  var dc = document.getElementById("doneCount");
+  if (dc) dc.textContent = done;
+
+  function colorFor(k) {
+    var dark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+    var map = dark
+      ? { linux: "#8aa2ff", android: "#4fcfa4", macos: "#b79cff", offensive: "#ff8a80", windows: "#4cc3ec" }
+      : { linux: "#2343c4", android: "#178a5a", macos: "#6b3fd1", offensive: "#b3261e", windows: "#0e7ab0" };
+    return map[k];
+  }
+})();
+</script>

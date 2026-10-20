@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Uygulama Anatomisi</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: yaşam döngüsü merdiveni + MessageQueue */
+.life { display: grid; gap: 4px; }
+.lrow { display: flex; align-items: center; gap: 8px; font-family: var(--f-mono); font-size: 12px; padding: 5px 9px; border-radius: 7px; background: var(--sunk); color: var(--muted); border: 1px solid transparent; }
+.lrow.done { color: var(--fg); }
+.lrow.active { background: var(--track-soft); border-color: var(--track); color: var(--track); font-weight: 700; }
+.lrow .tick { width: 14px; text-align: center; }
+.mq { margin-top: 12px; border: 1.5px solid var(--accent); border-radius: var(--r); background: var(--surface); padding: 10px; }
+.mq .mqh { font-family: var(--f-mono); font-size: 11px; color: var(--accent); font-weight: 700; margin-bottom: 6px; }
+.mqitems { display: grid; gap: 4px; }
+.mqmsg { font-family: var(--f-mono); font-size: 11.5px; padding: 4px 8px; border-radius: 6px; background: var(--accent-soft); color: var(--accent); }
+.mqmsg.run { background: var(--track-soft); color: var(--track); font-weight: 700; }
+.mq .empty { font-size: 12px; color: var(--muted); }
+.looper { font-family: var(--f-mono); font-size: 11px; color: var(--muted); margin-top: 6px; display: flex; align-items: center; gap: 6px; }
+.looper.spin b { color: var(--track); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'android',
+  crumbs: 'android › uygulama anatomisi › modül 11',
+  eyebrow: 'Modül 11 · Android · Uygulama anatomisi',
+  titleHTML: 'Bir uygulama içeride neye benzer?',
+  lede: 'Bir Android uygulaması dört bileşen türünden (Activity, Service, BroadcastReceiver, ContentProvider) kurulur; hepsi bir yaşam döngüsüyle (lifecycle) yönetilir ve ana iş parçacığında (main thread) dönen bir olay döngüsü (event loop) üzerinde çalışır. Bu modül bir uygulamanın doğuşunu ve kalbindeki Looper/Handler/MessageQueue döngüsünü gösterir.',
+  meta: ['~15 dk', 'ön koşul: Zygote, Binder', 'bağlam: AOSP'],
+  intuition: {
+    paras: [
+      'Bir uygulama tek bir "main() çalıştır ve bitir" programı değildir. İşletim sistemi (aslında <code>system_server</code>\'daki ActivityManager) uygulamanın bileşenlerini gerektikçe oluşturur, duraklatır ve yok eder. Bu geçişlere <strong>yaşam döngüsü (lifecycle)</strong> denir: <code>onCreate → onStart → onResume</code> ile öne gelir, <code>onPause → onStop</code> ile arkaya çekilir.',
+      'Uygulamanın ana iş parçacığı (main thread, UI thread) hiç bitmeyen bir <strong>olay döngüsünde (event loop)</strong> döner. Bir <strong>Looper</strong> bir <strong>MessageQueue</strong>\'yu sürekli yoklar; dokunma, çizim, zamanlayıcı ve diğer olaylar bu kuyruğa <strong>Message</strong> olarak girer, bir <strong>Handler</strong> onları tek tek işler. Ağır işi bu döngüde yaparsan arayüz donar (ANR).'
+    ],
+    ideas: [
+      { b: 'Dört bileşen', span: 'Activity (ekran), Service (arka plan işi), BroadcastReceiver (olay aboneliği), ContentProvider (veri paylaşımı). Hepsi Manifest\'te bildirilir.' },
+      { b: 'Yaşam döngüsü senin değil', span: 'Bileşenleri sen new ile yaratmazsın; sistem çağırır. Sen yalnızca onCreate/onResume gibi geri çağrıları (callback) doldurursun.' },
+      { b: 'Tek bir olay döngüsü', span: 'Looper + MessageQueue + Handler, tüm UI olaylarını tek iş parçacığında sıraya sokar. Ağır iş ayrı bir thread/Service\'e gitmeli.' }
+    ]
+  },
+  lab: {
+    intro: 'Kullanıcı simgeye dokunur. Sağda uygulamanın Zygote\'tan doğuşunu, Activity yaşam döngüsünü ve ana iş parçacığının olay döngüsüne girip bir dokunma olayını işleyişini izle.',
+    codeLabel: 'uygulama yaşam döngüsü (temsilî)', cmd: 'launcher → app',
+    foot: 'PID\'ler ve loglar temsilîdir. Gerçek akış: ActivityThread + Looper (AOSP).',
+    code: [
+      { t: '<span class="cm">// ActivityThread — uygulama sürecinin girişi</span>' },
+      { t: '<span class="k">public static void</span> <span class="f">main</span>(String[] args) {' },
+      { t: '    Looper.<span class="f">prepareMainLooper</span>();' },
+      { t: '    <span class="t">ActivityThread</span> t = <span class="k">new</span> ActivityThread();' },
+      { t: '    t.<span class="f">attach</span>(...);   <span class="cm">// AMS\'e Binder ile bağlan</span>' },
+      { t: '    <span class="cm">// → Application.onCreate, Activity.onCreate...</span>' },
+      { t: '    Looper.<span class="f">loop</span>();   <span class="cm">// olay döngüsü başlar</span>' },
+      { t: '}' }
+    ],
+    steps: [
+      { pc: 4, title: 'Süreç Zygote\'tan doğar', term: ['AMS: start "com.ornek.app" → Zygote fork', 'app pid 4120: ActivityThread.main()'],
+        text: 'Kullanıcı simgeye dokunur. ActivityManager, Zygote\'a yeni bir süreç fork ettirir (fork/Zygote modülü). Süreç <code>ActivityThread.main()</code> ile başlar — uygulama kodunun gerçek giriş noktası (entry point).',
+        born: true, phase: -1, looper: false, mq: [] },
+      { pc: 5, title: 'Application kurulur', term: ['app: Application.onCreate()'],
+        text: 'ActivityThread, AMS\'e Binder ile bağlanır ve önce <code>Application</code> nesnesini kurar (<code>onCreate</code>). Burada süreç geneli başlatma yapılır; henüz ekran yok.',
+        born: true, phase: 0, looper: false, mq: [] },
+      { pc: 5, title: 'Activity öne gelir', term: ['app: MainActivity.onCreate()', 'app: onStart() → onResume()'],
+        text: 'AMS hangi Activity\'nin açılacağını söyler. Sistem sırasıyla <code>onCreate</code> (arayüzü kur), <code>onStart</code> (görünür ol), <code>onResume</code> (ön planda, etkileşime hazır) çağırır. Bu geri çağrıları (callback) sen doldurursun; çağıran sistemdir.',
+        born: true, phase: 3, looper: false, mq: [] },
+      { pc: 7, title: 'Olay döngüsü döner', term: ['app: Looper.loop() — hazır'],
+        text: '<code>Looper.loop()</code> çağrılır: ana iş parçacığı artık sonsuz döngüde MessageQueue\'yu yoklar. Kuyruk boş olduğunda uyur, bir olay gelince uyanır. Uygulama artık "canlı" ve girdi bekliyor.',
+        born: true, phase: 3, looper: true, mq: [] },
+      { pc: 7, title: 'Dokunma kuyruğa girer', term: ['input: MotionEvent → MessageQueue'],
+        text: 'Kullanıcı ekrana dokunur. Girdi sistemi olayı bir <code>Message</code> olarak ana iş parçacığının <code>MessageQueue</code>\'suna koyar. Looper sıradaki mesajı alır ve onu gönderen <code>Handler</code>\'a teslim eder.',
+        born: true, phase: 3, looper: true, mq: [{ t: 'MotionEvent (dokunma)', run: false }, { t: 'invalidate (çizim)', run: false }] },
+      { pc: 7, title: 'Handler işler, ağır iş ayrı', term: ['app: Handler.dispatchMessage → onClick', 'app: ağır iş → arka plan thread\'i'],
+        text: 'Handler mesajı işler (<code>onClick</code> çalışır). Kısa iş burada biter. Ama ağ/dosya gibi ağır iş ana iş parçacığında yapılırsa döngü tıkanır ve "Uygulama yanıt vermiyor" (ANR) çıkar — bu yüzden ağır iş bir Service\'e veya arka plan thread\'ine verilir.',
+        born: true, phase: 3, looper: true, mq: [{ t: 'MotionEvent (dokunma)', run: true }, { t: 'invalidate (çizim)', run: false }] }
+    ],
+    render: function (s, stateEl, u) {
+      var phases = ['onCreate', 'onStart', 'onResume', 'ÖN PLANDA (resumed)'];
+      var life = '';
+      if (s.born) {
+        life = phases.map(function (p, i) {
+          var cls = 'lrow' + (i < s.phase ? ' done' : '') + (i === s.phase ? ' active' : '');
+          var tick = i < s.phase ? '✓' : (i === s.phase ? '▸' : '·');
+          return '<div class="' + cls + '"><span class="tick">' + tick + '</span><span>' + p + '</span></div>';
+        }).join('');
+      } else {
+        life = '<div class="lrow"><span class="tick">·</span><span>süreç henüz yok</span></div>';
+      }
+      var proc = '<div class="boxrow"><div class="box ' + (s.born ? 'hi' : '') + '"><b>' + (s.born ? 'com.ornek.app' : 'Zygote') + '</b>' +
+        '<span class="mono">' + (s.born ? 'PID 4120 · UID 10234' : 'PID 620 · fork bekliyor') + '</span>' +
+        '<span>' + (s.born ? 'ActivityThread.main çalıştı' : 'henüz uygulama süreci yok') + '</span></div></div>';
+      var mq = '';
+      if (s.looper) {
+        var items = s.mq.length
+          ? s.mq.map(function (m) { return '<div class="mqmsg' + (m.run ? ' run' : '') + '">' + u.esc(m.t) + (m.run ? ' ← işleniyor' : '') + '</div>'; }).join('')
+          : '<div class="empty">kuyruk boş — Looper uyuyor</div>';
+        mq = '<div class="mq"><div class="mqh">MessageQueue (ana iş parçacığı)</div><div class="mqitems">' + items + '</div>' +
+          '<div class="looper spin">Looper.loop() · <b>dönüyor</b></div></div>';
+      } else if (s.born) {
+        mq = '<div class="mq" style="opacity:.6"><div class="mqh" style="color:var(--muted)">MessageQueue</div><div class="empty">Looper henüz başlamadı</div></div>';
+      }
+      stateEl.innerHTML =
+        '<p class="lab-label">Uygulama süreci</p>' + proc +
+        '<p class="lab-label" style="margin-top:14px">Activity yaşam döngüsü</p><div class="life">' + life + '</div>' +
+        mq;
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: bir uygulama nasıl yaşar?",
+    html: `<p class="lead">Bir Android uygulaması tek bir "main" fonksiyonuyla başlayıp biten sıradan bir program değildir. Framework, dört farklı component türünü Intent'lerle başlatır; bunlar bir Linux process içinde, bir event loop etrafında yaşar ve lifecycle callback'leriyle sürekli durum değiştirir. Bu bölüm resmi Android dokümanlarına dayanır.</p>
+
+<h3>1. Dört component ve Intent ile başlatma</h3>
+<p>Bir uygulamanın giriş noktası tek değildir; sistem dört ayrı component türünü bağımsız olarak başlatabilir. Her biri <code>AndroidManifest.xml</code>'de bildirilmek zorundadır — bildirilmeyen bir component sistem tarafından görülmez ve asla çalışamaz.</p>
+<div class="deflist">
+<div><dt>Activity</dt><dd>Kullanıcıyla etkileşimin giriş noktası; tek bir ekranı (UI) temsil eder.</dd></div>
+<div><dt>Service</dt><dd>Arka planda iş sürdürmek için genel amaçlı giriş noktası; UI sağlamaz.</dd></div>
+<div><dt>BroadcastReceiver</dt><dd>Sistemin, normal kullanıcı akışı dışında olayları (system-wide broadcast) uygulamaya iletmesini sağlar.</dd></div>
+<div><dt>ContentProvider</dt><dd>Dosya sistemi, SQLite veya başka kalıcı depoda tutulan paylaşılan veriyi yönetir; ContentResolver ile erişilir.</dd></div>
+</div>
+<div class="manpage src-docs"><div class="ref">developer.android.com · fundamentals</div><p class="orig">An asynchronous message called an intent activates three of the four component types: activities, services, and broadcast receivers.</p><p>Activity, Service ve BroadcastReceiver bir <strong>Intent</strong> ile başlatılır; Intent hem açık (sınıf adıyla) hem örtük (bir eylem/veri tanımıyla) olabilir. ContentProvider ise istisnadır: Intent ile değil, bir <code>ContentResolver</code> isteğiyle hedeflenince aktive olur.</p></div>
+
+<h3>2. Activity lifecycle</h3>
+<p>Bir Activity, görünürlüğü ve kullanıcıyla etkileşimi değiştikçe bir dizi state arasında gezer; sistem her geçişte bir lifecycle callback çağırır. Bu callback'lerde doğru işi doğru anda yapmak (kaynak alma/bırakma), düzgün ve pil dostu bir uygulamanın temelidir.</p>
+<div class="deflist">
+<div><dt>onCreate</dt><dd>Activity ilk yaratıldığında bir kez; tüm ömür boyunca bir defa olması gereken başlatma işi burada.</dd></div>
+<div><dt>onStart</dt><dd>Activity kullanıcıya görünür hale gelir; foreground'a ve etkileşime hazırlanır.</dd></div>
+<div><dt>onResume</dt><dd>Foreground'a gelir; uygulamanın kullanıcıyla fiilen etkileştiği state.</dd></div>
+<div><dt>onPause</dt><dd>Kullanıcının Activity'den ayrıldığının ilk işareti; çok kısa sürer, ağır save işi için uygun değildir.</dd></div>
+<div><dt>onStop</dt><dd>Activity artık görünmez; görünür değilken gereksiz kaynaklar burada bırakılır.</dd></div>
+<div><dt>onDestroy</dt><dd>Activity yok edilmeden önce; kalan tüm kaynaklar serbest bırakılır.</dd></div>
+</div>
+<div class="manpage src-docs"><div class="ref">developer.android.com · activity-lifecycle</div><p class="orig">When the activity enters the Resumed state, it comes to the foreground, and the system invokes the onResume callback. This is the state in which the app interacts with the user.</p><p>Kullanıcının gördüğü ve dokunduğu tek "canlı" state, Resumed state'tir. Uygulama ancak bu state'teyken kameraya, animasyona veya özel giriş olaylarına tam erişmelidir; başka bir uygulama öne çıkınca <code>onPause</code> ile bu kaynaklar bırakılmalıdır.</p></div>
+
+<h3>3. Configuration change ve UI state</h3>
+<p>Ekran döndürme veya multi-window'a geçiş gibi bir configuration change olduğunda, sistem varsayılan olarak Activity'yi <strong>yok edip yeniden yaratır</strong>. Bu, yeni kaynaklara (farklı layout, dil) uyum sağlamanın yoludur ama Activity içindeki geçici UI state'i siler.</p>
+<div class="manpage src-docs"><div class="ref">developer.android.com · activity-lifecycle</div><p class="orig">If onDestroy is called as the result of a configuration change, the system immediately creates a new activity instance and then calls onCreate on that new instance in the new configuration.</p><p>Bu yüzden durum, Activity instance'ında değil; configuration change ve process death'e dayanıklı mekanizmalarda tutulmalıdır: iş mantığı/ekran durumu için <code>ViewModel</code>, hafif UI durumu için <code>rememberSaveable</code> (veya klasik <code>onSaveInstanceState</code>). Bu bundle mekanizması main thread'de serialize edildiği için yalnızca küçük veriye uygundur; büyük veri local storage'a gider.</p></div>
+
+<h3>4. Main thread, event loop ve ANR</h3>
+<p>Her uygulama process'i tek bir <strong>main thread</strong> (UI thread) ile başlar. Bu thread bir <code>Looper</code> çalıştırır: <code>MessageQueue</code>'dan sırayla mesaj/olay çeker ve bir <code>Handler</code> ile işler. Dokunma olayları, lifecycle callback'leri ve UI güncellemeleri hep bu tek thread üzerinde sıraya girer — bu yüzden iki kural çıkar: (1) UI yalnızca main thread'den güncellenebilir, (2) uzun süren iş (ağ, disk, hesaplama) main thread'i <em>bloklamamalıdır</em>.</p>
+<div class="manpage src-docs"><div class="ref">developer.android.com · ANR</div><p class="orig">When the UI thread of an Android app is blocked for too long, an "Application Not Responding" (ANR) error is triggered.</p><p>Main thread bir girdi olayına ~5 saniye yanıt veremezse sistem <strong>ANR</strong> gösterir. Çözüm: ağır işi arka plan thread'ine (veya coroutine/WorkManager'a) taşıyıp sonucu bir <code>Handler</code>/post ile main thread'e geri vermek. Looper/Handler mekanizması, Linux thread'leri ve futex modülündeki senkronizasyonun framework düzeyindeki yüzüdür.</p></div>
+
+<h3>5. Process, UID ve component'ler arası sınırlar</h3>
+<p>Bir uygulama, lab'da gördüğümüz gibi Zygote'tan fork edilen bir Linux process'tir; sistem ona benzersiz bir Linux user ID verir ve varsayılan olarak kendi process'inde çalıştırır. Bu, uygulama sandbox'ının temelidir: bir uygulama başka bir uygulamanın belleğine veya özel dosyalarına doğrudan erişemez.</p>
+<div class="manpage src-docs"><div class="ref">developer.android.com · fundamentals</div><p class="orig">The Android operating system is a multi-user Linux system in which each app is a different user. By default, every app runs in its own Linux process.</p><p>Component'ler process sınırlarını aşarak konuşmak zorunda kaldığında (örn. başka uygulamanın Service'ine bağlanmak, bir ContentProvider'dan veri çekmek) iletişim <strong>Binder</strong> üzerinden gider — yani Binder modülündeki tek-kopya IPC ve caller identity doğrulaması burada da devrededir. Performans için kritik native kod ise <code>JNI</code> ile çağrılır; Java/Kotlin dünyası ile C/C++ dünyası arasındaki köprü budur.</p></div>`
+  },
+  underHood: {
+    html: '<p class="prose">Uygulamanın kalbi, çatının (framework) sağladığı olay döngüsüdür. Bir dokunmanın koduna ulaşana kadar izlediği yol AOSP\'ta cs.android.com üzerinden okunabilir.</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://cs.android.com/android/platform/superproject/main/+/main:frameworks/base/core/java/android/app/ActivityThread.java" target="_blank" rel="noopener">ActivityThread.main()</a><span class="where">frameworks/base</span><p>Uygulama sürecinin girişi; ana Looper\'ı hazırlar, AMS\'e Binder ile bağlanır, yaşam döngüsü geri çağrılarını sürer.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://cs.android.com/android/platform/superproject/main/+/main:frameworks/base/core/java/android/os/Looper.java" target="_blank" rel="noopener">Looper.loop()</a><span class="where">frameworks/base</span><p>Sonsuz döngü: MessageQueue.next() ile sıradaki mesajı alır, yoksa uyur.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">MessageQueue.next()</span><span class="where">frameworks/base</span><p>Sıradaki mesajı döndürür; zamanı gelmemiş mesajlar için epoll ile uyur (meşgul bekleme yok).</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">Handler.dispatchMessage()</span><span class="where">frameworks/base</span><p>Mesajı onu gönderen Handler\'a teslim eder; callback/handleMessage çalışır. Buradaki her şey ana iş parçacığını meşgul eder.</p></div></li>' +
+      '</ol>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Bileşen</th><th>Görevi</th><th>Nasıl tetiklenir</th></tr></thead><tbody>' +
+      '<tr><td><b>Activity</b></td><td>Tek bir ekran / kullanıcı etkileşimi</td><td>Intent ile başlatılır, AMS yönetir</td></tr>' +
+      '<tr><td><b>Service</b></td><td>Arka planda uzun iş (UI\'siz)</td><td>startService / bindService</td></tr>' +
+      '<tr><td><b>BroadcastReceiver</b></td><td>Sistem/uygulama olaylarına abonelik</td><td>Yayınlanan Intent ile uyanır</td></tr>' +
+      '<tr><td><b>ContentProvider</b></td><td>Uygulamalar arası yapılandırılmış veri</td><td>ContentResolver sorgusuyla</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px">Native köprü: performans kritik kod, JNI (Java Native Interface) ile C/C++\'a geçer. Java tarafındaki bir <code>native</code> metot, Bionic ile yüklenen bir <code>.so</code> içindeki fonksiyona bağlanır — ART modülündeki derleme ve Bionic modülündeki bağlayıcı burada devreye girer.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Ön plandaki Activity\'yi gör', p: 'Hangi uygulamanın hangi Activity\'sinin ön planda (resumed) olduğunu ActivityManager\'ın iç durumundan oku.',
+        shells: [{ label: 'adb (temsilî çıktı)', copy: 'adb shell dumpsys activity activities | grep -i resumed', pre: '<span class="c">$</span> adb shell dumpsys activity activities | grep ResumedActivity\n  ResumedActivity: ActivityRecord{... com.ornek.app/.MainActivity}' }] },
+      { h3: '2. Yaşam döngüsünü logcat ile izle', p: 'Bir uygulamayı açıp kapatırken onCreate/onResume/onPause geçişlerini kendi Log satırlarınla ya da çatı loglarıyla gör.',
+        shells: [{ label: 'adb', copy: 'adb logcat | grep -iE "onCreate|onResume|onPause"', pre: '<span class="c">$</span> adb logcat | grep -iE "onResume|onPause"\n<span class="c"># ekranlar arası geçişte yaşam döngüsü çağrıları akar</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Activity\'nin <code>onCreate</code>\'ini kim çağırır?', opts: ['Uygulama kendi new ile', 'Sistem (ActivityManager/çatı)', 'Linux çekirdeği'], answer: 'Sistem (ActivityManager/çatı)',
+        ok: 'Doğru. Bileşenleri sen yaratmazsın; sistem yaşam döngüsü geri çağrılarını (callback) uygun anda çağırır. Sen yalnızca içini doldurursun.', no: 'İpucu: yaşam döngüsü "senin değil" — çağıran kim?' },
+      { q: 'Ana iş parçacığında ağır ağ işi yaparsan ne olur?', opts: ['Daha hızlı olur', 'Olay döngüsü tıkanır, ANR riski', 'Hiçbir şey'], answer: 'Olay döngüsü tıkanır, ANR riski',
+        ok: 'Doğru. Looper tek iş parçacığında döner; uzun iş MessageQueue\'yu bloklar, arayüz donar ve "Uygulama yanıt vermiyor" (ANR) çıkar. Ağır iş ayrı thread/Service\'e gider.', no: 'İpucu: tek bir olay döngüsü var ve dokunmalar o kuyrukta bekliyor.' },
+      { q: 'MessageQueue boşken Looper ne yapar?', opts: ['Meşgul bekler (CPU yakar)', 'epoll ile uyur, olay gelince uyanır', 'Uygulamayı kapatır'], answer: 'epoll ile uyur, olay gelince uyanır',
+        ok: 'Doğru. MessageQueue.next() olay yokken epoll ile bloklanır; CPU harcamaz. Bir mesaj gelince (veya zamanlı mesajın vakti) uyanır.', no: 'İpucu: pil ömrü önemli — boş döngüde CPU yakmak mantıklı mı?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Android Modül 12', title: 'Dalvik ve DEX', desc: 'Bu Java/Kotlin kodu hangi bytecode\'a derlenir ve nasıl çalışır?' },
+  sources: [
+    { href: 'https://newandroidbook.com/TOC.html', text: 'Levin — Android Internals', note: 'Cilt II, Bölüm 4' },
+    { href: 'https://developer.android.com/guide/components/activities/activity-lifecycle', text: 'Activity yaşam döngüsü', note: 'developer.android.com' },
+    { href: 'https://cs.android.com/android/platform/superproject/main/+/main:frameworks/base/core/java/android/os/Looper.java', text: 'Looper.java', note: 'AOSP kaynağı' }
+  ],
+  pageTitle: 'Uygulama Anatomisi'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

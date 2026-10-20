@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Jailbreak Anatomisi</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: jailbreak aşama zinciri */
+.jb { display: grid; gap: 0; }
+.jstage { border: 1.5px solid var(--line); background: var(--surface); padding: 12px 14px; display: grid; gap: 6px; min-width: 0; position: relative; }
+.jstage:first-child { border-radius: var(--r) var(--r) 0 0; }
+.jstage:last-child { border-radius: 0 0 var(--r) var(--r); border-top: none; }
+.jstage + .jstage { border-top: none; }
+.jstage .jh { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.jstage .jh b { font-family: var(--f-display); font-size: 15px; }
+.jstage .jh .num { font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.jstage .jd { font-size: 12.5px; color: var(--muted); }
+.jstage.dim { opacity: .4; }
+.jstage.done { border-color: var(--track); }
+.jstage.done .jh b { color: var(--track); }
+.jstage.cur { box-shadow: inset 0 0 0 2px var(--track); border-color: var(--track); }
+.jstage .broke { font-family: var(--f-mono); font-size: 11px; display: inline-flex; gap: 6px; align-items: center; padding: 3px 8px; border-radius: 999px; background: var(--bad-soft); color: var(--bad); justify-self: start; }
+.jstage.pending .broke { background: var(--sunk); color: var(--muted); }
+.guard-note { margin-top: 12px; border: 1px solid var(--ok); background: var(--ok-soft); border-radius: var(--r); padding: 8px 10px; font-size: 12.5px; }
+.guard-note b { color: var(--ok); font-family: var(--f-mono); font-size: 11px; }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'offensive',
+  crumbs: 'ofansif › jailbreak anatomisi › modül 9',
+  eyebrow: 'Ofansif izlek · Modül 9 · Vaka analizi',
+  titleHTML: 'Bir <code>jailbreak</code> nasıl kurulur? (mimari)',
+  lede: 'Bir jailbreak, tek bir hata değil; birbirine zincirlenmiş aşamaların mimarisidir: ilk kod çalıştırmadan (initial code execution) başlar, çekirdeğe iner ve kalıcılığa (persistence) ulaşır. Bu modül o zinciri yüksek seviyede, kavramsal olarak gösterir — hangi aşamanın hangi korumayı neden yenmesi gerektiğini. Somut teknik, adres veya kod yoktur.',
+  meta: ['~18 dk', 'ön koşul: primitifler + çekirdek geçişi', 'bağlam: kavramsal / mimari'],
+  ethic: '<b>İlke.</b> Bu modül yalnızca jailbreak <b>mimarisini</b> ve neden her aşamanın gerektiğini anlatır; herhangi bir cihaza uygulanabilir talimat, exploit, adres, offset ya da kod <b>içermez</b>. Amaç, bu zincirleri anlayarak savunmayı ve güvenlik araştırmasını kavramaktır. Tarihsel örnekler yalnızca kamuya açık analizlere yönlendirme olarak anılır.',
+  intuition: {
+    paras: [
+      'Modern bir telefon, üst üste binmiş savunma katmanlarıyla gelir: uygulamalar kum havuzunda (sandbox) çalışır, yalnızca imzalı kod çalışabilir (kod imzalama, AMFI), çekirdek bütünlüğü donanımla korunur (ör. PPL/KTRR), adresler rastgeledir (KASLR). Hiçbir tek hata bu katmanların hepsini birden aşamaz.',
+      'Bu yüzden bir jailbreak bir <strong>zincirdir (exploit chain)</strong>: her halka bir sonrakinin önünü açar. Önce cihazda herhangi bir kod çalıştırmanın bir yolu bulunur, oradan çekirdeğe ulaşılır, çekirdekte okuma/yazma yeteneği kazanılır, korumalar kapatılır ve sonunda bu durum kalıcı hale getirilir. Her aşamayı anlamak, aslında her katmanlı savunmanın neyi engellediğini anlamaktır.'
+    ],
+    ideas: [
+      { b: 'Tek hata yetmez', span: 'Katmanlı savunma (defense in depth) nedeniyle jailbreak birden çok zafiyeti zincirler; her biri belirli bir katmanı yener.' },
+      { b: 'Yön: dışarıdan içeriye', span: 'İlk kod çalıştırma (en dış, en erişilebilir yüzey) → kullanıcı alanı → çekirdek → donanım destekli korumalar.' },
+      { b: 'Savunmanın haritası', span: 'Zincirin her halkası bir korumaya denk gelir. Saldırıyı okumak, savunma mimarisini tersten okumaktır.' }
+    ]
+  },
+  lab: {
+    intro: 'Aşağıda bir jailbreak zincirinin genel aşamaları sırayla açılıyor. Her adımda o aşamanın ne yaptığını, hangi savunma katmanını neden yenmesi gerektiğini izle. Bu kavramsal bir haritadır; herhangi bir cihaza uygulanabilir bir reçete değildir.',
+    codeLabel: 'aşama zinciri (kavramsal)', cmd: '# jailbreak zinciri — mimari',
+    foot: 'Bu bir mimari haritasıdır; somut exploit, adres veya kod içermez. Tarihsel örnekler yalnızca kamuya açık analize yönlendirmedir.',
+    code: [
+      { t: '<span class="cm">// bir jailbreak zincirinin genel iskeleti</span>' },
+      { t: '1. ilk kod çalıştırma   <span class="cm">// bir uygulama/tarayıcı/mesaj yoluyla</span>' },
+      { t: '2. kullanıcı-alanı zafiyeti <span class="cm">// sandbox içinde dayanak</span>' },
+      { t: '3. çekirdeğe geçiş      <span class="cm">// kernel attack surface</span>', danger: true },
+      { t: '4. çekirdek R/W primitifi <span class="cm">// kernel read/write</span>', danger: true },
+      { t: '5. korumaları kapat     <span class="cm">// AMFI / sandbox / PPL</span>', danger: true },
+      { t: '6. kalıcılık            <span class="cm">// persistence</span>' }
+    ],
+    steps: [
+      { i: 0, title: 'İlk kod çalıştırma (initial code execution)',
+        term: ['[1] giriş noktası: bir uygulama / tarayıcı / mesaj'],
+        text: 'Zincir, cihazda herhangi bir saldırgan kodunu ilk kez çalıştırabilmekle başlar. Bu genellikle bir uygulamanın, tarayıcının veya bir mesaj işleyicinin işlediği hatalı veriden gelir. Henüz ayrıcalık yoktur; yalnızca bir dayanak (foothold) vardır.',
+        broke: 'Aşılan katman: güvenilmez girdinin ayrıştırılması' },
+      { i: 1, title: 'Kullanıcı-alanı zafiyeti (user-space vuln)',
+        term: ['[2] sandbox içinde daha fazla yetenek'],
+        text: 'İlk dayanak çoğu zaman sıkı bir kum havuzundadır (sandbox). Bu aşamada, sandbox içinde daha fazla kontrol kazanmak veya daha ayrıcalıklı bir bileşene ulaşmak için bir kullanıcı-alanı zafiyeti kullanılır. Hedef, çekirdeğe konuşabilen bir konuma gelmektir.',
+        broke: 'Aşılan katman: kum havuzu (sandbox) kısıtları' },
+      { i: 2, title: 'Çekirdeğe geçiş (kernel attack surface)',
+        term: ['[3] çekirdek giriş noktasına ulaşıldı'],
+        text: 'Saldırgan artık çekirdeğin bir giriş noktasına (syscall, sürücü ioctl, IPC) güvenilmez girdi gönderebilir. Önceki modülde gördüğümüz kullanıcı/çekirdek sınırındaki bir doğrulama hatası, buradaki hedeftir. Amaç: çekirdekte bir bug tetiklemek.',
+        broke: 'Aşılan katman: kullanıcı/çekirdek güven sınırı' },
+      { i: 3, title: 'Çekirdek okuma/yazma (kernel R/W primitive)',
+        term: ['[4] çekirdek belleğinde kontrollü okuma/yazma'],
+        text: 'Çekirdek bug\'ı, kademeli olarak çekirdek belleğinde keyfi okuma ve yazma (arbitrary kernel read/write) yeteneğine dönüştürülür. Bu, jailbreak\'in bel kemiğidir: çekirdek belleğini okuyup yazabilen saldırgan, artık sistemin kurallarını değiştirebilecek konumdadır. KASLR\'yi aşmak için önce bir çekirdek bilgi sızıntısı (info leak) gerekir.',
+        broke: 'Aşılan katman: KASLR + çekirdek bütünlüğü' },
+      { i: 4, title: 'Korumaları kapatma (AMFI · sandbox · PPL)',
+        term: ['[5] imza zorlaması gevşetildi (kavramsal)', '[5] sandbox profili etkisizleştirildi'],
+        text: 'Çekirdek R/W ile saldırgan, kod imzalama zorlamasını (AMFI), sandbox politikasını ve ilgili bütünlük kontrollerini hedefler — amaç, imzasız kodun çalışabildiği ve kısıtların kalktığı bir duruma geçmek. Modern cihazlarda PPL/KTRR gibi donanım destekli korumalar bu aşamayı en zor halka yapar; çoğu zaman ayrı bir yetenek gerektirir.',
+        broke: 'Aşılan katman: kod imzalama (AMFI) + donanım korumaları (PPL/KTRR)' },
+      { i: 5, title: 'Kalıcılık (persistence)',
+        term: ['[6] yeniden başlatmaya dayanıklı mı? (tethered / untethered)'],
+        text: 'Son aşama, kazanılan durumu kalıcı kılmaktır. Eğer jailbreak her yeniden başlatmada yeniden çalıştırılmalıysa buna bağlı (tethered); kendiliğinden hayatta kalıyorsa bağımsız (untethered) denir. Kalıcılık, güvenli açılış (secure/verified boot) zincirine karşı ayrı bir mücadeledir ve çoğu modern cihazda kasıtlı olarak çok zordur.',
+        broke: 'Aşılan katman: güvenli açılış (secure boot) zinciri' }
+    ],
+    render: function (s, stateEl, u) {
+      var STAGES = [
+        ['İlk kod çalıştırma', 'bir uygulama/tarayıcı/mesaj yoluyla dayanak', 'güvenilmez girdi ayrıştırma'],
+        ['Kullanıcı-alanı zafiyeti', 'sandbox içinde yetenek kazan', 'sandbox kısıtları'],
+        ['Çekirdeğe geçiş', 'kernel giriş noktasına ulaş', 'kullanıcı/çekirdek sınırı'],
+        ['Çekirdek R/W primitifi', 'keyfi kernel okuma/yazma', 'KASLR + bütünlük'],
+        ['Korumaları kapat', 'AMFI / sandbox / PPL', 'kod imzalama + donanım'],
+        ['Kalıcılık', 'yeniden başlatmaya dayan', 'güvenli açılış zinciri']
+      ];
+      var rows = STAGES.map(function (st, k) {
+        var cls = k < s.i ? 'done' : (k === s.i ? 'cur' : 'pending dim');
+        return '<div class="jstage ' + cls + '"><div class="jh"><b>' + u.esc(st[0]) + '</b><span class="num">aşama ' + (k + 1) + '/6</span></div>' +
+          '<div class="jd">' + u.esc(st[1]) + '</div>' +
+          '<span class="broke">' + (k <= s.i ? '✓ ' : '◦ ') + u.esc(st[2]) + '</span></div>';
+      }).join('');
+      stateEl.innerHTML =
+        '<p class="lab-label">Jailbreak zinciri (dışarıdan içeriye)</p>' +
+        '<div class="jb">' + rows + '</div>' +
+        '<div class="guard-note"><b>BU AŞAMADA AŞILAN SAVUNMA</b><br>' + u.esc(s.broke) + '</div>';
+    }
+  },
+  underHood: {
+    heading: 'Kaputun altında: her aşama bir savunma katmanı',
+    html: '<p class="prose">Jailbreak zincirini okumanın en verimli yolu, onu bir savunma haritası olarak görmektir. Her aşama, belirli bir güvenlik katmanının var olma nedenidir; katman olmasaydı o aşamaya gerek kalmazdı.</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Aşama</th><th>Amacı</th><th>Aşılan koruma</th></tr></thead><tbody>' +
+      '<tr><td><b>İlk kod çalıştırma</b></td><td>Cihazda ilk dayanağı kurmak</td><td>Girdi ayrıştırma sağlamlığı, derleyici korumaları</td></tr>' +
+      '<tr><td><b>Kullanıcı-alanı zafiyeti</b></td><td>Sandbox içinde yetenek kazanmak</td><td>Kum havuzu (sandbox), en az ayrıcalık</td></tr>' +
+      '<tr><td><b>Çekirdeğe geçiş</b></td><td>Çekirdek bug\'ı tetiklemek</td><td>Kullanıcı/çekirdek sınır doğrulaması, seccomp</td></tr>' +
+      '<tr><td><b>Çekirdek R/W</b></td><td>Keyfi kernel okuma/yazma (arbitrary R/W)</td><td>KASLR, SMEP/SMAP/PAN, KCFI</td></tr>' +
+      '<tr><td><b>Korumaları kapat</b></td><td>İmzasız kodu çalıştırılabilir kılmak</td><td>Kod imzalama (AMFI), PPL/KTRR, sandbox politikası</td></tr>' +
+      '<tr><td><b>Kalıcılık</b></td><td>Yeniden başlatmaya dayanmak</td><td>Güvenli/doğrulanmış açılış (secure/verified boot)</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px"><strong>Android tarafında karşılığı rooting\'tir</strong> ve mimari benzerdir, ama tipik olarak daha açıktır: birçok cihazda önyükleyici (bootloader) resmî olarak açılabildiği için (OEM unlock), zincir çoğu zaman özel bir boot imajı yazıp (ör. Magisk) sistemless bir şekilde ayrıcalık kazanmaya indirgenir — uzaktan bir exploit zinciri yerine fiziksel/izinli bir işlem. iOS tarafında ise önyükleyici kilitli olduğu için tüm iş bir yazılım exploit zincirine kalır.</p>' +
+      '<p class="prose" style="margin-top:14px">Tarihsel örnekler — <strong>evasi0n</strong>, <strong>Pangu</strong>, <strong>checkm8</strong> ve benzerleri — bu aşamaların somut birer örneğidir. Bu modül onların tekniğini vermez; detaylı ve sorumlu analiz için aşağıdaki kamuya açık kaynaklara bakılmalıdır.</p>'
+  },
+  deepDive: {
+    heading: 'Derinlemesine: güven zinciri ve jailbreak türleri',
+    html: '<p class="lead">Jailbreak zincirini anlamanın en temiz yolu, onun saldırdığı şeyi — <strong>chain of trust</strong>, yani güven zincirini — anlamaktır. Cihaz açılırken her katman bir sonrakini doğrular; jailbreak bu zincirin bir halkasını kırmaya çalışır, ve <em>hangi</em> halkayı kırdığı jailbreak\'in türünü ve ömrünü belirler. Bu bölüm Apple\'ın platform güvenlik belgelerindeki açılış (boot) modeline dayanır; somut istismar değil, saldırının hedeflediği mimariyi ve savunmanın bu mimariyi neden böyle kurduğunu anlatır.</p>' +
+
+      '<h3>1. Güven zinciri: her halka bir sonrakini doğrular</h3>' +
+      '<p>Modern bir cihaz, açılışta tek bir yazılımı değil, bir <strong>dizi</strong> yazılımı sırayla çalıştırır: en alttaki değiştirilemez (immutable) kod başlar, bir sonraki aşamayı doğrular, ona kontrolü devreder; o da bir sonrakini doğrular. Bu zincir, kriptografik imza doğrulamasıyla en alttaki <strong>hardware root of trust</strong>\'a (donanım güven kökü) dayanır. Jailbreak\'in nihai hedefi bu zincirin bir yerinde doğrulamayı atlatıp imzasız/değiştirilmiş kodu çalıştırtmaktır.</p>' +
+      '<div class="manpage src-apple"><div class="ref">Platform Security · Boot process</div><p class="orig">This is the first step in the chain of trust, in which each step checks that the next is signed by Apple.</p><p>Güven zincirinin (chain of trust) temel kuralı: her adım, bir sonraki adımın <em>Apple tarafından imzalandığını</em> doğrular. Zincir ancak böyle yürür — bir halka bile kendinden sonrakini doğrulamazsa, saldırgan oraya imzasız kod sokabilir. Jailbreak tam da bu doğrulama adımlarından birini hedefler.</p></div>' +
+      '<div class="manpage src-apple"><div class="ref">Platform Security · iBoot → kernel</div><p class="orig">When the iBoot finishes its tasks, it verifies and runs the iOS or iPadOS kernel.</p><p><code>iBoot</code> (ikinci aşama yükleyici), işini bitirince çekirdeği <em>doğrular ve çalıştırır</em> (verifies and runs). Yani çekirdek bile, kendinden önceki halka tarafından imza kontrolünden geçirilir. Bir saldırgan değiştirilmiş bir çekirdek çalıştırmak isterse, ya iBoot\'u kandırmalı ya da zinciri daha aşağıda kırmalıdır.</p></div>' +
+
+      '<h3>2. Bootrom jailbreak vs kernel jailbreak</h3>' +
+      '<p>Jailbreak\'in hangi halkayı kırdığı, onun en önemli ayrımını belirler. İki uç vardır:</p>' +
+      '<div class="deflist">' +
+      '<div><dt>kernel jailbreak</dt><dd>Zincir, cihaz normal açıldıktan <em>sonra</em>, çalışan çekirdekteki bir bug ile kırılır. Çoğu modern jailbreak budur. Çekirdek ya da iBoot yazılımla korunduğu için Apple bu açığı bir yazılım güncellemesiyle <strong>kapatabilir</strong>; o yüzden bu tür jailbreak\'ler belirli sürümlere bağlıdır ve güncellemeyle ölür.</dd></div>' +
+      '<div><dt>bootrom jailbreak</dt><dd>Zincir en alttaki halkada, yani <strong>Boot ROM</strong>\'da (çipe fabrikada gömülen, değiştirilemez ilk kod) kırılır. Buradaki bir hata kalıcıdır: kod salt-okunur silikona yazılmıştır, yazılım güncellemesiyle <em>yamanamaz</em>. <code>checkm8</code> bu türe kavramsal bir örnektir — etkilenen çipler için düzeltme yalnızca yeni donanımla gelir. Bu modül onun tekniğini vermez; önemli olan <em>neden yamalanamaz</em> olduğudur.</dd></div>' +
+      '</div>' +
+      '<div class="manpage src-apple"><div class="ref">Platform Security · hardware root of trust</div><p class="orig">This immutable code, known as the hardware root of trust, is laid down during chip fabrication and is implicitly trusted.</p><p>Boot ROM\'daki bu <em>değiştirilemez</em> (immutable) kod, çip üretimi sırasında (during chip fabrication) döşenir ve <em>örtük olarak güvenilir</em> (implicitly trusted) kabul edilir. Değiştirilemez olması güvenliğin temelidir — ama aynı özellik, oradaki bir hatanın da asla yazılımla düzeltilememesi demektir. Donanım güven kökünü kırmak en zorudur; kırılırsa da sonucu en kalıcısıdır.</p></div>' +
+
+      '<h3>3. Tethered vs untethered: kalıcılık güven zincirine karşı</h3>' +
+      '<p>Bir jailbreak çekirdeği bir kez ele geçirse bile, cihaz yeniden başladığında güven zinciri sıfırdan, temiz haliyle yeniden çalışır. Jailbreak\'in yeniden başlatmaya nasıl dayandığı onu ikiye ayırır:</p>' +
+      '<div class="deflist">' +
+      '<div><dt>tethered</dt><dd>Her yeniden başlatmada zincirin yeniden uygulanması gerekir (genelde bir bilgisayara bağlanarak). Cihaz tek başına yeniden açıldığında stok (temiz) duruma döner. Çünkü açılış exploit\'i açılış anında yeniden tetiklenmek zorundadır.</dd></div>' +
+      '<div><dt>untethered</dt><dd>Jailbreak yeniden başlatmadan sağ çıkar: güven zincirinin kendisine, imzasız kodun açılışta yeniden çalışmasını sağlayan kalıcı bir kanca kurulmuştur. Bu çok daha zordur, çünkü doğrulanmış açılış (verified boot) zincirini her açılışta yeniden yenmek gerekir.</dd></div>' +
+      '</div>' +
+      '<p class="prose">Kalıcılığın zor olması tesadüf değil, tasarımdır: Secure Enclave bile kendi yazılımını (sepOS) açılışta ayrıca doğrular. Apple\'ın ifadesiyle, "The Secure Enclave also performs a secure boot that checks its software (sepOS) is verified and signed by Apple." Yani ana çekirdek ele geçse dahi, ayrı bir güven alanı kendi zincirini bağımsızca denetlemeye devam eder.</p>' +
+
+      '<h3>4. Savunmanın dersi: ayrıcalığı çekirdekten almak</h3>' +
+      '<p>Jailbreak anatomisinin savunmaya kattığı en büyük içgörü şudur: zincirin en pahalı halkası "çekirdek R/W\'den korumaları kapatmaya" geçiştir. Eğer çekirdek R/W elde etmek sistemi tamamen teslim ediyorsa, tek bir çekirdek bug\'ı her şeyi verir. Apple\'ın modern mimarisi tam da bunu kırar: <strong>PPL</strong> ve halefi <strong>SPTM</strong> sayfa tablolarını çekirdekten bile korur, <strong>TXM</strong> kod imzalama kararlarını çekirdekten ayrı bir güven alanına taşır, <strong>PAC</strong> ise çekirdek R/W\'nin kontrol akışına kolayca çevrilmesini zorlaştırır. Sonuç: çekirdeği ele geçirmek artık "oyunu bitirmek" değildir — saldırganın önünde hâlâ ayrı ayrı kırması gereken donanım destekli halkalar durur.</p>' +
+      '<div class="deflist">' +
+      '<div><dt>eski model</dt><dd>Çekirdek R/W ≈ tam kontrol. Tek bir çekirdek açığı AMFI\'yi, sandbox\'ı ve sayfa tablolarını doğrudan değiştirmeye yeterdi.</dd></div>' +
+      '<div><dt>yeni model</dt><dd>Çekirdek R/W elde edilse bile sayfa tabloları (SPTM), imza kararları (TXM) ve işaretçi bütünlüğü (PAC) ayrı korunur. Ayrıcalık çekirdekten alınıp dağıtılmıştır — jailbreak zinciri uzar ve maliyeti artar.</dd></div>' +
+      '</div>' +
+      '<p class="prose">Bu yüzden jailbreak\'i okumak, aslında savunma mimarisini tersten okumaktır: zincirin uzaması, her yeni donanım korumasının bir halkayı nasıl pahalılaştırdığının doğrudan kanıtıdır. <code>macos-newsec</code> (SPTM/TXM/Exclaves) ve <code>macos-arm64</code> (PAC) modülleri bu halkaların nasıl kurulduğunu makine tarafından anlatıyor.</p>'
+  },
+  pipeline: { intro: 'Zincirin "çekirdeğe geçiş" ve "çekirdek R/W" halkaları, önceki modüllerdeki sömürü boru hattının (exploitation pipeline) çekirdek bağlamındaki tekrarıdır: bug → sızıntı → keyfi okuma/yazma → kontrol.' },
+  tryIt: {
+    heading: 'Oku ve analiz et',
+    items: [
+      { h3: '1. Zinciri aşama aşama haritala', p: 'Bu modülde komut çalıştırılmaz. Bunun yerine, kamuya açık bir jailbreak write-up\'ı seç ve onu buradaki altı aşamaya oturt: hangi zafiyet hangi halkaya denk geliyor, her biri hangi korumayı yeniyor? Bir saldırıyı savunma katmanlarına eşlemek, bu modülün asıl alıştırmasıdır.' },
+      { h3: '2. Savunmacı gözüyle tersine çevir', p: 'Aynı write-up için şunu sor: bu zincirin hangi tek halkası kapatılsaydı jailbreak çökerdi? Bu soru, katmanlı savunmanın (defense in depth) neden değerli olduğunu doğrudan gösterir.' }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Bir jailbreak neden tek bir zafiyet değil, bir zincirdir (exploit chain)?', opts: ['Tek zafiyet yasaktır', 'Katmanlı savunma tek hatayla aşılamaz', 'Daha hızlı olduğu için'], answer: 'Katmanlı savunma tek hatayla aşılamaz',
+        ok: 'Doğru. Sandbox, kod imzalama, KASLR, donanım korumaları üst üstedir; her katmanı ayrı bir halka yener. Bu yüzden jailbreak zincirlenmiş aşamalardan oluşur.', no: 'İpucu: cihazda kaç savunma katmanı var ve tek bir hata hepsini birden aşabilir mi?' },
+      { q: 'Zincirde "çekirdek okuma/yazma (kernel R/W)" halkası neden kritiktir?', opts: ['Ekranı kapatır', 'Sistemin kurallarını değiştirebilecek yeteneği verir', 'Pili korur'], answer: 'Sistemin kurallarını değiştirebilecek yeteneği verir',
+        ok: 'Doğru. Çekirdek belleğini okuyup yazabilen saldırgan, imza zorlamasını ve sandbox politikasını hedefleyebilir; bu yüzden R/W zincirin bel kemiğidir.', no: 'İpucu: çekirdek belleğine yazabilen biri hangi kontrolleri değiştirebilir?' },
+      { q: 'Her yeniden başlatmada yeniden çalıştırılması gereken jailbreak\'e ne denir?', opts: ['Bağımsız (untethered)', 'Bağlı (tethered)', 'Kalıcı (persistent)'], answer: 'Bağlı (tethered)',
+        ok: 'Doğru. Bağlı (tethered) jailbreak yeniden başlatmada tekrar uygulanmalıdır; kendiliğinden hayatta kalan ise bağımsız (untethered) adını alır. Kalıcılık, güvenli açılışa karşı ayrı bir mücadeledir.', no: 'İpucu: yeniden başlatmaya dayanamayıp tekrar çalıştırılması gerekenin adı ne?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Ofansif Modül 10', title: 'Tarihsel zincirlerin analizi', desc: 'evasi0n, Pangu, mach_portal ve benzeri kamuya açık zincirlerin aşama aşama çözümlenmesi.' },
+  sources: [
+    { href: 'https://newosxbook.com/toc3.html', text: 'Levin — OS Internals Cilt III', note: 'jailbreak mimarisi ve vaka analizleri' },
+    { href: 'https://projectzero.google/', text: 'Project Zero', note: 'zincirlerin derin, sorumlu analizleri' },
+    { href: 'https://www.theiphonewiki.com/wiki/Jailbreak', text: 'The iPhone Wiki — Jailbreak', note: 'tarihsel referans' }
+  ],
+  pageTitle: 'Jailbreak Anatomisi'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

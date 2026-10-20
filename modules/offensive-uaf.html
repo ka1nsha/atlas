@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Bellek Güvenliği ve UAF</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var ADDR = '0x5030…040';
+var MODULE = {
+  track: 'offensive',
+  crumbs: 'ofansif › bellek güvenliği › modül 2',
+  eyebrow: 'Ofansif izlek · Modül 2 · Bellek güvenliği',
+  titleHTML: 'Serbest bırakılanı kullanmak: <code>use-after-free</code>',
+  lede: 'Bir işaretçi serbest bırakılmış belleği göstermeye devam ederse ne olur? Küçük bir C programında bir use-after-free\'in bir yetki kontrolünü nasıl devre dışı bıraktığını adım adım izleyecek ve AddressSanitizer ile kendi makinende yakalayacaksın.',
+  meta: ['~20 dk', 'ön koşul: C, işaretçiler, heap', 'bağlam: Linux glibc'],
+  ethic: '<b>İlke.</b> Bu modül mekanizmayı ve kamuya açık kavramları öğretir; silahlandırılmış exploit kodu içermez. Tüm deneyler <b>kendi makinende, kasıtlı zafiyetli örneklerde</b> yapılır. Saldırıyı anlamak, savunmayı anlamanın ön koşuludur.',
+  intuition: {
+    paras: [
+      'Bellek güvenliği, bir programın yalnızca kendisine ait ve hâlâ geçerli belleğe erişmesidir. C ve C++ bunu otomatik garanti etmez; belleği yönetmek programcıya kalır. Bu özgürlük en ağır açıkların kaynağıdır.',
+      'Use-after-free, bu ihlallerin en yaygınlarından biridir. <code>free()</code> ile belleği geri verirsin ama elindeki işaretçi hâlâ o adresi gösterir. Bu <em>dangling</em> (sarkan) işaretçiyi kullanırsan, bellek o sırada başka amaçla yeniden tahsis edilmiş olabilir; artık iki anlam aynı baytları paylaşır.'
+    ],
+    ideas: [
+      { b: 'Bellek yeniden kullanılır', span: 'Tahsis ediciler serbest yongaları bir listede tutar ve aynı boyuttaki sonraki isteğe geri verir.' },
+      { b: 'İşaretçi unutmaz', span: 'free() belleği geri verir ama işaretçiyi sıfırlamaz. Sarkan işaretçi eski adresi gösterir.' },
+      { b: 'Tür karışır', span: 'Eski nesne bir yetki kaydıyken, aynı bellek yeni bir tampon olur. Saldırgan tamponu doldurarak eski alanları kontrol eder.' }
+    ]
+  },
+  lab: {
+    intro: 'Program bir oturum nesnesi tahsis eder, kapatır (<code>free</code>), sonra aynı boyutta bir not tamponu tahsis eder. Tahsis edici aynı yongayı geri verdiği için, sarkan <code>s</code> artık saldırganın yazdığı veriyi okur.',
+    codeLabel: 'uaf.c', cmd: './uaf',
+    foot: 'Adresler örnektir. Değerler gösterim içindir; gerçek çıktı aşağıdaki ASan bölümünde.',
+    code: [
+      { t: '<span class="t">struct</span> session { <span class="t">char</span> user[<span class="n">16</span>]; <span class="t">int</span> is_admin; };' },
+      { t: '' },
+      { t: 'session *s = <span class="f">malloc</span>(<span class="k">sizeof</span> *s);' },
+      { t: '<span class="f">strcpy</span>(s->user, <span class="s">"deniz"</span>);' },
+      { t: 's->is_admin = <span class="n">0</span>;' },
+      { t: '' },
+      { t: '<span class="f">free</span>(s);                      <span class="cm">// bellek geri verildi</span>', danger: true },
+      { t: '' },
+      { t: '<span class="t">char</span> *note = <span class="f">malloc</span>(<span class="k">sizeof</span> *s);  <span class="cm">// ayni boyut</span>' },
+      { t: '<span class="f">strcpy</span>(note, <span class="s">"AAAAAAAAAAAAAAAA"</span>);' },
+      { t: '<span class="f">memset</span>(note + <span class="n">16</span>, <span class="n">0x01</span>, <span class="n">4</span>);   <span class="cm">// is_admin</span>' },
+      { t: '' },
+      { t: '<span class="k">if</span> (s->is_admin)             <span class="cm">// sarkan okuma!</span>', danger: true },
+      { t: '    <span class="f">grant_admin</span>();' }
+    ],
+    steps: [
+      { pc: 3, title: 'Tahsis', term: ['once:  user=deniz admin=0'],
+        text: 's = malloc() bir yonga ayırır; user="deniz", is_admin=0 yazılır. s canlı işaretçi, yonga kullanımda.',
+        s: { to: ADDR, dangle: false }, note: { to: null }, flash: false,
+        chunk: { state: 'used', owner: 's (session)', user: '"deniz"', admin: '0' },
+        free: [], verdict: { cls: 'safe', txt: 'is_admin = 0 → yetki YOK (doğru)' } },
+      { pc: 7, title: 'Serbest bırakma', term: ['once:  user=deniz admin=0'],
+        text: 'free(s) yongayı tahsis ediciye geri verir; yonga tcache listesine düşer. Ama s sıfırlanmadı: hâlâ aynı adresi gösteriyor. Artık s SARKAN bir işaretçi.',
+        s: { to: ADDR, dangle: true }, note: { to: null }, flash: false,
+        chunk: { state: 'free', owner: '— (serbest)', user: '(çöp)', admin: '(çöp)' },
+        free: [ADDR], verdict: { cls: 'breach', txt: 's artık serbest belleği gösteriyor' } },
+      { pc: 9, title: 'Yeniden tahsis', term: ['once:  user=deniz admin=0'],
+        text: 'note = malloc(aynı boyut). tcache kutunun başındaki yongayı — az önce serbest bırakılanı — geri verir. Şimdi s ve note AYNI belleği gösteriyor.',
+        s: { to: ADDR, dangle: true }, note: { to: ADDR }, flash: false,
+        chunk: { state: 'used', owner: 'note (char*)', user: '(henüz boş)', admin: '(henüz boş)' },
+        free: [], verdict: { cls: 'breach', txt: 's ve note çakıştı (type confusion)' } },
+      { pc: 9, title: 'Üzerine yazma', term: ['once:  user=deniz admin=0'],
+        text: 'note bir char tamponu olarak doldurulur. İlk 16 bayt user alanına, sonraki 4 bayt (0x01010101) tam is_admin alanına denk gelir. Saldırgan note’u yazarak s’nin alanlarını belirledi.',
+        s: { to: ADDR, dangle: true }, note: { to: ADDR }, flash: true,
+        chunk: { state: 'evil', owner: 'note (saldırgan verisi)', user: '"AAAAAAAAAAAAAAAA"', admin: '0x01010101', evilU: true, evilA: true },
+        free: [], verdict: { cls: 'breach', txt: 'is_admin alanı saldırganın kontrolünde' } },
+      { pc: 12, title: 'Sarkan okuma', term: ['once:  user=deniz admin=0', 'sonra: user=AAAAAAAAAAAAAAAA admin=16843009'],
+        text: 's->is_admin okunur. s eski session sanıyor ama bellek artık note’un verisi. Okunan değer 0x01010101 = 16843009, yani sıfır değil.',
+        s: { to: ADDR, dangle: true }, note: { to: ADDR }, flash: false,
+        chunk: { state: 'evil', owner: 'note (saldırgan verisi)', user: '"AAAAAAAAAAAAAAAA"', admin: '0x01010101', evilU: true, evilA: true },
+        free: [], verdict: { cls: 'breach', txt: 's->is_admin = 16843009 ≠ 0' } },
+      { pc: 13, title: 'Yetki yükseldi', term: ['once:  user=deniz admin=0', 'sonra: user=AAAAAAAAAAAAAAAA admin=16843009'],
+        text: 'if (s->is_admin) artık doğru; grant_admin() çalışır. Tek bir use-after-free bir yetki kontrolünü devre dışı bıraktı — hem de program hiç çökmeden.',
+        s: { to: ADDR, dangle: true }, note: { to: ADDR }, flash: false,
+        chunk: { state: 'evil', owner: 'note (saldırgan verisi)', user: '"AAAAAAAAAAAAAAAA"', admin: '0x01010101', evilU: true, evilA: true },
+        free: [], verdict: { cls: 'breach', txt: 'grant_admin() çalıştı → yetki yükseltme' } }
+    ],
+    termBad: function (t) { return /16843009/.test(t); },
+    render: function (s, stateEl, u) {
+      function ptr(p, name) {
+        if (!p.to) return '<div class="ptr null"><b>' + name + '</b><span class="val">= NULL</span><span class="tagline">henüz yok</span></div>';
+        var cls = p.dangle ? 'ptr dangle' : 'ptr live';
+        return '<div class="' + cls + '"><b>' + name + '</b><span class="val">→ ' + p.to + '</span><span class="tagline">' + (p.dangle ? 'SARKAN (dangling)' : 'canlı') + '</span></div>';
+      }
+      var c = s.chunk;
+      var pill = c.state === 'used' ? 'KULLANIMDA' : c.state === 'free' ? 'SERBEST (tcache)' : 'SALDIRGAN VERİSİ';
+      stateEl.innerHTML =
+        '<p class="lab-label">İşaretçiler</p><div class="ptrs">' + ptr(s.s, 's') + ptr(s.note, 'note') + '</div>' +
+        '<p class="lab-label" style="margin-top:14px">Heap</p>' +
+        '<div class="chunk ' + c.state + '" id="chk"><div class="chunk-h"><span>yonga · <span class="addr">' + ADDR + '</span> · 20 bayt</span><span class="state-pill">' + pill + '</span></div>' +
+          '<div><div class="field"><span class="fn">sahip</span><span class="fv">' + u.esc(c.owner) + '</span></div>' +
+          '<div class="field' + (c.evilU ? ' evil' : '') + '"><span class="fn">user[16]</span><span class="fv">' + u.esc(c.user) + '</span></div>' +
+          '<div class="field' + (c.evilA ? ' evil' : '') + '"><span class="fn">is_admin</span><span class="fv">' + u.esc(c.admin) + '</span></div></div></div>' +
+        (s.free.length ? '<div class="freelist" style="margin-top:10px"><span class="fl-h">tcache[20] →</span><span class="bin">' + s.free.join(' → ') + ' → NULL</span></div>'
+                       : '<div class="freelist empty" style="margin-top:10px"><span class="fl-h">tcache[20] →</span><span class="bin">boş</span></div>') +
+        '<div class="read-out"><p class="lab-label" style="margin-bottom:6px">s üzerinden yetki kontrolü</p>' +
+        '<div class="verdict ' + s.verdict.cls + '"><span class="dot"></span><span>' + u.esc(s.verdict.txt) + '</span></div></div>';
+      if (s.flash) ATLAS.flash(document.getElementById('chk'), true);
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: bellek güvenliği hata sınıfları",
+    html: `<p class="lead">Use-after-free tek bir hata değil, bir ailenin en görünür üyesidir. Bu bölüm bellek güvenliği (memory safety) ihlallerini kök nedenleriyle sınıflandırır: neden C/C++'ta yoğunlaşırlar, birbirlerinden nasıl ayrılırlar ve hangi savunma her birini kaynağında keser. Tüm tanımlar MITRE CWE kataloğu ve derleyici sanitizer belgeleri gibi kamuya açık savunma kaynaklarına dayanır; amaç mekanizmayı tanımak, sömürü primitifi kurmak değil.</p>
+
+<h3>1. İki eksen: temporal ve spatial safety</h3>
+<p>Bellek güvenliği iki bağımsız garantinin birleşimidir. <strong>Spatial safety</strong> (uzamsal güvenlik): bir erişim nesnenin sınırları içinde kalır — ne öncesine ne de sonrasına taşar. <strong>Temporal safety</strong> (zamansal güvenlik): bir erişim nesnenin yaşadığı zaman aralığında olur — tahsis edildikten sonra, serbest bırakılmadan önce. Her bellek hatası bu iki eksenden en az birini ihlal eder: overflow ve OOB uzamsal, use-after-free ve double-free zamansal ihlallerdir.</p>
+<div class="deflist">
+<div><dt>temporal safety</dt><dd>Nesneye yalnızca geçerli (canlı) olduğu sürece erişilir. İhlali: dangling pointer üzerinden erişim — use-after-free, double-free, use-after-return.</dd></div>
+<div><dt>spatial safety</dt><dd>Erişim nesnenin tahsis edilmiş sınırları içinde kalır. İhlali: sınır dışına okuma/yazma — heap/stack overflow, out-of-bounds (OOB).</dd></div>
+</div>
+
+<h3>2. Use-after-free: zamansal ihlalin anatomisi</h3>
+<p>UAF'in kök tanımı CWE-416'da nettir: bellek serbest bırakıldıktan sonra hâlâ kullanılır. Kritik nokta <em>yeniden tahsis</em>tir — serbest bırakılan bölge başka bir nesneye verilince, eski işaretçi (dangling pointer) artık yeni nesnenin baytlarını okur/yazar. Lab'daki <code>s</code> ve <code>note</code> çakışması tam olarak budur.</p>
+<div class="manpage src-docs"><div class="ref">CWE-416 · Use After Free</div><p class="orig">The product reuses or references memory after it has been freed. … At some point afterward, the memory may be allocated again and saved in another pointer, while the original pointer references a location somewhere within the new allocation. Any operations using the original pointer are no longer valid because the memory "belongs" to the code that operates on the new pointer.</p><p>Bellek serbest bırakıldıktan sonra yeniden kullanılır veya referans edilir. Bir süre sonra o bellek yeniden tahsis edilip başka bir pointer'a atanabilir; orijinal pointer ise yeni tahsisin içindeki bir konumu gösterir. Orijinal pointer üzerinden yapılan işlemler artık geçersizdir, çünkü bellek yeni pointer ile çalışan koda "aittir". Tehlikenin kaynağı budur: aynı baytlar iki ayrı anlam taşır.</p></div>
+<p>Buradaki <em>dangling pointer</em> (sarkan işaretçi) kavramı UAF'in merkezidir: serbest bırakma işaretçiyi sıfırlamaz, sadece belleği tahsis ediciye iade eder. İşaretçi hâlâ eski adresi tutar.</p>
+<div class="manpage src-docs"><div class="ref">CWE-416 · dangling pointer</div><p class="orig">a pointer that no longer points to valid memory, often after it has been freed</p><p>Sarkan işaretçi: artık geçerli belleği göstermeyen, çoğunlukla serbest bırakma sonrası bu hâle gelen işaretçi. Savunmanın en ucuz adımı bu yüzden <code>free(p); p = NULL;</code> alışkanlığıdır — sarkan işaretçiyi kaynağında yok eder.</p></div>
+
+<h3>3. Komşu sınıflar: double-free ve out-of-bounds</h3>
+<p>Aynı zamansal/uzamsal çerçevede iki hata daha sık görülür. <strong>Double-free</strong> yine zamansaldır ama bu kez tahsis edicinin kendi defterini bozar; <strong>out-of-bounds write</strong> uzamsaldır ve komşu belleği ezer.</p>
+<div class="manpage src-docs"><div class="ref">CWE-415 · Double Free</div><p class="orig">The product calls free() twice on the same memory address. … the program's memory management data structures may become corrupted, potentially leading to the reading or modification of unexpected memory addresses.</p><p>Aynı bellek adresinde <code>free()</code> iki kez çağrılır. Sonuç olarak programın bellek yönetimi veri yapıları (free list / tcache gibi) bozulabilir; bu da beklenmeyen bellek adreslerinin okunmasına veya yazılmasına yol açabilir. Kök neden genelde sahiplik (ownership) belirsizliğidir: iki kod yolu aynı nesneyi serbest bırakma sorumluluğunu üstlenir.</p></div>
+<div class="manpage src-docs"><div class="ref">CWE-787 · Out-of-bounds Write</div><p class="orig">The product writes data past the end, or before the beginning, of the intended buffer.</p><p>Hedeflenen tamponun sonundan sonrasına ya da başından öncesine veri yazılır. Bu uzamsal ihlal komşu nesneleri, metadata'yı ya da dönüş adresini ezebilir. CWE-787, yıllardır en tehlikeli yazılım zafiyetleri listelerinin üst sıralarında yer alır; çünkü tek bir yanlış uzunluk veya indeks kontrolü yeterlidir.</p></div>
+<p>Bir <strong>type confusion</strong> ise farklı bir mekanizmadır: bellek geçerlidir ama yanlış türde yorumlanır (hatalı cast, union yanlış kullanımı). Lab'daki senaryoda UAF + type confusion birlikte çalışır: aynı baytlar önce <code>session</code>, sonra <code>char[]</code> olarak okunur.</p>
+
+<h3>4. Neden C/C++ ve savunma nasıl keser</h3>
+<p>Bu hataların C/C++'ta yoğunlaşmasının nedeni dildir: bellek yönetimi programcıya bırakılır, sınır ve yaşam süresi denetimi çalışma zamanında otomatik yapılmaz. Savunma iki katmanda çalışır — hatayı <em>bulmak</em> (geliştirme sırasında) ve hatayı <em>sömürülemez</em> kılmak (çalışma zamanında).</p>
+<div class="deflist">
+<div><dt>Sanitizer (bulma)</dt><dd>AddressSanitizer "fast memory error detector"; use-after-free, heap/stack/global OOB, double-free ve invalid-free yakalar. Test ve fuzzing sırasında hatayı sessizlikten çıkarıp çökmeye çevirir.</dd></div>
+<div><dt>Hardened allocator (zorlaştırma)</dt><dd>Serbest yongaları hemen geri vermeyen, metadata'yı ayıran, guard page ekleyen allocator'lar UAF'i güvenilmez kılar.</dd></div>
+<div><dt>MTE / tagging (donanım)</dt><dd>Her tahsise bir tag verilir; dangling pointer eski tag'i taşır, yeniden tahsis yeni tag alır — uyuşmazlık donanımda yakalanır. Hem temporal hem spatial.</dd></div>
+<div><dt>Ownership / Rust (eleme)</dt><dd>Derleme zamanında yaşam süresi ve sahiplik denetlenir; dangling pointer ve double-free sınıfı bir bütün olarak elenir — bulmaya gerek kalmaz.</dd></div>
+</div>
+<div class="manpage src-docs"><div class="ref">Clang · AddressSanitizer</div><p class="orig">AddressSanitizer is a fast memory error detector.</p><p>AddressSanitizer hızlı bir bellek hatası dedektörüdür. <code>-fsanitize=address</code> ile derlenen program, serbest bırakılmış belleğe erişimi (use-after-free), sınır dışı erişimleri (out-of-bounds) ve çift serbest bırakmayı (double-free) erişim anında yakalar. Lab'daki program ASan olmadan sessizce yanlış çalışırken, ASan ile ilk sarkan erişimde durur — bu fark, "hatayı gizleyen" ile "yüzüne vuran" derleme arasındaki farktır.</p></div>
+<p>Bütün bu katmanların ortak hedefi aynıdır: bir bellek hatasının <em>var olması</em> ile onun <em>sömürülebilir bir primitife dönüşmesi</em> arasındaki yolu kesmek. Bir sonraki modül tam da o yolu — bug'dan info leak'e, oradan keyfi okuma/yazmaya — kavramsal olarak izler.</p>`
+  },
+  underHood: {
+    heading: 'Kaputun altında: neden aynı yongayı geri alıyoruz?',
+    html: '<p class="prose">glibc\'nin <code>malloc</code>\'u serbest bırakılan küçük yongaları hızlı yeniden kullanım için <strong>tcache</strong> adlı, iş parçacığına özel listelerde tutar. <code>free(s)</code> yongayı boyutuna karşılık gelen kutunun başına ekler; aynı boyuttaki sonraki <code>malloc</code> o yongayı — az önce serbest bıraktığın adresi — geri verir. Saldırıyı güvenilir kılan budur.</p>' +
+      '<p class="prose">Bu, bir ailenin tek üyesi. Bellek güvenliği ihlalleri birkaç tekrar eden desende toplanır:</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Sınıf</th><th>Ne olur</th><th>Tipik kök neden</th></tr></thead><tbody>' +
+      '<tr><td><b>Use-after-free</b></td><td>Serbest bırakılan bellek okunur/yazılır</td><td>free sonrası işaretçi sıfırlanmaz</td></tr>' +
+      '<tr><td><b>Heap taşması</b></td><td>Yonga sınırının ötesine yazılır, komşu bozulur</td><td>Sınır kontrolü eksik <code>memcpy</code></td></tr>' +
+      '<tr><td><b>Sınır dışı (OOB)</b></td><td>Dizi sınırları dışında okuma/yazma</td><td>Negatif/yanlış indeks, yanlış uzunluk</td></tr>' +
+      '<tr><td><b>Tür karışıklığı</b></td><td>Nesne yanlış türde yorumlanır</td><td>Hatalı cast, union</td></tr>' +
+      '<tr><td><b>Çift serbest</b></td><td>Aynı yonga iki kez free edilir, liste bozulur</td><td>Sahiplik belirsizliği</td></tr>' +
+      '</tbody></table></div>'
+  },
+  pipeline: { intro: 'Tek bir bellek hatası nadiren tek başına yeter. Gerçek bir sömürü hatayı adım adım daha güçlü yeteneklere çevirir. Her korumanın bu zincirin neresini kırdığını okumak, savunmayı anlamaktır.' },
+  tryIt: {
+    items: [
+      { h3: '1. Önce ASan\'sız, sonra ASan\'lı', p: 'ASan\'sız derlemede program çöker mi, yoksa sessizce yanlış sonuç mu verir? Biri hatayı gizler, diğeri yüzüne vurur.',
+        shells: [{ label: 'terminal', copy: 'gcc -w -o uaf uaf.c && ./uaf', pre: '<span class="c"># ASan yok: sessizce yanlis</span>\n<span class="c">$</span> gcc -w -o uaf uaf.c &amp;&amp; ./uaf\nonce:  user=deniz admin=0\nsonra: user=AAAAAAAAAAAAAAAA admin=<span class="hi">16843009</span>\n\n<span class="c"># ASan var: aninda yakalar</span>\n<span class="c">$</span> gcc -fsanitize=address -g -o uaf uaf.c &amp;&amp; ./uaf' }] },
+      { h3: '2. tcache\'i doğrula', p: 'Aynı boyutta art arda free + malloc yap; serbest bıraktığın adresin bir sonraki malloc\'ta geri geldiğini gör. UAF\'i güvenilir kılan mekanizma budur.',
+        shells: [{ label: 'terminal', copy: 'gcc -o tcache tcache.c && ./tcache', pre: '<span class="c">$</span> ./tcache\n1: 0x5...2a0\n2: 0x5...2a0   <span class="c"># ayni adres geri geldi</span>' }] },
+      { h3: '3. Diğer dedektörler', p: 'ASan tek seçenek değil. Valgrind yeniden derlemeden çalışır; UBSan tanımsız davranışı, MSan başlatılmamış belleği yakalar.',
+        shells: [{ label: 'terminal', copy: 'valgrind --leak-check=full ./uaf', pre: '<span class="c">$</span> valgrind --leak-check=full ./uaf\n<span class="c"># Invalid read of size 4 ... inside a block of size 20 free\'d</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: '<code>free(s)</code>\'ten sonra <code>note = malloc(sizeof *s)</code> çağrılınca hangi işaretçiler aynı belleği gösterir?', opts: ['yalnızca note', 's ve note', 'hiçbiri'], answer: 's ve note',
+        ok: 'Doğru. tcache aynı yongayı geri verdi; s hiç sıfırlanmadığı için ikisi de aynı adrese bakıyor. Use-after-free burada.', no: 'Tekrar dene. free() s\'yi sıfırlamadı, tcache aynı yongayı geri verdi.' },
+      { q: 'ASLR\'nin bir saldırganı zorladığı sömürü aşaması hangisidir?', opts: ['Bug', 'Bilgi sızıntısı', 'Yük'], answer: 'Bilgi sızıntısı',
+        ok: 'Doğru. ASLR adresleri rastgeleleştirir; saldırgan önce bir adres sızdırmak zorunda kalır, yoksa sonraki adımlar çökmeye döner.', no: 'Tekrar dene. ASLR adresleri rastgeleleştirir; bu hangi adımı zorunlu kılar?' },
+      { q: 'Bu program ASan olmadan çalıştırılınca ne olur?', opts: ['Derlenmez', 'Hemen çöker', 'Sessizce yanlış çalışır'], answer: 'Sessizce yanlış çalışır',
+        ok: 'Doğru. Çökmeden çalışır ama admin=0x01010101 olur. Bu sessizlik, bellek hatalarını fark edilmeden sömürülebilir kılar.', no: 'Tekrar dene. Çıktıdaki admin değerini hatırla: çökmedi ama doğru da çalışmadı.' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Ofansif Modül 3', title: 'Sömürü primitifleri', desc: 'Bir bug nasıl info leak, keyfi okuma/yazma ve kontrol akışı ele geçirmeye dönüşür?' },
+  sources: [
+    { href: 'https://pwn.college/', text: 'pwn.college', note: 'uygulamalı, ücretsiz' },
+    { href: 'https://github.com/RPISEC/MBE', text: 'RPISEC — Modern Binary Exploitation' },
+    { href: 'https://github.com/google/sanitizers/wiki/AddressSanitizer', text: 'AddressSanitizer belgeleri' },
+    { href: 'https://sourceware.org/glibc/wiki/MallocInternals', text: 'glibc malloc iç yapısı', note: 'tcache, bin\'ler' },
+    { href: 'https://github.com/xairy/linux-kernel-exploitation', text: 'xairy/linux-kernel-exploitation', note: 'çekirdek tarafı' }
+  ],
+  pageTitle: 'Bellek Güvenliği ve UAF'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

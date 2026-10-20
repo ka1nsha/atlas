@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>IOKit ve DriverKit</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: I/O Registry ağacı */
+.iotree { display: grid; gap: 6px; }
+.ionode { border: 1.5px solid var(--line); border-radius: 8px; padding: 7px 10px; background: var(--surface); display: grid; gap: 1px; min-width: 0; }
+.ionode b { font-family: var(--f-mono); font-size: 12.5px; }
+.ionode span { font-size: 11.5px; color: var(--muted); }
+.ionode.hot { border-color: var(--track); background: var(--track-soft); }
+.ionode.hot b { color: var(--track); }
+.ionode.drv { border-style: dashed; }
+.ionode.started { border-color: var(--ok); }
+.ionode.started b { color: var(--ok); }
+.ionode.dext { border-color: var(--warn); }
+.ionode.dext b { color: var(--warn); }
+.iopanel { margin-top: 12px; border: 1px solid var(--line); border-radius: var(--r); background: var(--sunk); padding: 10px 12px; font-size: 13px; }
+.iopanel .pk { font-family: var(--f-mono); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); display: block; margin-bottom: 4px; }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+// I/O Registry ağacı — sabit düğümler; her adımda bir alt küme vurgulanır/durumu değişir
+var NODES = [
+  { id: 'root', d: 0, name: 'IOPlatformExpertDevice', sub: 'kök · platform' },
+  { id: 'pci',  d: 1, name: 'IOPCIBridge',            sub: 'veri yolu (bus)' },
+  { id: 'nub',  d: 2, name: 'IONetworkController',     sub: 'aygıt nub\'ı' },
+  { id: 'drv',  d: 3, name: 'AppleEthernetDriver',     sub: 'çekirdek sürücüsü (kext)', kind: 'drv' },
+  { id: 'usb',  d: 2, name: 'IOUSBHostDevice',         sub: 'aygıt nub\'ı' },
+  { id: 'dext', d: 3, name: 'com.ornek.usbcam.dext',   sub: 'DriverKit sürücüsü (kullanıcı alanı)', kind: 'dext' }
+];
+
+var MODULE = {
+  track: 'macos',
+  crumbs: 'macos › iokit › modül 14',
+  eyebrow: 'Modül 14 · macOS / iOS · Sürücüler',
+  titleHTML: '<code>IOKit</code> ve DriverKit: sürücülerin dünyası',
+  lede: 'XNU\'nun sürücü çatısı IOKit, C++ ile yazılır ve tüm aygıtları canlı bir ağaçta (I/O Registry) tutar. Bir aygıt ile ona uyan sürücü nasıl eşleşir, kullanıcı alanı sürücüye nasıl ulaşır ve DriverKit bunu neden daha güvenli kılar — adım adım görelim.',
+  meta: ['~18 dk', 'ön koşul: Mach port, sürücü kavramı', 'bağlam: XNU / IOKit'],
+  intuition: {
+    paras: [
+      'Linux sürücüleri çoğunlukla C ile yazılır; IOKit ise gömülü bir C++ (Embedded C++) lehçesi kullanır. Her sürücü ve her aygıt, <code>OSObject</code> soyundan gelen nesnelerdir ve hepsi <strong>I/O Registry</strong> adlı canlı bir ağaçta yaşar. Bu ağaç, o an makineye bağlı donanımın ve onları süren sürücülerin anlık fotoğrafıdır.',
+      'IOKit\'in kalbi <strong>eşleştirmedir (matching)</strong>: çekirdek bir aygıt gördüğünde, ona uyan sürücü sınıfını bir kişilik (personality) sözlüğüne bakarak bulur ve başlatır. Sağlayıcı (provider) ve istemci (client) ilişkisi ağacı aşağı doğru örer. Mach port modülündeki gibi, kullanıcı alanı bu sürücülere bir <strong>kullanıcı istemcisi (user client)</strong> üzerinden ulaşır — ki bu, güvenlik açısından en kritik saldırı yüzeylerinden biridir.'
+    ],
+    ideas: [
+      { b: 'Her şey ağaçta', span: 'I/O Registry; aygıtlar (nub) ve sürücüler sağlayıcı-istemci ilişkisiyle bağlı canlı bir ağaç.' },
+      { b: 'Eşleştirme', span: 'Çekirdek, aygıta uyan sürücüyü IOProviderClass/IOClass kişiliklerine bakarak seçer ve IOService::start çağırır.' },
+      { b: 'User client', span: 'Kullanıcı alanı sürücüye IOConnectCallMethod ile ioctl-benzeri çağrı yapar. Zayıf doğrulama = çekirdek saldırı yüzeyi.' }
+    ]
+  },
+  lab: {
+    intro: 'Açılışta IOKit donanımı tarar, I/O Registry ağacını kurar, her aygıta sürücü eşleştirir ve başlatır. Sonra kullanıcı alanı bir user client açar. Sağda ağacı ve o anki durumu izle.',
+    codeLabel: 'IOKit (temsilî)', cmd: 'ioreg',
+    foot: 'Düğüm adları ve çıktılar temsilîdir. Gerçek API: IOKit/IOKitLib.h, IOService.',
+    code: [
+      { t: '<span class="cm">// çekirdek: açılışta</span>' },
+      { t: 'IOPlatformExpert::<span class="f">scan</span>();     <span class="cm">// donanımı tara</span>' },
+      { t: 'service-><span class="f">registerService</span>();  <span class="cm">// eşleştirmeyi tetikle</span>' },
+      { t: '' },
+      { t: '<span class="cm">// eşleşen sürücü başlatılır</span>' },
+      { t: 'driver-><span class="f">start</span>(provider);' },
+      { t: '' },
+      { t: '<span class="cm">// kullanıcı alanı</span>' },
+      { t: '<span class="f">IOServiceOpen</span>(svc, ..., &amp;conn);' },
+      { t: '<span class="f">IOConnectCallMethod</span>(conn, selector, ...);' }
+    ],
+    steps: [
+      { pc: 2, title: 'Donanım taranır', hot: ['root'], term: ['ioreg: kök düğüm hazır'],
+        pk: 'Tarama', panel: 'IOPlatformExpert açılışta donanımı tarar ve ağacın kökünü (<code>IOPlatformExpertDevice</code>) kurar. Henüz veri yolları ve aygıtlar eklenmedi.' },
+      { pc: 2, title: 'Registry ağacı kurulur', hot: ['root', 'pci', 'nub', 'usb'], term: ['ioreg: veri yolları ve aygıt nub\'ları eklendi'],
+        pk: 'I/O Registry', panel: 'Veri yolları (bus) ve aygıtlar birer <strong>nub</strong> (aygıt düğümü) olarak ağaca eklenir. Her nub, henüz sürücüsüz, eşleştirme bekleyen bir donanım parçasıdır. Ağaç = sağlayıcı (üst) → istemci (alt) ilişkisi.' },
+      { pc: 3, title: 'Eşleştirme (matching)', hot: ['nub', 'drv'], term: ['matching: IONetworkController → AppleEthernetDriver (skor en yüksek)'],
+        pk: 'Driver matching', panel: 'Nub <code>registerService()</code> ile eşleştirmeyi tetikler. Çekirdek, kişilik (personality) sözlüklerindeki <code>IOProviderClass</code> ve <code>IOClass</code> eşleşmelerine bir skor verir; en yüksek skorlu sürücü seçilir.' },
+      { pc: 5, title: 'Sürücü başlar', hot: ['drv'], started: ['drv'], term: ['AppleEthernetDriver::start() → başarılı'],
+        pk: 'IOService::start', panel: 'Seçilen sürücünün <code>start(provider)</code> metodu çağrılır. Sürücü artık ağaçta nub\'un <strong>istemcisi (client)</strong> olarak canlıdır ve donanımı sürer. Kernel uzayında (ring 0) çalışır.' },
+      { pc: 8, title: 'Kullanıcı istemcisi (user client)', hot: ['drv'], started: ['drv'], uc: true, term: ['IOServiceOpen → conn 0x1 · IOConnectCallMethod(selector=3)'],
+        pk: 'User client — saldırı yüzeyi', panel: 'Kullanıcı alanı <code>IOServiceOpen</code> ile bir <strong>user client</strong> açar ve <code>IOConnectCallMethod</code> ile sürücüye ioctl-benzeri çağrılar yapar. Bu sınır çekirdeğe açılan bir kapıdır: <code>externalMethod</code> argümanları iyi doğrulanmazsa, bu bir çekirdek bug\'ına ve ayrıcalık yükseltmeye (privilege escalation) dönüşür. iOS exploit tarihinin büyük kısmı IOKit user client hatalarıdır.' },
+      { pc: 8, title: 'DriverKit: sürücüyü dışarı taşı', hot: ['usb', 'dext'], started: ['drv'], uc: true, term: ['com.ornek.usbcam.dext kullanıcı alanında çalışıyor'],
+        pk: 'DriverKit (dext)', panel: 'Apple\'ın yeni modeli DriverKit, sürücüyü (<strong>dext</strong>) çekirdekten çıkarıp kendi kum havuzundaki (sandbox) bir kullanıcı-alanı sürecine koyar. Çöküşü çekirdeği düşürmez ve saldırı yüzeyi daralır. Çekirdekteki kext\'ler yerini kademeli olarak bunlara bırakıyor.' }
+    ],
+    render: function (s, stateEl, u) {
+      var hot = s.hot || [], started = s.started || [];
+      var tree = NODES.map(function (n) {
+        var cls = 'ionode' + (n.kind ? ' ' + n.kind : '') + (hot.indexOf(n.id) >= 0 ? ' hot' : '') + (started.indexOf(n.id) >= 0 ? ' started' : '');
+        var sub = n.sub + (started.indexOf(n.id) >= 0 ? ' · ÇALIŞIYOR' : '');
+        return '<div class="' + cls + '" style="margin-left:' + (n.d * 18) + 'px">' +
+          '<b>' + u.esc(n.name) + '</b><span>' + u.esc(sub) + '</span></div>';
+      }).join('');
+      var uc = s.uc ? '<div class="ionode hot" style="margin-left:0;border-style:dashed"><b>kullanıcı alanı → IOUserClient</b><span>IOConnectCallMethod ile çağrı · sınır</span></div>' : '';
+      stateEl.innerHTML =
+        '<p class="lab-label">I/O Registry ağacı</p>' +
+        '<div class="iotree" id="ioT">' + tree + uc + '</div>' +
+        '<div class="iopanel"><span class="pk">' + u.esc(s.pk) + '</span>' + s.panel + '</div>';
+      if (s.uc) ATLAS.flash(document.getElementById('ioT'), false);
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: IOKit ve sürücü modeli",
+    html: `<p class="lead">IOKit, XNU'nun sürücü dünyasıdır — ama Linux'un C sürücülerinden çok farklı bir felsefeyle: nesne yönelimli, C++ tabanlı ve çalışma anında keşfedilen bir aygıt ağacı üzerine kurulu. Bu yapı, bir USB aygıtını taktığınızda doğru sürücünün otomatik yüklenmesinden, bir user client'ın iOS exploit zincirlerinde neden sık bir saldırı yüzeyi olduğuna kadar her şeyi açıklar. Bu bölüm Apple'ın IOKit belgelerine ve Jonathan Levin'in OS Internals serisine dayanır.</p>
+
+<h3>1. IOKit = çekirdekte C++</h3>
+<p>Linux sürücüleri saf C'dir; IOKit ise kernel içinde çalışan kısıtlı bir C++ alt kümesi (Embedded C++) kullanır. Taban sınıf <code>OSObject</code>'tir ve tüm nesneler Libkern runtime'ı üzerinden reference counting (<code>retain</code>/<code>release</code>) ile yönetilir. Exception ve RTTI gibi özellikler, çok iş parçacıklı kernel için uygun olmadığından çıkarılmıştır. Ortak davranış family (IOUSBFamily, IOStorageFamily gibi) sınıflarında toplanır, böylece her sürücü sıfırdan yazılmaz.</p>
+<div class="manpage src-apple"><div class="ref">iokit fundamentals · overview</div><p class="orig">It is based on an object-oriented programming model implemented in a restricted form of C++ that omits features unsuitable for use within a multithreaded kernel.</p><p>Apple'ın kendi ifadesi: çok iş parçacıklı kernel için uygun olmayan C++ özellikleri kasıtlı olarak çıkarılmıştır. Bu yüzden IOKit kodu C++ gibi görünür ama exception kullanmaz, bellek yönetimi elle (reference counting) yapılır.</p></div>
+
+<h3>2. I/O Registry: çalışma anında aygıt ağacı</h3>
+<p>I/O Registry, o anda sistemde var olan donanımı ve sürücü nesnelerini tutan canlı bir ağaçtır. Her düğüm bir <code>IORegistryEntry</code>'dir; kökte platform expert, altında bus'lar (PCI, USB), onların altında aygıtlar ve onlara bağlanan sürücüler bulunur. Bir aygıt takılıp çıktıkça ağaç değişir — bu yüzden "çalışma anında" (dynamic) denir. <code>ioreg</code> komutu bu ağacı gezer.</p>
+<div class="manpage src-apple"><div class="ref">iokit fundamentals · registry</div><p class="orig">The I/O Registry, a database that tracks instantiated objects (such as driver instances) and provides information about them.</p><p>Registry statik bir liste değil, canlı bir veritabanıdır: hangi sürücünün hangi aygıta bağlı olduğunu ve aralarındaki provider/client ilişkisini anlık olarak yansıtır.</p></div>
+
+<h3>3. Driver matching: doğru sürücüyü bulmak</h3>
+<p>Bir nub (aygıtı temsil eden geçici nesne) kendini duyurduğunda, çekirdek hangi sürücünün ona uyduğunu bir <strong>matching dictionary</strong> ile arar: sürücünün Info.plist'indeki personality (örn. IOProviderClass, vendor/product ID) registry özellikleriyle karşılaştırılır. Birden çok aday varsa <code>probe()</code> çağrılır ve her sürücü bir <strong>score</strong> döndürür; en yüksek skorlu kazanır. Bu, plug-and-play'in temelidir.</p>
+<div class="manpage src-apple"><div class="ref">iokit fundamentals · matching</div><p class="orig">A robust, efficient match-and-load mechanism that scales well to all bus types.</p><p>Aynı match-and-load mekanizması PCI, USB, Thunderbolt — her bus türünde çalışır. Sürücü koduna dokunmadan yeni aygıt desteği, çoğu zaman sadece bir matching dictionary eklemekle gelir.</p></div>
+
+<h3>4. IOService yaşam döngüsü</h3>
+<p>Sürücüler <code>IOService</code>'ten türer ve matching'i kazanınca belirli bir sırayla hayata geçer. Bu sıra Linux'un <code>probe()</code>/<code>remove()</code> callback'lerine benzer ama daha ayrıntılıdır:</p>
+<div class="deflist">
+<div><dt>init / attach</dt><dd>Nesne kurulur ve provider'ına (üstündeki nub) registry'de bağlanır.</dd></div>
+<div><dt>probe</dt><dd>Sürücü donanımı yoklar ve bir match score döndürür — "bu aygıta ben ne kadar uygunum?".</dd></div>
+<div><dt>start</dt><dd>Kazanan sürücü başlar: kaynakları alır, kendi nub'larını yayınlar (registerService), aygıtı kullanılabilir yapar.</dd></div>
+<div><dt>stop / free</dt><dd>Aygıt gidince ters sırada sökülür; free ile reference count sıfırlanınca bellek bırakılır.</dd></div>
+</div>
+<p>Senkronizasyon için IOKit <strong>work loop</strong> ve <code>IOCommandGate</code> kullanır: aygıta erişim tek bir work loop thread'inde seri hale getirilir, böylece interrupt ve istemci çağrıları çakışmaz.</p>
+
+<h3>5. User client: kullanıcı alanının çekirdeğe açılan kapısı</h3>
+<p>Kullanıcı alanı bir uygulama, bir sürücüyle doğrudan konuşamaz; bunun yerine bir <code>IOUserClient</code> açar ve <code>externalMethod</code> ile sürücüye çağrı yapar (Linux'taki <code>ioctl</code>'in karşılığı). Sürücü, her user client metodu için izin verilen argümanları ve sınırları tanımlar. Bu kapı güvenlik açısından kritiktir: kullanıcı alanından gelen her girdi düşman kabul edilmeli, doğrulanmalıdır. User client metodlarındaki eksik doğrulama, kullanıcı alanından çekirdeğe ulaşan en yaygın saldırı yüzeylerinden biridir (kavramsal — ofansif izleğe bakın).</p>
+
+<h3>6. DriverKit: sürücüler kullanıcı alanına taşınıyor</h3>
+<p>Geleneksel sürücüler kernel extension (kext) olarak çekirdeğin içinde çalışır — bir kext çökerse tüm sistem çöker ve kext kod imzalama/güvenlik için ağır bir yüktür. Apple bu yüzden DriverKit'i getirdi: sürücüler artık kullanıcı alanında, izole bir süreç (dext — driver extension) olarak çalışır. Bir dext çökerse çekirdek ayakta kalır. Bu, XPC/IPC üzerinden çekirdekle konuşan, saldırı yüzeyini daralmış bir modeldir.</p>
+<div class="manpage src-apple"><div class="ref">driverkit · overview</div><p class="orig">Develop device drivers that run in user space.</p><p>Tek cümlelik felsefe değişimi: sürücü artık çekirdekte değil, kullanıcı alanında. Linux da benzer bir yönde (UIO, VFIO ile bazı sürücüleri kullanıcı alanına taşıma) ilerliyor, ama DriverKit bunu tüm sürücü sınıfları için varsayılan hedef yapıyor.</p></div>`
+  },
+  underHood: {
+    html: '<p class="prose">IOKit tamamen çekirdek içinde C++ nesneleriyle çalışır; kullanıcı alanı yalnızca user client kapısından içeri konuşabilir. Eşleştirme ve başlatma yolu şöyledir:</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">registerService()</span><span class="where">IOService</span><p>Bir nub kendini duyurur; çekirdek uygun sürücü kişiliklerini arar (matching).</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">probe() → start(provider)</span><span class="where">IOService</span><p>En yüksek skorlu sürücü seçilir; probe ile doğrulanır, start ile başlatılır ve ağaca istemci olarak eklenir.</p></div></li>' +
+      '<li class="boundary"><div>kullanıcı → çekirdek sınırı · IOUserClient</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://developer.apple.com/documentation/iokit" target="_blank" rel="noopener">IOConnectCallMethod → externalMethod()</a><span class="where">IOUserClient</span><p>Kullanıcı alanının çağrıları buraya iner. Argüman doğrulama hataları en sık görülen çekirdek saldırı yüzeyidir.</p></div></li>' +
+      '</ol>' +
+      '<p class="prose" style="margin-top:14px">Linux ile fark: Linux sürücüsü C ile yazılır ve <code>/dev</code> aygıt dosyası + <code>ioctl</code> ile erişilir; IOKit ise C++ nesne ağacı + user client kullanır. İkisinde de kullanıcı→çekirdek sınırındaki doğrulama güvenliğin can damarıdır.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. I/O Registry ağacını gez', p: 'macOS\'ta çalışan aygıt ve sürücü ağacının tamamını listele; sağlayıcı-istemci ilişkisini gör.',
+        shells: [{ label: 'terminal (macOS · temsilî)', copy: 'ioreg -l | head -n 40', pre: '<span class="c">$</span> ioreg -l | head\n<span class="c"># +-o Root</span>\n<span class="c">#   +-o IOPlatformExpertDevice</span>\n<span class="c">#     +-o AppleACPIPlatformExpert ...</span>' }] },
+      { h3: '2. Belirli bir sınıfın örneklerini bul', p: 'Bir IOService alt sınıfının tüm canlı örneklerini (ör. ağ denetleyicileri) listele.',
+        shells: [{ label: 'terminal (macOS · temsilî)', copy: 'ioreg -c IONetworkController', pre: '<span class="c">$</span> ioreg -c IONetworkController\n<span class="c"># eşleşen sürücü, sağlayıcı zinciri ve özellikleri</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'IOKit sürücüleri hangi dille yazılır?', opts: ['Saf C', 'Gömülü C++ (Embedded C++)', 'Swift'], answer: 'Gömülü C++ (Embedded C++)',
+        ok: 'Doğru. IOKit, OSObject soyundan gelen sınıflarla gömülü bir C++ lehçesi kullanır — Linux\'un çoğunlukla C olan sürücü modelinden ayrılır.', no: 'İpucu: OSObject, sınıf, kalıtım... hangi dil ailesi?' },
+      { q: 'Kullanıcı alanı bir IOKit sürücüsüne nasıl ulaşır?', opts: ['Doğrudan bellek erişimiyle', 'Bir user client (IOConnectCallMethod) üzerinden', 'Dosya okuyarak'], answer: 'Bir user client (IOConnectCallMethod) üzerinden',
+        ok: 'Doğru. IOServiceOpen ile user client açılır, IOConnectCallMethod ile çağrı yapılır. Bu sınırdaki doğrulama hataları en kritik çekirdek saldırı yüzeyidir.', no: 'İpucu: çekirdeğe doğrudan dokunulamaz; aradaki ioctl-benzeri kapı nedir?' },
+      { q: 'DriverKit (dext) güvenliği nasıl artırır?', opts: ['Sürücüyü kullanıcı alanına, kum havuzuna taşıyarak', 'Sürücüyü imzalayarak', 'Sürücüyü hızlandırarak'], answer: 'Sürücüyü kullanıcı alanına, kum havuzuna taşıyarak',
+        ok: 'Doğru. dext çekirdek yerine izole bir kullanıcı-alanı sürecinde çalışır; çöküşü çekirdeği düşürmez ve saldırı yüzeyi daralır.', no: 'İpucu: dext çekirdekte mi çalışır, yoksa dışında mı?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · macOS Modül 15', title: 'Kod imzalama', desc: 'İmza formatı, requirement\'lar ve code directory: bir ikilinin çalışmasına kim izin verir?' },
+  sources: [
+    { href: 'https://newosxbook.com/TOC2-2.html', text: 'Levin — OS Internals Cilt II', note: 'Bölüm 19: I/O Kit' },
+    { href: 'https://developer.apple.com/documentation/iokit', text: 'Apple — IOKit' },
+    { href: 'https://developer.apple.com/documentation/driverkit', text: 'Apple — DriverKit' },
+    { href: 'https://github.com/apple-oss-distributions/xnu', text: 'XNU kaynağı', note: 'iokit/' }
+  ],
+  pageTitle: 'IOKit ve DriverKit'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

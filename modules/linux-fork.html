@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Süreçler ve fork()</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var ADDR_CODE = '0x5555…5000', VA_STACK = '0x7fff…e000';
+function kod() { return { n: 'kod', pfn: '0x8a21', perm: 'r-x' }; }
+function stk(x, pfn, perm, kind) { return { n: 'yığın · x=' + x, pfn: pfn, perm: perm, kind: kind }; }
+
+var MODULE = {
+  track: 'linux',
+  crumbs: 'linux › süreçler › modül 1',
+  eyebrow: 'Modül 1 · Linux · Süreç yönetimi',
+  titleHTML: '<code>fork()</code> bir süreci nasıl ikiye böler?',
+  lede: 'Unix\'te neredeyse her program başka bir sürecin kopyası olarak doğar. Bu modülde bir fork() çağrısını satır satır izleyecek, çekirdeğin içinde ne olduğunu görecek ve kendi makinende doğrulayacaksın.',
+  meta: ['~15 dk', 'ön koşul: temel C', 'çekirdek: Linux 6.x'],
+  intuition: {
+    paras: [
+      'Bir süreç (process), çalışmakta olan bir programdır: kendi belleği, açık dosyaları, kimliği (PID) ve CPU durumu vardır. Unix\'te yeni süreç yaratmanın yolu tuhaftır: sıfırdan kurmak yerine var olanı kopyalarsın. <code>ls</code> yazdığında kabuk önce kendini <code>fork()</code> ile kopyalar, sonra kopya <code>exec()</code> ile kendini <code>ls</code>\'ye dönüştürür.'
+    ],
+    ideas: [
+      { b: 'Kopyalar', span: 'Çocuk süreç ebeveynin bellek görüntüsünü, açık dosyalarını ve sinyal ayarlarını devralır.' },
+      { b: 'İki kez döner', span: 'Bir kez çağrılır, iki süreçte birden döner. Ebeveyn çocuğun PID\'sini, çocuk 0 alır.' },
+      { b: 'Tembel davranır', span: 'Bellek hemen kopyalanmaz. Biri yazana kadar iki süreç aynı fiziksel sayfaları paylaşır (copy-on-write).' }
+    ]
+  },
+  lab: {
+    intro: 'Program fork() çağırır, çocuk kendi <code>x</code> kopyasını değiştirir, ebeveyn onu bekler. Her adımda kodun hangi satırında olduğumuzu, iki sürecin durumunu ve RAM\'deki fiziksel çerçeveleri birlikte izle.',
+    codeLabel: 'fork.c', cmd: './fork',
+    foot: 'PID, adres ve çerçeve numaraları örnektir. ← → tuşlarıyla da ilerleyebilirsin.',
+    code: [
+      { t: '<span class="pp">#include</span> <span class="s">&lt;stdio.h&gt;</span>' },
+      { t: '<span class="pp">#include</span> <span class="s">&lt;unistd.h&gt;</span>' },
+      { t: '<span class="pp">#include</span> <span class="s">&lt;sys/wait.h&gt;</span>' },
+      { t: '' },
+      { t: '<span class="t">int</span> <span class="f">main</span>(<span class="t">void</span>) {' },
+      { t: '    <span class="t">int</span> x = <span class="n">5</span>;' },
+      { t: '    <span class="t">pid_t</span> pid = <span class="f">fork</span>();' },
+      { t: '' },
+      { t: '    <span class="k">if</span> (pid == <span class="n">0</span>) {' },
+      { t: '        x = <span class="n">10</span>;' },
+      { t: '        <span class="f">printf</span>(<span class="s">"çocuk:  pid=%d x=%d\\n"</span>, <span class="f">getpid</span>(), x);' },
+      { t: '        <span class="k">return</span> <span class="n">0</span>;' },
+      { t: '    }' },
+      { t: '    <span class="f">waitpid</span>(pid, <span class="k">NULL</span>, <span class="n">0</span>);' },
+      { t: '    <span class="f">printf</span>(<span class="s">"ebeveyn: pid=%d x=%d\\n"</span>, <span class="f">getpid</span>(), x);' },
+      { t: '    <span class="k">return</span> <span class="n">0</span>;' },
+      { t: '}' }
+    ],
+    steps: [
+      { pc: 6, title: 'Tek süreç', term: ['once:  tek süreç çalışıyor'],
+        text: 'Program PID 1200 ile çalışıyor. <code>x</code> yerel değişken, yığında duruyor; sanal adres 0x7fff…e000\'deki sayfa RAM\'de 0x8a22 çerçevesine eşlenmiş.',
+        parent: { state: 'çalışıyor', k: 'run', ret: '—', pages: [kod(), stk(5, '0x8a22', 'rw-')] }, child: null,
+        frames: [{ pfn: '0x8a21', what: 'kod', refs: 1 }, { pfn: '0x8a22', what: 'x = 5', refs: 1 }] },
+      { pc: 7, title: 'fork() çekirdeğe girer', term: [],
+        text: 'fork() aslında <code>clone</code> syscall\'ını tetikler. Çekirdek yeni bir <code>task_struct</code> yaratır ve sayfa tablosunu kopyalar. Bellek kopyalanmaz: iki süreç aynı çerçeveleri gösterir ve yazılabilir sayfalar iki tarafta da salt okunur yapılır (copy-on-write).',
+        parent: { state: 'çekirdekte', k: 'kern', ret: '…', pages: [kod(), stk(5, '0x8a22', 'r--', 'cow')] },
+        child: { state: 'oluşturuluyor', k: 'new', ret: '…', isNew: true, pages: [kod(), stk(5, '0x8a22', 'r--', 'cow')] },
+        frames: [{ pfn: '0x8a21', what: 'kod', refs: 2, shared: true }, { pfn: '0x8a22', what: 'x = 5', refs: 2, shared: true }] },
+      { pc: 9, title: 'Bir çağrı, iki dönüş', term: [],
+        text: 'fork() bir kez çağrılır ama iki süreçte birden döner. Ebeveyne çocuğun PID\'sini (1201), çocuğa 0 döndürür. <code>if (pid == 0)</code> bu yüzden iki süreci farklı yollara ayırır.',
+        parent: { state: 'çalışıyor', k: 'run', ret: '1201', pages: [kod(), stk(5, '0x8a22', 'r--', 'cow')] },
+        child: { state: 'çalışıyor', k: 'run', ret: '0', pages: [kod(), stk(5, '0x8a22', 'r--', 'cow')] },
+        frames: [{ pfn: '0x8a21', what: 'kod', refs: 2, shared: true }, { pfn: '0x8a22', what: 'x = 5', refs: 2, shared: true }] },
+      { pc: [14, 10], title: 'Yazınca kopyala', term: [],
+        text: 'Çocuk <code>x = 10</code> yazmaya çalışır. Sayfa salt okunur olduğu için sayfa hatası (page fault) oluşur. Çekirdek sayfanın paylaşıldığını görür, yeni çerçeve (0x9c07) ayırır, içeriği kopyalar ve çocuğun sayfa tablosunu oraya yönlendirir. Ebeveyn bu sırada <code>waitpid</code>\'de uyuyor.',
+        parent: { state: 'bekliyor (wait4)', k: 'sleep', ret: '1201', pages: [kod(), stk(5, '0x8a22', 'r--')] },
+        child: { state: 'çalışıyor', k: 'run', ret: '0', pages: [kod(), stk(10, '0x9c07', 'rw-', 'fresh')] },
+        frames: [{ pfn: '0x8a21', what: 'kod', refs: 2, shared: true }, { pfn: '0x8a22', what: 'x = 5', refs: 1 }, { pfn: '0x9c07', what: 'x = 10', refs: 1, fresh: true }] },
+      { pc: [14, 12], title: 'Çocuk biter, zombi olur', term: ['çocuk:  pid=1201 x=10'],
+        text: 'Çocuk mesajını yazar ve çıkar (<code>exit_group</code>). Çekirdek belleğini serbest bırakır ama <code>task_struct</code>\'ını ve çıkış kodunu tutar: ebeveyn okuyana kadar çocuk zombi (Z) durumundadır. Çekirdek ebeveyne SIGCHLD gönderip uyandırır.',
+        parent: { state: 'uyandırıldı', k: 'run', ret: '1201', pages: [kod(), stk(5, '0x8a22', 'r--')] },
+        child: { state: 'zombi (Z)', k: 'zombie', ret: '0', pages: [], note: 'Bellek serbest. Yalnızca task_struct ve çıkış kodu (0) duruyor.' },
+        frames: [{ pfn: '0x8a21', what: 'kod', refs: 1 }, { pfn: '0x8a22', what: 'x = 5', refs: 1 }, { pfn: '0x9c07', what: 'x = 10', refs: 0, freed: true }] },
+      { pc: 15, title: 'Ebeveyn toplar', term: ['çocuk:  pid=1201 x=10', 'ebeveyn: pid=1200 x=5'],
+        text: 'waitpid() çocuğun çıkış durumunu alır, çekirdek zombi kaydını siler (reap). Ebeveyn <code>x</code>\'i yazdırır: hâlâ 5. Çocuğun yazdığı 10 başka bir çerçevedeydi.',
+        parent: { state: 'çalışıyor', k: 'run', ret: '1201', pages: [kod(), stk(5, '0x8a22', 'r--')] },
+        child: { reaped: true },
+        frames: [{ pfn: '0x8a21', what: 'kod', refs: 1 }, { pfn: '0x8a22', what: 'x = 5', refs: 1 }] }
+    ],
+    render: function (s, stateEl, u) {
+      function procHTML(p, who, pid, label) {
+        if (!p) return '<div class="proc ghost">Henüz çocuk süreç yok.<br>fork() çağrılınca belirecek.</div>';
+        if (p.reaped) return '<div class="proc ghost">PID 1201 toplandı (reaped).<br>Süreç tablosunda yok.</div>';
+        var html = '<div class="proc ' + who + (p.isNew ? ' new' : '') + '"><div class="proc-h"><b>' + label + '</b><span class="mono">PID ' + pid + '</span></div>' +
+          '<span class="chip ' + p.k + '">' + u.esc(p.state) + '</span>' +
+          '<div class="ret"><span>fork() dönüşü</span><span class="mono">' + p.ret + '</span></div>';
+        if (p.pages && p.pages.length) {
+          html += '<div class="pages">' + p.pages.map(function (g) {
+            var tag = g.kind === 'cow' ? '<span class="tag">CoW</span>' : (g.kind === 'fresh' ? '<span class="tag">yeni</span>' : '');
+            return '<div class="pg ' + (g.kind || '') + '"><div class="pg-top"><b>' + u.esc(g.n) + tag + '</b><span class="perm">' + g.perm + '</span></div><span class="map">→ PFN ' + g.pfn + '</span></div>';
+          }).join('') + '</div>';
+        }
+        if (p.note) html += '<p class="note">' + u.esc(p.note) + '</p>';
+        return html + '</div>';
+      }
+      var frames = s.frames.map(function (f) {
+        var c = 'fr' + (f.shared ? ' shared' : '') + (f.fresh ? ' fresh' : '') + (f.freed ? ' freed' : '');
+        var r = f.freed ? 'serbest' : (f.refs > 1 ? '×' + f.refs + ' paylaşımda' : '×1');
+        return '<div class="' + c + '"><span class="mono">PFN ' + f.pfn + '</span><b>' + u.esc(f.what) + '</b><span class="refs">' + r + '</span></div>';
+      }).join('');
+      stateEl.innerHTML =
+        '<p class="lab-label">Süreçler ve sanal bellek</p>' +
+        '<div class="procs">' + procHTML(s.parent, 'parent', 1200, 'Ebeveyn') + procHTML(s.child, 'child', 1201, 'Çocuk') + '</div>' +
+        '<p class="lab-label" style="margin-top:14px">Fiziksel bellek (RAM çerçeveleri)</p><div class="frames">' + frames + '</div>';
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: fork() ne yapar, ne yapmaz?",
+    html: `<p class="lead">fork() çağrısı yüzeyde basit görünür — "süreci kopyala" — ama ayrıntılar bir güvenlik araştırmacısı veya sistem programcısı için kritiktir. Neyin gerçekten kopyalandığı, neyin paylaşıldığı ve neyin sıfırlandığı, bir sürü ince hatanın ve tasarım kararının kaynağıdır. Bu bölüm man sayfalarına dayanır.</p>
+
+<h3>1. Tam olarak ne kopyalanır, ne kopyalanmaz?</h3>
+<p>Child process, parent'ın neredeyse birebir bir kopyasıdır; POSIX buna "duplicate" der. Ama bazı şeyler kasıtlı olarak kopyalanmaz veya sıfırlanır. Bunu bilmek, "neden child'da bu değer farklı?" sorusunu önceden yanıtlar.</p>
+<h4>Child'a geçenler (kopyalanır)</h4>
+<div class="deflist">
+<div><dt>address space</dt><dd>Text, data, heap ve stack — hepsi copy-on-write ile. Mantıksal olarak kopya, fiziksel olarak paylaşımlı.</dd></div>
+<div><dt>file descriptors</dt><dd>fd table kopyalanır. <strong>Ama</strong> altındaki open file description paylaşılır — yani file offset ortaktır (aşağıda).</dd></div>
+<div><dt>signal handlers</dt><dd>Kurulu handler ayarları (dispositions) ve signal mask (blocked mask) devralınır.</dd></div>
+<div><dt>environment & kimlik</dt><dd>Environment variables, working directory, root directory, umask, nice değeri, resource limits (rlimit).</dd></div>
+</div>
+<h4>Child'da farklı veya sıfırlanan</h4>
+<div class="deflist">
+<div><dt>PID / PPID</dt><dd>Child yeni bir PID alır; PPID'si parent'ın PID'sidir. <code>getpid()</code> ve <code>getppid()</code> farklı döner.</dd></div>
+<div><dt>pending signals</dt><dd>Parent'ta pending olan signal set child'da <strong>boşaltılır</strong> — child temiz bir signal state ile başlar.</dd></div>
+<div><dt>timers</dt><dd><code>alarm()</code>, <code>setitimer()</code> ile kurulan timer'lar miras alınmaz; CPU time counter'ları sıfırlanır.</dd></div>
+<div><dt>record locks</dt><dd>Record locks (<code>fcntl</code>) child'a geçmez.</dd></div>
+<div><dt>threads</dt><dd>Multi-threaded bir süreçte <strong>yalnızca fork()'u çağıran thread</strong> child'da var olur. Diğer thread'ler child'da yoktur — bu, bir lock tutan thread varken fork etmenin neden tehlikeli olduğunu açıklar.</dd></div>
+</div>
+<div class="manpage"><div class="ref">2 fork · NOTES</div><p class="orig">The child process is created with a single thread — the one that called fork().</p><p>Child, yalnızca fork()'u çağıran tek bir thread ile yaratılır. Bu yüzden multi-threaded programlarda fork sonrası genellikle hemen <code>exec()</code> çağrılır: başka bir thread bir mutex tutarken fork edilirse, o lock child'da sonsuza dek kilitli kalabilir, çünkü onu açacak thread child'da hiç yoktur.</p></div>
+
+<h3>2. Dönüş değeri ve hatalar</h3>
+<p>fork()'un en tuhaf yanı, bir çağrının iki değer döndürmesidir. man sayfası bunu net anlatır:</p>
+<div class="manpage"><div class="ref">2 fork · RETURN VALUE</div><p class="orig">On success, the PID of the child process is returned in the parent, and 0 is returned in the child. On failure, -1 is returned in the parent, no child process is created, and errno is set to indicate the error.</p><p>Başarıda: parent'a child'ın PID'si, child'a 0 döner. Başarısızlıkta: parent'a -1 döner, <strong>hiç child yaratılmaz</strong> ve <code>errno</code> ayarlanır. Child 0 aldığı için kendi PID'sini bilmez; onu <code>getpid()</code> ile öğrenir.</p></div>
+<p>İki error code'u bilmek gerekir:</p>
+<ul>
+<li><code>EAGAIN</code>: Process sayısı sınırına (<code>RLIMIT_NPROC</code>) veya sistem genelinde PID/bellek sınırına ulaşıldı. Bir "fork bombası" sistemi tam da bu limite dayayarak çökertir; bu yüzden <code>RLIMIT_NPROC</code> ve cgroup <code>pids.max</code> bir savunma hattıdır.</li>
+<li><code>ENOMEM</code>: Çekirdek yeni <code>task_struct</code> veya page table'lar için bellek ayıramadı.</li>
+</ul>
+
+<h3>3. Paylaşılan offset: fork'un en çok şaşırtan yanı</h3>
+<p>fd table kopyalanır ama altındaki <strong>open file description paylaşılır</strong>. Yani parent ve child aynı file offset'i paylaşır: biri yazarsa offset ikisi için birden ilerler. Bu bir kaza değil, tasarımdır — shell'in output redirection'ı (<code>&gt;&gt;</code> append kipi) ve bir dosyaya birlikte yazan süreçler bu sayede düzgün çalışır.</p>
+<div class="manpage"><div class="ref">2 open · open file description</div><p>Her <code>open()</code> çağrısı çekirdekte bir open file description yaratır; file offset ve status flag'leri burada tutulur. fork() ile fd table çoğaltılır ama her iki taraftaki fd'ler <strong>aynı</strong> open file description'ı gösterir. <code>dup()</code> ve <code>dup2()</code> da aynı description'ı paylaştırır — stdout'u bir dosyaya yönlendirmek tam olarak budur.</p></div>
+
+<h3>4. Copy-on-write: ucuz çatallanma, gizli maliyet</h3>
+<p>Modern Linux'ta fork() belleği kopyalamaz; yalnızca page table'ı kopyalar ve yazılabilir sayfaları iki tarafta read-only işaretler. Böylece 4 GB belleği olan bir süreç bile milisaniyenin altında çatallanır. Maliyet yazmaya kadar ertelenir: ilk yazmada CPU bir page fault üretir, çekirdek o sayfayı kopyalar (<code>do_wp_page</code>). Yani <strong>fork ucuz, ama fork sonrası yoğun yazan bir child pahalıdır</strong> — her dokunduğu sayfa kopyalanır.</p>
+<p>Bu yüzden yalnızca başka bir program çalıştırmak için fork edeceksen, <code>posix_spawn()</code> veya fork hemen ardından <code>exec()</code> tercih edilir: exec zaten tüm address space'i atacağı için CoW kopyalamaları bile gereksizdir. Büyük süreçlerde <code>vfork()</code> bu yüzden vardı (child, exec'e kadar parent'ın address space'ini ödünç alır).</p>
+
+<h3>5. Child'ı toplamak: zombie, wait() ve yeniden evlat edinme</h3>
+<p>Child bittiğinde çekirdek belleğini bırakır ama exit status'ü tutar; bu durumu parent <code>wait()</code>/<code>waitpid()</code> ile okuyana kadar child "zombie" (Z) olarak process table'da kalır. Zombie bellek tüketmez ama bir PID işgal eder — binlerce zombie PID tükenmesine yol açabilir.</p>
+<div class="manpage"><div class="ref">2 wait · DESCRIPTION</div><p>wait() ve waitpid(), state'i değişen bir child'ı bekler ve exit status'ü geri verir; bu, zombie'yi process table'dan siler (reap). Dönen status, <code>WIFEXITED()</code>, <code>WEXITSTATUS()</code>, <code>WIFSIGNALED()</code> makroları ile çözülür: child normal mi çıktı, hangi kodla, yoksa bir signal ile mi öldürüldü.</p></div>
+<p>Parent, child'dan önce ölürse child orphan kalır ve <code>init</code> (PID 1) ya da kayıtlı bir "subreaper" tarafından evlat edinilir; onu o toplar. Child bittiğinde çekirdek parent'a <code>SIGCHLD</code> gönderir — event-driven sunucular child'ları bu signal'in handler'ında toplar, böylece ana döngü bloklanmaz.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">Senin yazdığın <code>fork()</code> bir C kütüphanesi fonksiyonu; asıl iş çekirdekte, <code>kernel/fork.c</code>\'de. Fonksiyon adları Elixir\'deki kaynak tanımına gider.</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://man7.org/linux/man-pages/man2/fork.2.html" target="_blank" rel="noopener">fork()</a><span class="where">glibc</span><p>Kütüphane sarmalayıcısı; <code>clone</code> syscall\'ını çocuk bitince SIGCHLD gelecek şekilde yapar.</p></div></li>' +
+      '<li class="boundary"><div>sistem çağrısı sınırı · kullanıcı → çekirdek</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/kernel_clone" target="_blank" rel="noopener">kernel_clone()</a><span class="where">kernel/fork.c</span><p>fork, vfork ve clone\'un ortak giriş noktası.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/copy_process" target="_blank" rel="noopener">copy_process()</a><span class="where">kernel/fork.c</span><p>Yeni task_struct, kimlik, dosya tablosu, sinyaller, namespace kopyalanır; yeni PID ayrılır.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/copy_page_range" target="_blank" rel="noopener">copy_page_range()</a><span class="where">mm/memory.c</span><p>Sayfa tablosu girişlerini kopyalar; yazılabilir sayfaları iki tarafta salt okunur yapar. CoW burada kurulur.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/wake_up_new_task" target="_blank" rel="noopener">wake_up_new_task()</a><span class="where">kernel/sched/core.c</span><p>Çocuğu zamanlayıcının kuyruğuna koyar. Bundan sonra hangisinin önce çalışacağı garanti değildir.</p></div></li>' +
+      '</ol>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Derle ve çalıştır', p: 'Çocuğun x=10, ebeveynin x=5 yazdırdığını gör.',
+        shells: [{ label: 'terminal', copy: 'gcc -Wall -o fork fork.c && ./fork', pre: '<span class="c">$</span> gcc -Wall -o fork fork.c &amp;&amp; ./fork\nçocuk:  pid=281 x=10\nebeveyn: pid=280 x=5' }] },
+      { h3: '2. Bir zombi yarat', p: 'Ebeveyn wait() çağırmazsa çocuk zombi kalır. ps çıktısında durum sütununda Z ve &lt;defunct&gt; göreceksin.',
+        shells: [{ label: 'terminal', copy: 'gcc -o zombie zombie.c && ./zombie & sleep 1; ps -o pid,ppid,stat,cmd', pre: '<span class="c">$</span> ./zombie &amp; sleep 1; ps -o pid,ppid,stat,cmd\n   PID   PPID STAT CMD\n  4471   4410 S    ./zombie\n  4472   4471 <span class="hi">Z    [zombie] &lt;defunct&gt;</span>' }] },
+      { h3: '3. Süreç ağacına bak', p: 'Her süreç bir ebeveynden doğar; kökte PID 1 (genelde systemd) var.',
+        shells: [{ label: 'terminal', copy: 'ps -ef --forest | head -n 25', pre: '<span class="c">$</span> ps -ef --forest | head -n 25' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Bu program kaç satır "merhaba" yazdırır?', pre: 'fork();\nfork();\nprintf("merhaba\\n");', opts: ['2', '3', '4', '8'], answer: '4',
+        ok: 'Doğru. İlk fork 2 süreç yapar, ikinci fork ikisinde de çalışır: 2×2=4. n fork → 2ⁿ süreç.', no: 'Tekrar dene. İkinci fork() kaç süreçte çalışıyor?' },
+      { q: 'Adım 4\'te çocuk x=10 yazdıktan sonra ebeveynin x değeri nedir?', opts: ['5', '10', 'tanımsız'], answer: '5',
+        ok: 'Doğru. Sanal adres aynı ama yazma anında çekirdek sayfayı kopyaladı; çocuk başka bir çerçeveye yazıyor.', no: 'İpucu: sanal adres aynı, fiziksel çerçeve aynı mı?' },
+      { q: 'Başarılı bir fork() çocuk süreçte ne döndürür?', opts: ['-1', '0', 'ebeveynin PID\'si'], answer: '0',
+        ok: 'Doğru. Çocuk 0 alır; kendi PID\'sini getpid(), ebeveyninkini getppid() ile öğrenir. -1 hata değeridir.', no: 'Tekrar dene. -1 hata değeridir; ebeveynin PID\'si getppid() ile öğrenilir.' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Linux Modül 2', title: 'exec() ve ELF yükleme', desc: 'Çocuk süreç kendini nasıl başka bir programa dönüştürür? Çekirdek bir ELF dosyasını belleğe nasıl yerleştirir?' },
+  sources: [
+    { href: 'https://man7.org/linux/man-pages/man2/fork.2.html', text: 'man 2 fork', note: 'neyin kopyalanıp neyin kopyalanmadığı' },
+    { href: 'https://man7.org/linux/man-pages/man2/clone.2.html', text: 'man 2 clone', note: 'bayraklar, thread ilişkisi' },
+    { href: 'https://pages.cs.wisc.edu/~remzi/OSTEP/cpu-api.pdf', text: 'OSTEP Bölüm 5: Process API', note: 'ücretsiz' },
+    { href: 'https://0xax.gitbooks.io/linux-insides/content/', text: 'linux-insides', note: 'çekirdek kaynak gezintisi' },
+    { href: 'https://elixir.bootlin.com/linux/latest/source/kernel/fork.c', text: 'kernel/fork.c', note: 'Elixir' }
+  ],
+  pageTitle: 'Süreçler ve fork()'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

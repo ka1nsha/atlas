@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Thread'ler ve futex</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'linux',
+  crumbs: 'linux › threadler ve futex › modül 11',
+  eyebrow: 'Modül 11 · Linux · Eşzamanlılık',
+  titleHTML: 'İş parçacıkları ve <code>futex</code>: paylaşımın bedeli',
+  lede: 'fork() belleği kopyalar; thread\'ler ise paylaşır. Bu modülde iki iş parçacığının (thread) aynı belleği nasıl paylaştığını, bir kilidin (mutex) çekirdeğe hiç gitmeden nasıl alındığını ve çekişme (contention) olunca futex ile nasıl uyuyup uyandığını adım adım izleyeceksin.',
+  meta: ['~18 dk', 'ön koşul: fork, süreçler', 'çekirdek: Linux 6.x'],
+  intuition: {
+    paras: [
+      'fork() modülünde çocuğun belleğin bir <em>kopyasını</em> aldığını gördük (copy-on-write): çocuğun yazdığı <code>x</code> ebeveyni etkilemiyordu. Thread\'ler tam tersidir. Bir thread aslında <code>clone()</code> ile yaratılır ama bu kez <code>CLONE_VM</code> bayrağıyla: yeni iş parçacığı yeni bir adres uzayı almaz, var olanı <strong>paylaşır</strong>. Aynı değişkenler, aynı heap, aynı açık dosyalar.',
+      'Paylaşım hız kazandırır ama bir bedeli vardır: iki thread aynı veriye aynı anda dokunursa yarış (race) olur. Çözüm kilittir (mutex). Linux\'ta kilit iki katmanlıdır: kilit boşsa thread onu kullanıcı alanında (user space) atomik bir işlemle alır, çekirdeğe hiç gitmez — <strong>hızlı yol (fast path)</strong>. Yalnızca çekişme olunca, yani kilit meşgulse, <code>futex()</code> çağrısıyla çekirdeğe inilip uyunur.'
+    ],
+    ideas: [
+      { b: 'Paylaşır, kopyalamaz', span: 'clone(CLONE_VM) ile thread\'ler aynı adres uzayını paylaşır. fork\'un copy-on-write\'ının tam tersi.' },
+      { b: 'Hızlı yol (fast path)', span: 'Kilit boşsa atomik bir işlemle kullanıcı alanında alınır; çekirdeğe (syscall) hiç gidilmez.' },
+      { b: 'futex: yavaş yol', span: 'Fast Userspace Mutex. Yalnızca çekişme (contention) olunca çekirdeğe inilir: bekleyen uyur (WAIT), serbest kalınca uyandırılır (WAKE).' }
+    ]
+  },
+  lab: {
+    intro: 'Ana thread kilidi alır, bir işçi (worker) thread yaratır; işçi kilidi beklerken futex ile uyur, ana thread bırakınca uyanır. Sağda iş parçacıklarını, paylaşılan adres uzayını ve kilidin durumunu birlikte izle.',
+    codeLabel: 'threads.c', cmd: './thr',
+    foot: 'PID\'ler ve adresler örnektir. Lab tek işçi thread ile sadeleştirilmiştir; aşağıdaki "Kendin dene" bölümü iki işçiyle gerçek strace çıktısını gösterir.',
+    code: [
+      { t: '<span class="t">pthread_mutex_t</span> m;            <span class="cm">// paylaşılan kilit (mutex)</span>' },
+      { t: '<span class="t">int</span> shared = <span class="n">0</span>;               <span class="cm">// paylaşılan değişken</span>' },
+      { t: '' },
+      { t: '<span class="f">pthread_mutex_lock</span>(&m);         <span class="cm">// ana thread alır (hızlı yol)</span>' },
+      { t: '<span class="f">pthread_create</span>(&a, worker);     <span class="cm">// clone(CLONE_VM | CLONE_FILES | …)</span>' },
+      { t: '<span class="f">pthread_mutex_unlock</span>(&m);       <span class="cm">// bekleyeni uyandır → futex(WAKE)</span>' },
+      { t: '' },
+      { t: '<span class="t">void</span> *<span class="f">worker</span>() {' },
+      { t: '    <span class="f">pthread_mutex_lock</span>(&m);     <span class="cm">// meşgul → futex(WAIT)</span>' },
+      { t: '    shared += <span class="n">1</span>;                <span class="cm">// paylaşılan belleğe yazar</span>' },
+      { t: '    <span class="f">pthread_mutex_unlock</span>(&m);' },
+      { t: '}' }
+    ],
+    steps: [
+      { pc: [1, 2], title: 'Tek iş parçacığı', term: [],
+        text: 'Program tek thread\'le başlar. <code>m</code> kilidi boş, <code>shared</code> sıfır. Henüz paylaşım ya da çekişme yok.',
+        threads: [{ name: 'ana (main)', pid: 1164, state: 'çalışıyor', k: 'run' }],
+        frames: [{ what: 'adres uzayı (tek thread)', refs: 1 }],
+        mutex: { val: 0, holder: '—', waiters: [], shared: 0 } },
+      { pc: 4, title: 'Kilit alınır (hızlı yol)', term: [],
+        text: 'Ana thread <code>pthread_mutex_lock</code> çağırır. Kilit boş olduğu için atomik bir işlemle kullanıcı alanında (user space) alınır — çekirdeğe hiç gidilmez. futex word 0→(kilitli). Bu, kilidin "hızlı yol (fast path)" durumudur.',
+        threads: [{ name: 'ana (main)', pid: 1164, state: 'kilidi aldı', k: 'run' }],
+        frames: [{ what: 'adres uzayı (tek thread)', refs: 1 }],
+        mutex: { val: 1, holder: 'ana (main)', waiters: [], shared: 0 } },
+      { pc: 5, title: 'clone(CLONE_VM): bellek paylaşılır', term: ['clone3(flags=CLONE_VM|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD…) = 1165'],
+        text: 'pthread_create aslında <code>clone()</code>\'dur ama <code>CLONE_VM | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD</code> bayraklarıyla. Yeni iş parçacığı KENDİ belleğini almaz; ana thread\'in adres uzayını PAYLAŞIR. fork\'taki copy-on-write\'ın tam tersi: burada kopya yok, tek bellek iki thread.',
+        threads: [
+          { name: 'ana (main)', pid: 1164, state: 'çalışıyor', k: 'run' },
+          { name: 'worker', pid: 1165, state: 'oluşturuldu', k: 'new', isNew: true }
+        ],
+        frames: [{ what: 'adres uzayı (PAYLAŞILIYOR)', refs: 2, shared: true }],
+        mutex: { val: 1, holder: 'ana (main)', waiters: [], shared: 0 } },
+      { pc: 9, title: 'Çekişme: futex(WAIT)', term: ['[pid 1165] futex(0x55c4…040, FUTEX_WAIT_PRIVATE, 2, NULL)'],
+        text: 'İşçi thread kilidi almaya çalışır ama kilit meşgul. Bu bir çekişmedir (contention). Kullanıcı alanında dönüp beklemek (spin) CPU israfı olurdu; bunun yerine işçi <code>futex(WAIT)</code> ile çekirdeğe iner ve uyur. futex word 2 olur (bekleyen var işareti). İşte "yavaş yol".',
+        threads: [
+          { name: 'ana (main)', pid: 1164, state: 'çalışıyor', k: 'run' },
+          { name: 'worker', pid: 1165, state: 'uyuyor (futex WAIT)', k: 'sleep' }
+        ],
+        frames: [{ what: 'adres uzayı (PAYLAŞILIYOR)', refs: 2, shared: true }],
+        mutex: { val: 2, holder: 'ana (main)', waiters: ['worker'], shared: 0 } },
+      { pc: 6, title: 'Serbest bırakma: futex(WAKE)', term: ['[pid 1164] futex(0x55c4…040, FUTEX_WAKE_PRIVATE, 1) = 1'],
+        text: 'Ana thread kilidi bırakır. futex word\'de bekleyen olduğunu gördüğü için <code>futex(WAKE)</code> ile çekirdeğe "birini uyandır" der. Çekirdek işçiyi uyandırır; kilit artık işçinin.',
+        threads: [
+          { name: 'ana (main)', pid: 1164, state: 'kilidi bıraktı', k: 'run' },
+          { name: 'worker', pid: 1165, state: 'uyandırıldı', k: 'run' }
+        ],
+        frames: [{ what: 'adres uzayı (PAYLAŞILIYOR)', refs: 2, shared: true }],
+        mutex: { val: 1, holder: 'worker', waiters: [], shared: 0 } },
+      { pc: [10, 11], title: 'Paylaşılan belleğe yazma', term: ['shared = 1'],
+        text: 'İşçi <code>shared += 1</code> yapar ve kilidi bırakır. Bellek paylaşıldığı için bu değişiklik ana thread\'den de görünür — fork olsaydı copy-on-write değişikliği ayırır, ebeveyn 0 görürdü. Paylaşımın hem gücü hem tehlikesi budur: kilit olmadan bu yazma bir yarış (race) olurdu.',
+        threads: [
+          { name: 'ana (main)', pid: 1164, state: 'bekliyor (join)', k: 'sleep' },
+          { name: 'worker', pid: 1165, state: 'yazıyor, kilitte', k: 'run' }
+        ],
+        frames: [{ what: 'adres uzayı (PAYLAŞILIYOR)', refs: 2, shared: true }],
+        mutex: { val: 0, holder: '—', waiters: [], shared: 1 }, flash: true }
+    ],
+    render: function (s, stateEl, u) {
+      var threads = s.threads.map(function (p, i) {
+        var who = i === 0 ? 'parent' : 'child';
+        return '<div class="proc ' + who + (p.isNew ? ' new' : '') + '"><div class="proc-h"><b>' + u.esc(p.name) + '</b><span class="mono">TID ' + p.pid + '</span></div>' +
+          '<span class="chip ' + p.k + '">' + u.esc(p.state) + '</span></div>';
+      }).join('');
+      var frames = s.frames.map(function (f) {
+        var c = 'fr' + (f.shared ? ' shared' : '');
+        var r = f.refs > 1 ? '×' + f.refs + ' paylaşımda' : '×1';
+        return '<div class="' + c + '" style="min-width:160px"><span class="mono">adres uzayı</span><b style="font-size:12.5px">' + u.esc(f.what) + '</b><span class="refs">' + r + '</span></div>';
+      }).join('');
+      var mx = s.mutex;
+      var w = mx.waiters.length ? mx.waiters.join(', ') : '—';
+      var mxBox =
+        '<div class="box' + (mx.holder !== '—' ? ' hi' : '') + '"><b>futex word</b><span class="mono">' + mx.val + (mx.val === 0 ? ' (boş)' : mx.val === 1 ? ' (kilitli)' : ' (bekleyen var)') + '</span></div>' +
+        '<div class="box"><b>sahip (holder)</b><span class="mono">' + u.esc(mx.holder) + '</span></div>' +
+        '<div class="box' + (mx.waiters.length ? ' warn' : '') + '"><b>bekleyenler</b><span class="mono">' + u.esc(w) + '</span></div>' +
+        '<div class="box' + (mx.shared ? ' good' : '') + '"><b>shared değeri</b><span class="mono">' + mx.shared + '</span></div>';
+      stateEl.innerHTML =
+        '<p class="lab-label">İş parçacıkları (threads)</p><div class="procs">' + threads + '</div>' +
+        '<p class="lab-label" style="margin-top:14px">Paylaşılan adres uzayı</p><div class="frames">' + frames + '</div>' +
+        '<p class="lab-label" style="margin-top:14px">Kilit (mutex) ve paylaşılan değişken</p><div class="boxgrid" id="mxEl"><div class="boxrow">' + mxBox + '</div></div>';
+      if (s.flash) ATLAS.flash(document.getElementById('mxEl'), false);
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: thread'ler ve futex nasıl çalışır?",
+    html: `<p class="lead">Bir thread, fork() ile doğan ayrı bir process'in tersidir: belleği kopyalamak yerine paylaşır. Bu paylaşımın ne olduğu, kernel'in thread'leri nasıl gördüğü ve bir mutex kilidinin çoğu zaman kernel'e hiç inmeden nasıl çalıştığı, eşzamanlı programlamanın temelidir. Bu bölüm man sayfalarına dayanır.</p>
+
+<h3>1. Bir thread neyi paylaşır, neyi paylaşmaz?</h3>
+<p>Aynı process içindeki thread'ler aynı programı çalıştırır ve çoğu kaynağı ortak kullanır; ama her birinin kendine ait olan bazı şeyleri de vardır. Bir thread'de yapılan değişikliğin neden diğerinde de göründüğünü (ya da görünmediğini) bu ayrım belirler.</p>
+<div class="deflist">
+<div><dt>global memory</dt><dd>Data ve heap segment'leri tüm thread'lerce paylaşılır — bir thread'in yazdığı global değişkeni diğeri görür. Senkronizasyon ihtiyacı buradan doğar.</dd></div>
+<div><dt>stack</dt><dd>Her thread'in kendi stack'i vardır; yerel (automatic) değişkenler thread'e özeldir.</dd></div>
+<div><dt>file descriptors</dt><dd>Açık file descriptor'lar paylaşılır — bir thread'in açtığı dosyayı diğeri aynı fd ile kullanır.</dd></div>
+<div><dt>signal handlers</dt><dd>Signal disposition'ları process genelindedir; ama her thread'in kendi signal mask'i olabilir.</dd></div>
+<div><dt>PID / cwd / umask</dt><dd>Process ID, working directory, umask, user/group ID'leri paylaşılır.</dd></div>
+</div>
+<div class="manpage"><div class="ref">7 pthreads · THREADS</div><p class="orig">These threads share the same global memory (data and heap segments), but each thread has its own stack (automatic variables).</p><p>İşte fork ile en temel fark: fork bir process'i kopyalar (ayrı address space); thread ise aynı address space'i paylaşır. Paylaşılan heap'e iki thread aynı anda yazarsa veri yarışı (race condition) olur — kilit bu yüzden gerekir.</p></div>
+
+<h3>2. 1:1 model: her thread bir kernel task'ı</h3>
+<p>Linux'ta thread kütüphanesi NPTL (Native POSIX Thread Library), 1:1 modeli uygular: her kullanıcı-seviyesi thread, kernel'in ayrı bir scheduling entity'sine (task) karşılık gelir. Yani kernel thread'leri doğrudan zamanlar; ayrı bir kullanıcı-alanı zamanlayıcısı yoktur.</p>
+<div class="manpage"><div class="ref">7 pthreads · LINUX IMPLEMENTATIONS</div><p class="orig">Both of these are so-called 1:1 implementations, meaning that each thread maps to a kernel scheduling entity.</p><p>Bunun sonucu: bir process içinde N thread varsa, kernel'de N task görünür. Bu task'lar bir <strong>thread group</strong> oluşturur. Thread group'un ortak bir PID'si (tgid) vardır ama her thread'in kendine özgü bir TID'si (thread ID) vardır.</p></div>
+<div class="manpage"><div class="ref">7 pthreads · NPTL</div><p class="orig">all members of a thread group share the same PID.</p><p><code>getpid()</code> tüm thread'lerde aynı değeri (process ID) döndürür; <code>gettid()</code> ise o thread'e özgü TID'yi verir. <code>ps -T</code> veya <code>/proc/&lt;pid&gt;/task/</code> ile bir process'in thread'lerini TID'leriyle görebilirsin.</p></div>
+
+<h3>3. clone() ile bir thread nasıl doğar?</h3>
+<p>fork() ile thread yaratma arasındaki tek fark, altta yatan <code>clone()</code> çağrısına verilen flag'lerdir. fork hiçbir şey paylaşmaz; thread ise aşağıdaki flag'lerle neredeyse her şeyi paylaşır:</p>
+<div class="deflist">
+<div><dt>CLONE_VM</dt><dd>Address space paylaşılır (bellek kopyalanmaz). Thread'i thread yapan asıl flag budur.</dd></div>
+<div><dt>CLONE_FILES</dt><dd>File descriptor tablosu paylaşılır.</dd></div>
+<div><dt>CLONE_FS</dt><dd>Working directory, root directory, umask paylaşılır.</dd></div>
+<div><dt>CLONE_SIGHAND</dt><dd>Signal handler tablosu paylaşılır.</dd></div>
+<div><dt>CLONE_THREAD</dt><dd>Yeni task aynı thread group'a (aynı PID) konur.</dd></div>
+<div><dt>CLONE_SETTLS</dt><dd>Thread-local storage (TLS) için ayrı bir alan kurulur.</dd></div>
+</div>
+<p>fork() bu flag'lerin hiçbirini kullanmaz (yalnızca SIGCHLD); bu yüzden fork modülündeki copy-on-write devreye girer. Thread'de kopyalama yoktur — bu hem hızlıdır hem de senkronizasyon sorumluluğunu programcıya yükler.</p>
+
+<h3>4. futex: kilidin ucuz yolu</h3>
+<p>Bir mutex kilidi her seferinde kernel'e inseydi, kilitleme çok yavaş olurdu. Linux'un çözümü <strong>futex</strong> (fast user-space mutex): kilit çekişmesiz (uncontended) olduğunda — yani kimse beklemiyorsa — kilit tamamen user space'te, atomic bir komutla alınır; kernel hiç devreye girmez.</p>
+<div class="manpage"><div class="ref">2 futex · DESCRIPTION</div><p class="orig">In the uncontended case, a thread can access or modify the lock state with atomic instructions. (Such instructions are performed entirely in user mode, and the kernel maintains no information about the lock state.)</p><p>Yani bir mutex'i alıp bırakmanın tipik (çekişmesiz) yolu bir CAS (compare-and-swap) komutudur; syscall yoktur, bağlam değişimi (context switch) yoktur. futex yalnızca <strong>contention</strong> (çekişme) olduğunda, yani bir thread meşgul bir kilidi beklemek zorunda kaldığında kernel'e iner.</p></div>
+<div class="manpage"><div class="ref">2 futex · DESCRIPTION</div><p class="orig">The futex() system call provides a method for waiting until a certain condition becomes true. It is typically used as a blocking construct in the context of shared-memory synchronization.</p><p>Çekişme olduğunda thread <code>FUTEX_WAIT</code> ile kendini kernel'de uyutur (meşgul beklemez, CPU harcamaz); kilidi bırakan thread ise bekleyen varsa <code>FUTEX_WAKE</code> ile onu uyandırır. Kernel'e iniş yalnızca bu "nadir" durumda olur.</p></div>
+
+<h3>5. Üstüne kurulanlar ve fork farkı</h3>
+<p>pthread mutex, condition variable, semaphore ve read-write lock — hepsi futex üstüne kuruludur; "hızlı yol user space, yavaş yol kernel" deseni aynıdır. Bir condition variable'ın <code>pthread_cond_wait</code>'i de bir futex üzerinde uyur.</p>
+<p>Özet fark: <strong>fork kopyalar, thread paylaşır.</strong> fork güvenlidir ama izolasyon ister (process'ler birbirinin belleğini göremez); thread hızlıdır ve veri paylaşımı kolaydır ama her paylaşılan veri için senkronizasyon (mutex/atomic) sorumluluğu programcıdadır. Yanlış kilitleme → race condition, deadlock; eksik kilitleme → bozuk veri.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">pthread çağrıları çekirdeğe iki ayrı yoldan iner: iş parçacığı yaratma <code>clone</code>\'a, kilit çekişmesi ise <code>futex</code>\'e. Kilidin boş olduğu durumda hiçbir syscall yoktur — bütün iş kullanıcı alanındaki atomik işlemle biter. futex\'in dehası budur: çekirdeğe yalnızca gerektiğinde gidilir.</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://man7.org/linux/man-pages/man3/pthread_create.3.html" target="_blank" rel="noopener">pthread_create()</a><span class="where">glibc / NPTL</span><p>Yeni iş parçacığı için yığın (stack) ayırır ve clone çağırır.</p></div></li>' +
+      '<li class="boundary"><div>sistem çağrısı sınırı · kullanıcı → çekirdek</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/kernel_clone" target="_blank" rel="noopener">clone(CLONE_VM | …)</a><span class="where">kernel/fork.c</span><p>fork ile aynı giriş noktası (kernel_clone) ama CLONE_VM ile adres uzayı kopyalanmaz, paylaşılır; CLONE_THREAD ile aynı thread grubuna girer.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">pthread_mutex_lock() → (atomik, hızlı yol)</span><span class="where">glibc</span><p>Kilit boşsa bir compare-and-swap ile alınır; çekirdeğe gidilmez. Yalnızca başarısız olursa aşağı iner.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/futex_wait" target="_blank" rel="noopener">futex(WAIT) / futex(WAKE)</a><span class="where">kernel/futex/</span><p>Çekişmede bekleyen thread futex word üzerinde uyur; sahip bırakınca WAKE ile uyandırılır.</p></div></li>' +
+      '</ol>' +
+      '<p class="prose" style="margin-top:14px">fork vs thread tek cümlede: <strong>fork</strong> yeni bir adres uzayı verir (copy-on-write ile ayrışır); <strong>thread</strong> adres uzayını paylaşır (CLONE_VM), bu yüzden eşzamanlılık (concurrency) kolay ama kilit şarttır.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. clone ve futex\'i gör', p: 'İki işçi thread\'li bir programı strace ile izle. clone3 bayraklarında CLONE_VM\'i (paylaşım) ve çekişmede futex WAIT/WAKE\'i gör. Bu çıktı bu konteynerde gerçek çalıştırıldı.',
+        shells: [{ label: 'terminal', copy: 'gcc -O0 -pthread -o thr thr.c && strace -f -e trace=clone,clone3,futex ./thr', pre: '<span class="c">$</span> strace -f -e trace=clone3,futex ./thr\n<span class="y">clone3</span>({flags=<span class="hi">CLONE_VM</span>|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|…}) = 1165\n[pid 1165] <span class="y">futex</span>(0x55c4…040, <span class="hi">FUTEX_WAIT_PRIVATE</span>, 2, NULL)\n[pid 1164] <span class="y">futex</span>(0x55c4…040, <span class="hi">FUTEX_WAKE_PRIVATE</span>, 1) = 1\nshared = 2 (iki is parcacigi ayni bellegi paylasti)' }] },
+      { h3: '2. Kilitsiz yarışı (race) gör', p: 'Mutex\'leri kaldır, bir sayacı çok sayıda thread\'le artır. Paylaşılan bellek + kilitsizlik = kayıp güncellemeler; sonuç beklenenden küçük çıkar. Sonra -fsanitize=thread ile yarışı yakala.',
+        shells: [{ label: 'terminal', copy: 'gcc -O0 -pthread -fsanitize=thread -o race race.c && ./race', pre: '<span class="c">$</span> gcc -pthread -fsanitize=thread -o race race.c &amp;&amp; ./race\n<span class="hi">WARNING: ThreadSanitizer: data race</span>\n<span class="c"># iki thread ayni degiskene kilitsiz yazdi</span>' }] },
+      { h3: '3. Paylaşımın kanıtı', p: 'Aynı sürecin thread\'leri /proc altında aynı PID\'nin task\'ları olarak görünür ve aynı bellek haritasını paylaşır.',
+        shells: [{ label: 'terminal', copy: 'ls /proc/self/task; cat /proc/self/maps | head', pre: '<span class="c">$</span> ls /proc/$(pidof thr)/task\n1164  1165  1166   <span class="c"># akutuma bir surec, ucu bir thread</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Bir thread\'i yaratan <code>clone()</code>, fork\'tan hangi bayrakla ayrılır?', opts: ['CLONE_FS', 'CLONE_VM', 'SIGCHLD'], answer: 'CLONE_VM',
+        ok: 'Doğru. CLONE_VM adres uzayını paylaştırır (kopyalamaz). fork bunu kullanmaz; o yüzden fork\'ta çocuk kopya alır, thread\'de bellek ortaktır.', no: 'İpucu: fork belleği kopyalar, thread paylaşır. Paylaşımı hangi bayrak sağlar?' },
+      { q: 'Kilit BOŞken <code>pthread_mutex_lock</code> çağrılınca kaç sistem çağrısı (syscall) yapılır?', opts: ['Sıfır', 'Bir (futex)', 'İki'], answer: 'Sıfır',
+        ok: 'Doğru. Boş kilit kullanıcı alanında atomik bir işlemle alınır — hızlı yol (fast path), çekirdeğe hiç gidilmez. futex yalnızca çekişmede devreye girer.', no: 'İpucu: futex\'in amacı çekirdeğe sadece gerektiğinde gitmek. Kilit boşken gerek var mı?' },
+      { q: 'İki thread aynı değişkene kilitsiz yazarsa ne olur?', opts: ['Çekirdek engeller', 'Yarış (race), tanımsız sonuç', 'CLONE_VM düzeltir'], answer: 'Yarış (race), tanımsız sonuç',
+        ok: 'Doğru. Bellek paylaşıldığı için eşzamanlı kilitsiz yazma bir veri yarışıdır (data race); güncellemeler kaybolabilir. Kilit tam da bunu önler.', no: 'İpucu: paylaşım + senkronizasyon yokluğu neye yol açar?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Linux Modül 12', title: 'Kesmeler ve aygıt sürücüleri', desc: 'Donanım çekirdeğin dikkatini nasıl çeker? IRQ, top/bottom half ve bir karakter aygıtı sürücüsü.' },
+  sources: [
+    { href: 'https://man7.org/linux/man-pages/man2/clone.2.html', text: 'man 2 clone', note: 'CLONE_VM ve diğer bayraklar' },
+    { href: 'https://man7.org/linux/man-pages/man2/futex.2.html', text: 'man 2 futex', note: 'WAIT / WAKE' },
+    { href: 'https://man7.org/linux/man-pages/man7/pthreads.7.html', text: 'man 7 pthreads' },
+    { href: 'https://www.akkadia.org/drepper/futex.pdf', text: 'Drepper — Futexes Are Tricky', note: 'klasik makale' },
+    { href: 'https://0xax.gitbooks.io/linux-insides/content/', text: 'linux-insides', note: 'senkronizasyon ilkelleri' }
+  ],
+  pageTitle: 'Thread\'ler ve futex'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

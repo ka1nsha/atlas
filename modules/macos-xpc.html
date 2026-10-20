@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>XPC</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: xpc akışı */
+.xpc { display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: stretch; }
+@media (max-width: 580px) { .xpc { grid-template-columns: 1fr; } }
+.xconn { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--sunk); padding: 10px; display: grid; gap: 6px; align-content: start; min-width: 0; }
+.xconn.live { border-color: var(--track); background: var(--track-soft); }
+.xconn .ch { font-family: var(--f-mono); font-size: 12px; color: var(--muted); font-weight: 700; }
+.xconn.live .ch { color: var(--track); }
+.xmsg { border: 1px solid var(--track); border-radius: 6px; padding: 4px 8px; font-family: var(--f-mono); font-size: 11.5px; background: var(--surface); }
+.xconn .empty { font-size: 12px; color: var(--muted); }
+.xstate { font-family: var(--f-mono); font-size: 11px; padding: 2px 8px; border-radius: 999px; justify-self: start; }
+.xstate.off { background: var(--sunk); color: var(--muted); }
+.xstate.on { background: var(--ok-soft); color: var(--ok); }
+.xstate.box { background: var(--accent-soft); color: var(--accent); }
+.sb { font-family: var(--f-mono); font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 4px; background: var(--ok-soft); color: var(--ok); justify-self: start; }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'macos',
+  crumbs: 'macos › xpc › modül 7',
+  eyebrow: 'Modül 7 · macOS / iOS · Üst düzey IPC',
+  titleHTML: '<code>XPC</code>: Mach port\'ları üstüne güvenli servisler',
+  lede: 'XPC, macOS ve iOS\'ta süreçlerin konuşmasının modern yoludur. Altında Mach port\'ları (Modül 2) ve launchd (Modül 8) vardır; üstüne sözlük tabanlı mesajlaşma, talep üzerine başlatma ve en önemlisi süreç ayrımıyla (privilege separation) güvenlik ekler.',
+  meta: ['~18 dk', 'ön koşul: Mach port\'ları, launchd', 'bağlam: libxpc'],
+  intuition: {
+    paras: [
+      'Mach port\'ları güçlüdür ama düşük seviyedir: hakları, mesaj biçimlerini ve isim çözümlemeyi elle yönetmen gerekir. <strong>XPC</strong> bunun üstüne oturan bir kütüphanedir (libxpc). Sana bir <em>bağlantı (connection)</em> ve içine anahtar-değer koyduğun <em>sözlükler (xpc dictionary)</em> verir; altındaki Mach port\'larını ve launchd ile başlatmayı kendisi halleder.',
+      'Asıl fikir güvenliktir. Riskli bir işi (bir dosyayı ayrıştırmak, bir ağ isteğini işlemek) ana uygulamanın içinde değil, ayrı bir <strong>XPC servisinde</strong> yaparsın. O servis kendi kum havuzunda (sandbox) ve kendi (çoğu zaman daha düşük) ayrıcalıklarında çalışır. Servis çökerse veya ele geçirilirse, ana uygulama ayakta kalır ve saldırgan dar bir kutuda sıkışır. Buna süreç ayrımı (privilege separation) denir; Android\'de Binder + ayrı süreçlerin yaptığı işin macOS karşılığıdır.'
+    ],
+    ideas: [
+      { b: 'Mach üstüne soyutlama', span: 'Bağlantı (connection) bir Mach portuna oturur; sözlük mesajları alttaki mach_msg çağrılarına dönüşür. Elle hak yönetimi yok.' },
+      { b: 'launchd başlatır', span: 'XPC servisleri talep üzerine (on-demand) launchd tarafından başlatılır; mesaj gelmeden süreç bile yoktur.' },
+      { b: 'Ayrım = güvenlik', span: 'Riskli iş ayrı, kum havuzlu, düşük ayrıcalıklı bir serviste. Çöküşü/ihlali ana uygulamayı düşürmez.' }
+    ]
+  },
+  lab: {
+    intro: 'Bir uygulama bir XPC servisine bağlanıp bir sözlük mesajı gönderir. launchd servisi o an başlatır; servis kendi kum havuzunda işler ve yanıt döner. Sağda bağlantıyı, mesajı ve servisin durumunu izle.',
+    codeLabel: 'xpc_client.c (temsilî)', cmd: './xpc_client',
+    foot: 'Servis adı ve değerler temsilîdir. Gerçek API: xpc/xpc.h; servisler .xpc paketleri olarak dağıtılır.',
+    code: [
+      { t: '<span class="cm">// --- istemci (ana uygulama) ---</span>' },
+      { t: 'conn = <span class="f">xpc_connection_create</span>(<span class="s">"com.ornek.ayristirici"</span>, q);' },
+      { t: '<span class="f">xpc_connection_set_event_handler</span>(conn, ^(xpc_object_t r){ ... });' },
+      { t: '<span class="f">xpc_connection_resume</span>(conn);' },
+      { t: '' },
+      { t: 'msg = <span class="f">xpc_dictionary_create</span>(NULL, NULL, 0);' },
+      { t: '<span class="f">xpc_dictionary_set_string</span>(msg, <span class="s">"komut"</span>, <span class="s">"ayristir"</span>);' },
+      { t: '<span class="f">xpc_connection_send_message</span>(conn, msg);' },
+      { t: '' },
+      { t: '<span class="cm">// --- servis tarafı (ayrı süreç, kum havuzu) ---</span>' },
+      { t: '<span class="f">xpc_connection_set_event_handler</span>(peer, ^(xpc_object_t m){' },
+      { t: '    <span class="cm">// riskli ayrıştırma burada, izole</span> });' }
+    ],
+    steps: [
+      { pc: 2, title: 'Bağlantı oluştur', term: ['istemci: "com.ornek.ayristirici" bağlantısı hazırlandı'],
+        text: 'Uygulama <code>xpc_connection_create</code> ile servisi adıyla ister. Henüz bir süreç başlamaz; sadece bağlantı nesnesi kurulur. Ad, launchd\'ın bootstrap isim uzayındaki bir girdiye karşılık gelir (Mach port modülündeki isim çözümlemenin aynısı).',
+        conn: 'hazır', queue: [], svc: 'off', note: 'Bağlantı var ama servis süreci henüz yok (lazy).' },
+      { pc: 4, title: 'Bağlantıyı başlat', term: ['istemci: connection_resume → Mach portu oturdu'],
+        text: 'İstemci olay işleyicisini kurar ve <code>xpc_connection_resume</code> çağırır. Bu noktada bağlantı alttaki bir Mach portuna oturur. Yine de servis süreci, ilk mesaja kadar başlatılmaz.',
+        conn: 'canlı', queue: [], svc: 'off', note: 'Bağlantı bir Mach portuna oturdu (altyapı: Modül 2).' },
+      { pc: 8, title: 'Sözlük mesajı gönder', term: ['istemci: {komut: "ayristir"} gönderildi'],
+        text: 'İstemci bir <code>xpc_dictionary</code> (anahtar-değer sözlüğü) hazırlar ve <code>xpc_connection_send_message</code> ile yollar. libxpc bu sözlüğü serileştirip alttaki <code>mach_msg</code> çağrısına dönüştürür; sen hiç port/hak yönetmezsin.',
+        conn: 'canlı', queue: ['{komut: "ayristir"}'], svc: 'off', flash: true, note: 'Mesaj yolda; servis henüz çalışmıyor, launchd devreye girecek.' },
+      { pc: 11, title: 'launchd servisi başlatır', term: ['launchd: com.ornek.ayristirici başlatıldı (talep üzerine)', 'servis: kum havuzunda, düşük ayrıcalık'],
+        text: 'Mesaj servisin portuna ulaşır. launchd bu portu izliyordu; mesaj gelince servis sürecini o an başlatır (on-demand). Servis kendi kum havuzunda (sandbox) ve kısıtlı ayrıcalıklarla doğar — ana uygulamanın yetkilerine sahip değildir.',
+        conn: 'canlı', queue: ['{komut: "ayristir"}'], svc: 'on', note: 'launchd lazy başlattı; servis izole (Modül 8 ile aynı mekanizma).' },
+      { pc: 11, title: 'Servis işler, yanıt döner', term: ['servis: ayrıştırma bitti, yanıt gönderildi', 'istemci: {sonuc: ...} alındı'],
+        text: 'Servis mesajı alır, riskli işi (ayrıştırma) izole ortamında yapar ve bir yanıt sözlüğü döndürür. İstemcinin olay işleyicisi yanıtı alır. Çift yönlü iletişim, Mach\'ın "reply port" mekanizmasıyla kurulur.',
+        conn: 'canlı', queue: [], svc: 'on', note: 'İstek/yanıt tamamlandı; iş baştan sona izole kaldı.' },
+      { pc: 11, title: 'Güvenlik kazancı', term: ['(hayali) servis çöktü → yalnızca servis yeniden başlar', 'ana uygulama: etkilenmedi'],
+        text: 'Diyelim servis bozuk bir girdi yüzünden çöktü veya ele geçirildi. Kazanç burada: zarar servisin dar kutusuyla sınırlı kalır. Ana uygulama ayakta, kullanıcının verisi ve yüksek ayrıcalıklar saldırgandan uzak. launchd gerekirse servisi yeniden başlatır. Süreç ayrımının (privilege separation) tüm değeri budur.',
+        conn: 'canlı', queue: [], svc: 'crash', note: 'İzolasyon kazancı: ihlal servise hapsolur, uygulamaya yayılmaz.' }
+    ],
+    render: function (s, stateEl, u) {
+      var connCls = s.conn === 'off' ? 'xconn' : 'xconn live';
+      var connState = s.conn === 'off'
+        ? '<span class="xstate off">bağlantı yok</span>'
+        : (s.conn === 'hazır' ? '<span class="xstate box">hazırlandı</span>' : '<span class="xstate on">canlı (Mach portu)</span>');
+      var svcMap = {
+        off: ['xconn', '<span class="xstate off">çalışmıyor (lazy)</span>', ''],
+        on: ['xconn live', '<span class="xstate on">çalışıyor</span>', '<span class="sb">kum havuzu · düşük ayrıcalık</span>'],
+        crash: ['xconn', '<span class="xstate off" style="color:var(--bad)">çöktü / izole</span>', '<span class="sb" style="background:var(--bad-soft);color:var(--bad)">zarar burada hapsoldu</span>']
+      };
+      var sv = svcMap[s.svc];
+      var q = s.queue.length
+        ? s.queue.map(function (m) { return '<div class="xmsg">' + u.esc(m) + '</div>'; }).join('')
+        : '<div class="empty">mesaj yok</div>';
+      stateEl.innerHTML =
+        '<p class="lab-label">Bağlantı ve servis</p>' +
+        '<div class="xpc">' +
+          '<div class="' + connCls + '"><span class="ch">İstemci (uygulama)</span>' + connState + '</div>' +
+          '<div class="xconn live" id="chanEl"><span class="ch">XPC kanalı · sözlük</span><div class="queue" style="display:grid;gap:4px">' + q + '</div></div>' +
+          '<div class="' + sv[0] + '"><span class="ch">XPC servisi</span>' + sv[1] + sv[2] + '</div>' +
+        '</div>' +
+        (s.note ? '<p class="note" style="margin-top:12px">' + u.esc(s.note) + '</p>' : '');
+      if (s.flash) ATLAS.flash(document.getElementById('chanEl'), false);
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: XPC nasıl güvenli IPC sağlar?",
+    html: `<p class="lead">XPC, Mach port'larının ham gücünü alıp üstüne tip-güvenli bir API, launchd yönetimi ve bir güvenlik modeli koyar. macOS/iOS'ta uygulamaların ayrıcalıklı işi ayrı, kum havuzlu süreçlere devretmesinin standart yoludur — tarayıcıdan sistem servislerine kadar. Bu bölüm Apple belgelerine ve Mach port modülüne (Modül 2) dayanır.</p>
+
+<h3>1. Mach port üstüne kurulu connection</h3>
+<p>XPC, Modül 2'deki Mach port'larının üstünde oturur: bir XPC connection, altında bir Mach port çiftidir (bir yöne send right, dönüş için reply port). Geliştirici ham <code>mach_msg</code> yerine bir connection soyutlamasıyla çalışır.</p>
+<div class="manpage src-apple"><div class="ref">xpc_connection · DESCRIPTION</div><p class="orig">Connections are the fundamental primitives for sending and receiving messages.</p><p>Bir connection, iki süreç arasındaki iki yönlü mesaj kanalıdır. Her connection'ın bir event handler'ı olmalıdır; gelen mesajlar ve bağlantı olayları (interruption, invalidation) bu bloğa düşer.</p></div>
+
+<h3>2. xpc_object: tip-güvenli serialization</h3>
+<p>Mesajlar düz byte dizisi değil, tipli <strong>xpc_object</strong>'lerdir. En yaygını bir dictionary'dir; içine string, integer, data, hatta bir file descriptor veya başka bir connection endpoint konabilir. libxpc bunları alıcı tarafta aynı tiplerle yeniden kurar — Binder'ın Parcel'ına benzer ama tiplidir.</p>
+<div class="deflist">
+<div><dt>xpc_dictionary</dt><dd>Anahtar-değer mesaj gövdesi; en sık kullanılan mesaj tipi.</dd></div>
+<div><dt>xpc_array</dt><dd>Sıralı değer listesi.</dd></div>
+<div><dt>xpc_data</dt><dd>Ham byte bloğu (büyük veri).</dd></div>
+<div><dt>xpc_fd / endpoint</dt><dd>Bir file descriptor veya connection endpoint'i başka sürece aktarır — Mach right transfer'in XPC karşılığı.</dd></div>
+</div>
+<div class="manpage src-apple"><div class="ref">xpc_connection · EVENT HANDLERS</div><p class="orig">If the event handler block delivers an object of type XPC_TYPE_DICTIONARY, the event is a message that needs processing.</p><p>Servis, event handler'ında gelen objenin tipine bakar: bir dictionary ise işlenecek bir mesajdır; bir error objesi ise bağlantı koptu veya geçersiz kılındı demektir.</p></div>
+
+<h3>3. launchd ile on-demand yaşam döngüsü</h3>
+<p>XPC service'ler genelde elle başlatılmaz. Bir service, bir bundle içinde tanımlanır ve launchd'a kayıtlıdır; ilk mesaj geldiğinde launchd onu <strong>on-demand</strong> başlatır, boştaysa sonlandırır. Geliştirici süreç yönetimiyle uğraşmaz — Modül 8'deki launchd mantığının XPC'ye yansımasıdır.</p>
+<div class="manpage src-apple"><div class="ref">xpc_connection · LAUNCH-ON-DEMAND</div><p class="orig">if the remote end is not yet running, the act of sending a message will cause it to launch on-demand.</p><p>Mesaj göndermek servisi gerektiğinde ayağa kaldırır; bu, kaynakları yalnızca iş oldukça kullanmayı sağlar ve servisin çökmesi durumunda launchd'ın yeniden başlatmasına izin verir.</p></div>
+
+<h3>4. Privilege separation: XPC'nin asıl tasarım amacı</h3>
+<p>XPC'nin varlık nedeni güvenliktir. Riskli veya ayrıcalıklı iş (ayrıştırma, ağ, ayrıcalık gerektiren bir işlem) ana uygulamadan koparılıp ayrı bir XPC service'e konur. Bu service kendi sandbox'ında, en az ayrıcalıkla çalışır; çökerse veya ele geçirilirse ana uygulama ve sistem korunmuş olur. Bu "privilege separation" deseni, modern macOS güvenlik mimarisinin temelidir.</p>
+
+<h3>5. Güvenlik: caller'ı audit token ile doğrulamak</h3>
+<p>Bir XPC service, bir isteğin kimden geldiğini bilmelidir. Geçmişte PID kullanmak yaygındı ama PID yeniden kullanılabilir (PID reuse) — bir saldırgan araya girebilir. Doğru yöntem, çekirdeğin ürettiği ve taklit edilemeyen <strong>audit token</strong>'dır (veya yeni peer requirement API'leri).</p>
+<div class="manpage src-apple"><div class="ref">xpc_connection · CREDENTIALS</div><p class="orig">Modern XPC applications should use peer requirement APIs for secure validation of connecting processes.</p><p>Bağlanan süreci güvenilir biçimde doğrulamak için peer requirement API'leri önerilir; bu, caller'ın code signing kimliğini denetler. Hatalı caller doğrulaması, XPC service'lerinin tekrar eden bir saldırı yüzeyidir (kavramsal — bkz. sandbox kaçışı modülü).</p></div>
+
+<h3>6. Binder ile karşılaştırma</h3>
+<p>XPC ve Android Binder aynı problemi çözer: süreçler arası tip-güvenli, güvenli RPC. İkisi de çekirdek bir IPC ilkelinin (Mach port vs binder driver) üstüne kurulur, mesajları serialize eder (xpc_object vs Parcel), bir isim servisiyle (launchd vs Service Manager) bulunur ve caller kimliğini çekirdekten alır (audit token vs UID/PID). Fark: XPC servisleri launchd ile on-demand yönetilir, Binder ise daha düşük seviyeli bir transaction mekanizmasıdır.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">XPC, iki katmanlı bir yığındır: üstte C API\'si (<code>xpc_*</code>) ve Objective-C sarmalayıcısı (<code>NSXPCConnection</code>), altta libxpc\'in Mach port\'ları ve launchd ile konuşması. Bir çağrının yolu:</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://developer.apple.com/documentation/xpc" target="_blank" rel="noopener">xpc_connection_create / send_message</a><span class="where">libxpc API</span><p>Bağlantı ve sözlük soyutlaması; geliştiricinin gördüğü katman.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">libxpc serileştirme</span><span class="where">libxpc</span><p>xpc_dictionary\'yi bir Mach mesajına (mach_msg) paketler; port haklarını yönetir.</p></div></li>' +
+      '<li class="boundary"><div>Mach IPC · Modül 2 ile aynı altyapı</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">mach_msg → servis portu</span><span class="where">XNU osfmk/ipc</span><p>Mesaj, servisin launchd\'a kayıtlı portuna gider.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">launchd talep üzerine başlatma</span><span class="where">launchd · Modül 8</span><p>Port mesaj alınca servis süreci başlatılır; kum havuzu ve ayrıcalıklar uygulanır.</p></div></li>' +
+      '</ol>' +
+      '<p class="prose" style="margin-top:14px">Neden önemli? Apple\'ın kendi sistem servislerinin çoğu XPC\'dir. Güvenlik araştırmasında XPC bir saldırı yüzeyidir (attack surface): bir servis gelen mesajı yeterince doğrulamazsa, veya bir bağlantının kim olduğunu (<code>audit token</code>) yanlış kontrol ederse, düşük ayrıcalıklı bir istemci yüksek ayrıcalıklı servise iş yaptırabilir — bu, macOS yerel ayrıcalık yükseltme (local privilege escalation) bulgularının tekrar eden bir kalıbıdır.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. XPC servislerini bul', p: 'Bir uygulama paketinin içindeki XPC servislerini listele; her biri ayrı bir çalıştırılabilir ve ayrı bir kimliktir.',
+        shells: [{ label: 'terminal (macOS)', copy: 'ls -R /Applications/BirUygulama.app/Contents/XPCServices', pre: '<span class="c">$</span> ls /Applications/Ornek.app/Contents/XPCServices\n<span class="c"># com.ornek.ayristirici.xpc/ → ayrı süreç, ayrı Info.plist, ayrı yetkiler</span>' }] },
+      { h3: '2. launchd XPC uç noktalarını gör', p: 'launchd\'ın kayıtlı servislerini listele; XPC bağlantıları bu uç noktalara oturur (Mach port modülüyle aynı defter).',
+        shells: [{ label: 'terminal (macOS)', copy: 'launchctl print gui/$(id -u) | grep -iE "endpoint|service"', pre: '<span class="c">$</span> launchctl print gui/501\n<span class="c"># endpoints: com.apple.* → XPC/Mach uç noktaları (temsilî)</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'XPC bir mesajı gönderirken altta hangi mekanizmayı kullanır?', opts: ['TCP soketi', 'Mach port\'ları (mach_msg)', 'Paylaşılan dosya'], answer: 'Mach port\'ları (mach_msg)',
+        ok: 'Doğru. XPC, Mach port\'ları üstüne kurulu bir soyutlamadır; sözlük mesajları mach_msg çağrılarına dönüşür.', no: 'İpucu: XPC bir soyutlama; altında macOS\'un temel IPC\'si var — hangisi?' },
+      { q: 'Riskli işi ayrı bir XPC servisine koymanın ana güvenlik faydası nedir?', opts: ['Daha hızlı çalışır', 'Çöküş/ihlal dar bir kutuda kalır (süreç ayrımı)', 'Daha az bellek kullanır'], answer: 'Çöküş/ihlal dar bir kutuda kalır (süreç ayrımı)',
+        ok: 'Doğru. Servis kendi kum havuzunda ve düşük ayrıcalıkta; çökerse veya ele geçirilirse ana uygulama ve kullanıcı verisi korunur.', no: 'İpucu: fayda hız veya bellek değil; servis çökerse ne olur?' },
+      { q: 'Bir XPC servisi mesajın kimden geldiğini doğrulamazsa ne risk doğar?', opts: ['Hiçbir şey', 'Düşük ayrıcalıklı istemci yüksek ayrıcalıklı iş yaptırabilir (LPE)', 'Mesaj kaybolur'], answer: 'Düşük ayrıcalıklı istemci yüksek ayrıcalıklı iş yaptırabilir (LPE)',
+        ok: 'Doğru. audit token / yetki kontrolü eksikse, yetkisiz bir istemci servise iş yaptırır; bu klasik bir yerel ayrıcalık yükseltme (LPE) kalıbıdır.', no: 'İpucu: servis yüksek ayrıcalıklıysa ve çağıranı kontrol etmiyorsa kim kazanır?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · macOS Modül 8', title: 'launchd', desc: 'PID 1, plist ile servisler ve talep üzerine başlatma — XPC\'nin altındaki başlatma motoru.' },
+  sources: [
+    { href: 'https://newosxbook.com/toc1.html', text: 'Levin — OS Internals Cilt I', note: 'Bölüm 13 (XPC)' },
+    { href: 'https://developer.apple.com/documentation/xpc', text: 'Apple — XPC' },
+    { href: 'https://developer.apple.com/documentation/foundation/nsxpcconnection', text: 'Apple — NSXPCConnection' },
+    { href: 'https://www.antid0te.com/training/kernel-internals.html', text: 'Antid0te — Kernel Internals', note: 'IPC güvenlik görünümü' }
+  ],
+  pageTitle: 'XPC'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

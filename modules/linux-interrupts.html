@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Kesmeler ve Sürücüler</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: CPU durumu ve üst/alt yarı akışı */
+.cpu-box { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 10px 12px; display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.cpu-box.irq { border-color: var(--track); background: var(--track-soft); }
+.cpu-box .cl { font-family: var(--f-mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.cpu-box .cv { font-family: var(--f-display); font-weight: 800; font-size: 16px; }
+.cpu-box.irq .cv { color: var(--track); }
+.half { border-radius: var(--r); padding: 10px 12px; border: 1.5px solid var(--line); background: var(--surface); display: grid; gap: 3px; min-width: 0; }
+.half b { font-family: var(--f-display); font-size: 14px; } .half span { font-size: 12.5px; color: var(--muted); }
+.half.active { border-color: var(--track); background: var(--track-soft); } .half.active b { color: var(--track); }
+.half.deferred { border-color: var(--warn); background: var(--warn-soft); } .half.deferred b { color: var(--warn); }
+.half.done { opacity: .55; }
+.irqline { font-family: var(--f-mono); font-size: 12px; border: 1px dashed var(--track); border-radius: var(--r); background: var(--track-soft); color: var(--track); padding: 8px 10px; overflow-wrap: anywhere; }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'linux',
+  crumbs: 'linux › kesmeler › modül 12',
+  eyebrow: 'Modül 12 · Linux · Kesmeler ve sürücüler',
+  titleHTML: 'Kesmeler (<code>IRQ</code>): donanım çekirdeği nasıl durdurur?',
+  lede: 'Klavyeye basıldığında, paket geldiğinde, disk işini bitirdiğinde donanım çekirdeğe "bana bak" der. Bu bir kesmedir (interrupt). Bu modülde bir klavye kesmesinin yolculuğunu, çekirdeğin işi neden üst yarı ve alt yarı olarak ikiye böldüğünü izleyecek ve kendi makinende gerçek kesme sayaçlarını göreceksin.',
+  meta: ['~15 dk', 'ön koşul: süreç ve CPU kavramı', 'çekirdek: Linux 6.x'],
+  intuition: {
+    paras: [
+      'Çekirdek, donanımı sürekli yoklayarak (polling) "yeni bir şey var mı?" diye sormaz; bu CPU israfı olurdu. Bunun yerine donanım, hazır olduğunda bir <strong>kesme (interrupt)</strong> sinyali gönderir. CPU o an ne yapıyorsa bırakır, kaydeder, ve önceden kaydedilmiş bir kesme işleyicisine (interrupt handler) atlar.',
+      'Ama kesme işleyicisi içindeyken sistem hassas bir durumdadır: başka işler (çoğu zaman o kesme) beklemededir. Bu yüzden iş ikiye bölünür: <strong>üst yarı (top half)</strong> sadece acil minimumu yapar (veriyi al, donanımı onayla) ve hızlıca çıkar; ağır iş <strong>alt yarıya (bottom half)</strong> ertelenir ve kesmeler yeniden açıkken, daha rahat bir anda yapılır.'
+    ],
+    ideas: [
+      { b: 'Asenkron', span: 'Kesme, çalışan sürecin kodundan bağımsız, herhangi bir anda gelebilir. Bu yüzden işleyici çok dikkatli (ve kısa) olmalıdır.' },
+      { b: 'Üst yarı / alt yarı', span: 'Üst yarı hızlı ve kesmeler kapalıyken çalışır; alt yarı (softirq, tasklet, workqueue) ağır işi erteler.' },
+      { b: 'Her şey dosya', span: 'Bir aygıt sürücüsü, aygıtı /dev altında bir dosya gibi sunar; open/read/write çağrıları file_operations yapısındaki fonksiyonlara gider.' }
+    ]
+  },
+  lab: {
+    intro: 'Bir klavye tuşuna basıldığında ne olur? Soldaki "kod" çekirdek tarafının sözde-akışıdır; sağda CPU\'nun durumunu ve işin üst yarı ile alt yarı arasında nasıl bölündüğünü izle.',
+    codeLabel: 'kesme akışı (sözde-kod)', cmd: '(donanım olayı)',
+    foot: 'Akış kavramsaldır; aşağıda "Kendin dene" ile kendi makinendeki gerçek kesme sayaçlarını görebilirsin. ← → tuşlarıyla da ilerleyebilirsin.',
+    code: [
+      { t: '<span class="cm">// donanım IRQ hattını tetikler</span>' },
+      { t: '<span class="cm">// CPU çalışan işi durdurur, kaydeder</span>' },
+      { t: '<span class="f">do_IRQ</span>(irq):' },
+      { t: '    <span class="cm">// --- üst yarı (hızlı) ---</span>' },
+      { t: '    veri = <span class="f">inb</span>(KBD_PORT);  <span class="cm">// tuşu oku</span>' },
+      { t: '    <span class="f">ack_irq</span>();           <span class="cm">// denetleyiciyi onayla</span>' },
+      { t: '    <span class="f">raise_softirq</span>();     <span class="cm">// ağır işi ertele</span>' },
+      { t: '    <span class="k">return</span>;              <span class="cm">// hızlıca çık</span>' },
+      { t: '' },
+      { t: '<span class="cm">// --- alt yarı (sonra, rahat anda) ---</span>' },
+      { t: '<span class="f">bottom_half</span>(): tuşu girdi katmanına ilet' }
+    ],
+    steps: [
+      { pc: [0, 1], title: 'Tuşa basılır', term: [],
+        text: 'Klavye bir tuşun basıldığını algılar ve IRQ hattını tetikler. Bu sinyal CPU\'ya ulaşır. O an CPU bambaşka bir süreci (diyelim tarayıcını) çalıştırıyordu.',
+        cpu: 'normal', task: 'tarayıcı süreci çalışıyor', irq: 'IRQ 1 (klavye) tetiklendi',
+        top: 'bekliyor', bottom: 'bekliyor' },
+      { pc: 2, title: 'CPU işi durdurur', term: [],
+        text: 'CPU çalışan sürecin durumunu (register\'lar, program sayacı) kaydeder ve kesme vektör tablosunda IRQ 1\'e karşılık gelen işleyiciye atlar. Kesilen süreç bundan habersizdir; sonradan hiçbir şey olmamış gibi devam edecek.',
+        cpu: 'irq', task: 'tarayıcı DURDURULDU (durumu saklandı)', irq: 'işleyiciye atlandı: do_IRQ(1)',
+        top: 'bekliyor', bottom: 'bekliyor' },
+      { pc: [4, 5], title: 'Üst yarı: acil minimum', term: [],
+        text: 'Üst yarı (top half) çalışır ve yalnızca ertelenemeyecek işi yapar: tuş kodunu donanımdan okur ve denetleyiciye "aldım" onayı verir. Bu sırada (genellikle) kesmeler kapalıdır, bu yüzden mümkün olduğunca kısa olmalıdır.',
+        cpu: 'irq', task: 'tarayıcı durduruldu', irq: 'IRQ 1 işleniyor',
+        top: 'aktif', bottom: 'bekliyor' },
+      { pc: 6, title: 'Ağır iş ertelenir', term: [],
+        text: 'Tuşu girdi (input) katmanına iletmek, olayı kuyruğa koymak gibi daha ağır işler şimdi yapılmaz. Üst yarı bir alt yarı (bottom half) planlar — <code>raise_softirq</code> — ve biter. Böylece kesme işleyicisi kısacık sürer.',
+        cpu: 'irq', task: 'tarayıcı durduruldu', irq: 'softirq planlandı',
+        top: 'done', bottom: 'deferred' },
+      { pc: 7, title: 'Kesilen iş sürer', term: [],
+        text: 'Üst yarı döner. CPU saklanan durumu geri yükler ve tarayıcı süreci, hiçbir şey olmamış gibi kaldığı yerden devam eder. Kesme neredeyse görünmezdi.',
+        cpu: 'normal', task: 'tarayıcı yeniden çalışıyor', irq: 'işleyici bitti',
+        top: 'done', bottom: 'deferred' },
+      { pc: 10, title: 'Alt yarı: rahat anda', term: [],
+        text: 'Kısa süre sonra, kesmeler açıkken ve uygun bir anda, alt yarı (softirq/ksoftirqd) çalışır: tuş girdi alt sistemine iletilir, oradan da onu bekleyen uygulamaya. Ağır iş, sistemi kilitlemeden halledilmiş olur.',
+        cpu: 'normal', task: 'ksoftirqd alt yarıyı işliyor', irq: 'tuş girdi katmanına iletildi',
+        top: 'done', bottom: 'done' }
+    ],
+    render: function (s, stateEl, u) {
+      var irq = s.cpu === 'irq';
+      function half(cls, title, desc) {
+        return '<div class="half ' + cls + '"><b>' + title + '</b><span>' + u.esc(desc) + '</span></div>';
+      }
+      var topDesc = { 'bekliyor': 'henüz çalışmadı', 'aktif': 'tuşu oku + donanımı onayla', 'done': 'bitti (çok kısa sürdü)' }[s.top];
+      var botDesc = { 'bekliyor': 'henüz planlanmadı', 'deferred': 'planlandı, sırasını bekliyor', 'done': 'tuş girdi katmanına iletildi' }[s.bottom];
+      stateEl.innerHTML =
+        '<p class="lab-label">CPU durumu</p>' +
+        '<div class="cpu-box ' + (irq ? 'irq' : '') + '"><span class="cl">şu an</span><span class="cv">' + (irq ? 'kesme işleniyor' : 'normal süreç') + '</span></div>' +
+        '<div class="box" style="margin-top:10px"><span class="mono">' + u.esc(s.task) + '</span></div>' +
+        '<p class="lab-label" style="margin-top:14px">Kesme hattı (IRQ)</p><div class="irqline">' + u.esc(s.irq) + '</div>' +
+        '<p class="lab-label" style="margin-top:14px">İşin bölünmesi</p><div class="boxrow">' +
+          half(s.top === 'aktif' ? 'active' : (s.top === 'done' ? 'done' : ''), 'Üst yarı (top half)', topDesc) +
+          half(s.bottom === 'deferred' ? 'deferred' : (s.bottom === 'done' ? 'done' : ''), 'Alt yarı (bottom half)', botDesc) +
+        '</div>';
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: kesmenin yolu ve işin bölünmesi",
+    html: `<p class="lead">Bir interrupt yüzeyde basit görünür — "donanım dikkat istiyor" — ama altında interrupt controller'dan IDT'ye, interrupt context'in katı kurallarından bottom half mekanizmalarına uzanan bir mimari yatar. Bu bölüm neden işin ikiye bölündüğünü ve bir aygıt sürücüsünün bu yapıya nasıl bağlandığını ayrıntılandırır.</p>
+
+<h3>1. Hattan handler'a: IRQ nasıl bir fonksiyona dönüşür?</h3>
+<p>Bir aygıt dikkat istediğinde iki yoldan biriyle sinyal verir. Klasik yol bir fiziksel <strong>IRQ line</strong>'dır: aygıt bir hattı tetikler, hat bir <strong>interrupt controller</strong>'a (eski PIC, modern sistemlerde APIC / IO-APIC) gider, o da CPU'ya hangi kesmenin geldiğini bildirir. Modern PCIe aygıtları ise ayrı bir hat yerine <strong>MSI / MSI-X</strong> (Message Signaled Interrupt) kullanır: kesmeyi belleğe özel bir yazma işlemiyle, "mesaj" olarak gönderir — bu daha fazla kesme vektörü ve daha az hat çakışması demektir.</p>
+<p>CPU bir kesme aldığında, o an çalışan kodu durdurur ve <strong>IDT</strong> (Interrupt Descriptor Table) üzerinden ilgili <strong>interrupt vector</strong>'e karşılık gelen giriş noktasına atlar. Çekirdek buradan kayıtlı <strong>interrupt handler</strong>'ı (sürücünün <code>request_irq</code> ile verdiği fonksiyon) çağırır. Tüm bu süre boyunca çalışan kod <strong>interrupt context</strong>'tedir.</p>
+
+<h3>2. Interrupt context: uyuyamaz, bloklayamaz</h3>
+<p>Interrupt handler bir <strong>process context</strong>'te değil, <strong>interrupt context</strong>'te çalışır ve bu temel bir kısıttır. Interrupt context'in arkasında bir <code>task_struct</code> yoktur, yani uykuya geçirilip sonra uyandırılacak bir süreç yoktur. Bu yüzden handler içinde <strong>asla</strong> uyunamaz, bloklayan bir işlem (örneğin uzun bir kilit beklemesi veya kullanıcı belleğine erişim) yapılamaz. Ayrıca top half genellikle kesmeler kapalıyken çalışır: handler uzarsa diğer kesmeler ve tüm sistem gecikir. İşte işin ikiye bölünmesinin asıl nedeni budur.</p>
+
+<h3>3. Top half ve bottom half</h3>
+<p>Çözüm, işi ikiye ayırmaktır. <strong>Top half</strong> (hardirq) yalnızca ertelenemeyecek, en acil işi yapar: veriyi donanımdan al, denetleyiciyi onayla, geri kalanı için bir bottom half planla ve hızlıca çık. <strong>Bottom half</strong> ise ağır işi, kesmeler yeniden açıkken ve sistem daha rahatken yapar. Linux'ta bottom half için üç mekanizma vardır ve aralarındaki fark, nerede çalıştıkları ve uyuyup uyuyamadıklarıdır:</p>
+<div class="deflist">
+<div><dt>softirq</dt><dd>Çekirdeğin kendi, statik tanımlı, yüksek başarımlı bottom half'leri (ağ için NET_RX/NET_TX, blok, timer). Aynı softirq birden çok CPU'da paralel çalışabilir, bu yüzden kendi kilitlemesini kendi yapar. Interrupt context'tedir, uyuyamaz.</dd></div>
+<div><dt>tasklet</dt><dd>softirq üstüne kurulu, sürücüler için kolay arayüz. Aynı tasklet aynı anda yalnızca bir CPU'da çalışır (serileştirilmiştir), bu yüzden sürücü yazarı için daha basittir. Interrupt context'tedir, uyuyamaz.</dd></div>
+<div><dt>workqueue</dt><dd>Bir kernel thread'inde, yani <strong>process context</strong>'te çalışır — tek fark budur ama kritiktir: workqueue <strong>uyuyabilir</strong>, bloklayan işlem yapabilir, kilit bekleyebilir. Uyuması gereken ertelenmiş iş buraya gider.</dd></div>
+</div>
+<p>Yük çok yükseldiğinde softirq'ler bir kesme işleyicisinin dönüşünde hemen işlenmek yerine <code>ksoftirqd</code> adlı, her CPU için bir tane olan çekirdek thread'ine devredilir; böylece softirq seli, normal süreçleri tamamen aç bırakmaz.</p>
+
+<h3>4. Shared IRQ, threaded IRQ ve affinity</h3>
+<p>Birden çok aygıt tek bir IRQ line'ı paylaşabilir (<strong>shared IRQ</strong>): kesme gelince çekirdek o hatta kayıtlı tüm handler'ları sırayla çağırır, her handler "bu benim mi?" diye bakıp değilse <code>IRQ_NONE</code> döner. Gerçek zamanlı ve karmaşık sürücüler için çekirdek <strong>threaded IRQ</strong> da sunar (<code>request_threaded_irq</code>): top half minimum işi yapar, asıl işleyici ayrı bir çekirdek thread'inde, process context'te çalışır — yani uyuyabilir.</p>
+<p>Çok çekirdekli sistemlerde her kesmenin hangi CPU'da işleneceği <strong>IRQ affinity</strong> ile ayarlanır: <code>/proc/irq/&lt;n&gt;/smp_affinity</code> bir CPU maskesi tutar. Ağ kartları gibi yoğun kesme üreten aygıtların yükünü CPU'lara dağıtmak (veya tek CPU'ya sabitlemek) performans ayarının önemli bir parçasıdır.</p>
+
+<h3>5. Character device: kesmeden kullanıcıya</h3>
+<p>Bottom half tuşu input alt sistemine ilettikten sonra, o veri sonunda bir aygıt dosyası üzerinden uygulamaya ulaşır. Bir <strong>character device</strong>, aygıtı /dev altında bir dosya gibi sunar; üzerindeki <code>open/read/write</code> çağrıları, sürücünün kaydettiği <strong>file_operations</strong> yapısındaki fonksiyonlara eşlenir. Aygıtı <strong>major number</strong> (hangi sürücü) ve <strong>minor number</strong> (o sürücünün hangi örneği) tanımlar; sürücü kendini çekirdeğe bir <code>cdev</code> olarak kaydeder.</p>
+<p>Bütün bu makineyi dışarıdan iki dosyayla gözlemleyebilirsin. <code>/proc/interrupts</code>, her kesme kaynağının her CPU'da kaç kez tetiklendiğini sayar:</p>
+<div class="manpage"><div class="ref">5 proc_interrupts · DESCRIPTION</div><p class="orig">This is used to record the number of interrupts per CPU per IO device.</p><p>Her satır bir kesme kaynağı, her sütun bir CPU'dur; hücredeki sayı o kaynağın o CPU'da kaç kez tetiklendiğidir. Bir aygıtın gerçekten çalışıp çalışmadığını veya kesme yükünün CPU'lara nasıl dağıldığını buradan anlarsın.</p></div>
+<p>Benzer şekilde <code>/proc/softirqs</code> bottom half işinin türe göre dağılımını (TIMER, NET_RX, RCU...) gösterir; ağ yoğun bir sistemde NET_RX'in neden tavan yaptığını buradan görürsün.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">Kesme bir süreç bağlamında (process context) değil, kesme bağlamında (interrupt context) çalışır: uyuyamaz, bloklayamaz. Çekirdek tarafındaki yol (adlar Elixir\'de kaynağa gider):</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">donanım IRQ</span><span class="where">APIC / denetleyici</span><p>Aygıt bir kesme hattını veya mesaj-sinyalli kesme (MSI) yollar; CPU çalışan işi durdurur.</p></div></li>' +
+      '<li class="boundary"><div>kesme girişi · süreç → kesme bağlamı</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/handle_irq_event" target="_blank" rel="noopener">handle_irq_event()</a><span class="where">kernel/irq/handle.c</span><p>Kayıtlı işleyiciyi (üst yarı) çağırır; sürücünün <code>request_irq</code> ile verdiği fonksiyon burada çalışır.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/raise_softirq" target="_blank" rel="noopener">raise_softirq()</a><span class="where">kernel/softirq.c</span><p>Ağır işi alt yarı olarak işaretler; hemen ya da ksoftirqd içinde çalışır.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">file_operations</span><span class="where">sürücü (driver)</span><p>Karakter aygıtı (character device): <code>open/read/write</code> çağrıları bu yapıdaki fonksiyonlara eşlenir; aygıt /dev altında bir dosya gibi görünür.</p></div></li>' +
+      '</ol>' +
+      '<p class="prose" style="margin-top:14px">Alt yarı üç biçimde olur: <strong>softirq</strong> (çekirdeğin kendi, statik tanımlı, yüksek başarımlı yolları — ağ, blok), <strong>tasklet</strong> (softirq üstüne kurulu, sürücüler için kolay), <strong>workqueue</strong> (süreç bağlamında çalışır, yani uyuyabilir). Uyuması gereken iş workqueue\'ya gider.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Gerçek kesme sayaçlarına bak', p: 'Her kesme kaynağının, her CPU\'da kaç kez tetiklendiğini görebilirsin. Fareyi oynat, bir tuşa bas ve tekrar bak: ilgili satır artar.',
+        shells: [{ label: 'terminal', copy: 'cat /proc/interrupts', pre: '<span class="c">$</span> cat /proc/interrupts\n           CPU0       CPU1\n 26:          3          0  IO-APIC  4-edge      ttyS0\n 32:          0        574  PCI-MSIX ...         virtio0-stats\n 35:         58          0  PCI-MSIX ...         virtio9-input\n<span class="c"># "input" satırı giriş aygıtı kesmeleri</span>' }] },
+      { h3: '2. Alt yarıları (softirq) gör', p: 'Alt yarı işinin tür türe dağılımı burada. NET_RX (ağ alımı) ve TIMER genelde en yüksektir.',
+        shells: [{ label: 'terminal', copy: 'cat /proc/softirqs', pre: '<span class="c">$</span> cat /proc/softirqs\n                 CPU0       CPU1\n      TIMER:      75409      66161\n     NET_RX:     100863      97100\n    TASKLET:         91        467\n        RCU:       6480       6518' }] },
+      { h3: '3. Aygıt dosyalarını listele', p: 'Her karakter (c) veya blok (b) aygıtı, bir sürücüye bağlı bir dosyadır. Baştaki harf türü, sayılar (major, minor) hangi sürücü ve hangi aygıt olduğunu söyler.',
+        shells: [{ label: 'terminal', copy: 'ls -l /dev | head', pre: '<span class="c">$</span> ls -l /dev | head\ncrw-rw-rw- 1 root root  1,  7 ... full\ncrw------- 1 root root 10,183 ... hwrng\ncrw-r--r-- 1 root root  1, 11 ... kmsg\nbrw------- 1 root root  7,  0 ... loop0\n<span class="c"># c = karakter aygıtı, b = blok aygıtı</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Üst yarı (top half) neden mümkün olduğunca kısa tutulur?', opts: ['Kod okunabilir olsun diye', 'Çalışırken kesmeler (çoğunlukla) kapalı ve sistem bekliyor', 'Bellek tasarrufu için'], answer: 'Çalışırken kesmeler (çoğunlukla) kapalı ve sistem bekliyor',
+        ok: 'Doğru. Üst yarı kesme bağlamında, kesmeler kapalıyken çalışır; uzun sürerse başka kesmeler ve işler gecikir. Bu yüzden ağır iş alt yarıya ertelenir.', no: 'İpucu: işleyici içindeyken sistemin geri kalanı ne durumda?' },
+      { q: 'Aşağıdakilerden hangisi süreç bağlamında çalıştığı için <em>uyuyabilir</em>?', opts: ['softirq', 'tasklet', 'workqueue'], answer: 'workqueue',
+        ok: 'Doğru. workqueue bir çekirdek iş parçacığında, süreç bağlamında çalışır; bloklayabilir/uyuyabilir. softirq ve tasklet kesme bağlamındadır, uyuyamaz.', no: 'İpucu: hangisi bir çekirdek thread\'inde, süreç bağlamında çalışır?' },
+      { q: '/dev/input... gibi bir karakter aygıtına yapılan <code>read()</code> çağrısı nereye gider?', opts: ['Doğrudan donanıma', 'Sürücünün file_operations fonksiyonuna', 'Disk üzerindeki bir dosyaya'], answer: 'Sürücünün file_operations fonksiyonuna',
+        ok: 'Doğru. VFS çağrıyı aygıtın sürücüsünün kaydettiği file_operations.read fonksiyonuna yönlendirir; aygıt bir dosya gibi görünür ama arkasında sürücü kodu vardır.', no: 'İpucu: aygıt bir dosya gibi görünür; open/read/write hangi yapıya eşlenir?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Linux Modül 13', title: 'Açılış süreci', desc: 'Firmware\'den systemd\'ye: makine açıldığında çekirdek nasıl yüklenir ve ilk süreç nasıl doğar?' },
+  sources: [
+    { href: 'https://man7.org/linux/man-pages/man5/proc_interrupts.5.html', text: 'man proc_interrupts', note: '/proc/interrupts biçimi' },
+    { href: 'https://lwn.net/Kernel/LDD3/', text: 'Linux Device Drivers, 3. baskı', note: 'ücretsiz; Böl. 10 kesmeler' },
+    { href: 'https://0xax.gitbooks.io/linux-insides/content/Interrupts/', text: 'linux-insides — Interrupts', note: 'çekirdek kaynak gezintisi' },
+    { href: 'https://elixir.bootlin.com/linux/latest/source/kernel/softirq.c', text: 'kernel/softirq.c', note: 'alt yarı, Elixir' }
+  ],
+  pageTitle: 'Kesmeler ve Sürücüler'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

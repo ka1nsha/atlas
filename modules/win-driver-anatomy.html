@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Windows Sürücü Anatomisi</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: sürücü yaşam döngüsü ve nesne kutuları */
+.life { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.life .node { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 8px 11px; font-family: var(--f-mono); font-size: 12.5px; display: flex; align-items: center; gap: 8px; opacity: .45; transition: opacity .15s, border-color .15s; }
+.life .node.on { opacity: 1; border-color: var(--track); background: var(--track-soft); color: var(--track); font-weight: 500; }
+.life .node .ni { font-size: 10.5px; color: var(--muted); }
+.life .node.on .ni { color: var(--track); }
+.objbox { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 10px; font-family: var(--f-mono); font-size: 12px; line-height: 1.7; }
+.objbox b { color: var(--track); }
+.objbox .dim { color: var(--muted); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'windows',
+  crumbs: 'windows › sürücü anatomisi › modül 2',
+  eyebrow: 'Modül 2 · Windows · Sürücü modeli',
+  titleHTML: 'Sürücü anatomisi: <code>DriverObject</code>, <code>DeviceObject</code> ve <code>IRP</code> dispatch',
+  lede: 'Bir Windows kernel sürücüsü nasıl doğru ve güvenli yazılır? Bu modül tamamen eğitici bir perspektifle sürücünün iskeletini kurar: DriverEntry giriş noktası, DriverObject ve DeviceObject nesneleri, IRP dispatch tablosu, kernel bellek tahsisi (paged vs non-paged pool) ve temiz Unload. macOS IOKit ve Linux karakter aygıtı modelleriyle karşılaştırır.',
+  meta: ['~15 dk', 'ön koşul: Windows modül 1 (user/kernel, IRP)', 'platform: Windows NT · WDM'],
+  intuition: {
+    paras: [
+      'Bir Windows sürücüsü, çekirdeğe yüklenen ve belirli giriş noktalarını dolduran bir koddur. İşletim sistemi sürücüyü yüklediğinde I/O Manager ona bir <b>DriverObject</b> verir ve sürücünün <code>DriverEntry</code> rutinini çağırır. DriverEntry, sürücünün "main" fonksiyonudur: burada sürücü bir <b>DeviceObject</b> oluşturur, kendini isimlendirir ve hangi IRP türlerini nasıl işleyeceğini (dispatch rutinleri) kaydeder.',
+      'Nesne modeli şöyle düşünülebilir: <b>DriverObject</b> = sürücünün kendisi (kod ve giriş noktaları), <b>DeviceObject</b> = sürücünün yönettiği (gerçek veya sanal) aygıt ve isteklerin hedefi. User mode\'dan gelen her istek bir IRP\'ye paketlenir ve DeviceObject\'e gönderilir; sürücünün ilgili dispatch rutini IRP\'yi alır, işler ve <code>IoCompleteRequest</code> ile tamamlar. İyi bir sürücü, aldığı tamponları doğrular, doğru pool türünü kullanır ve kaldırılırken her şeyi temiz bırakır.'
+    ],
+    ideas: [
+      { b: 'DriverObject = sürücü', span: 'I/O Manager her yüklü sürücü için bir DRIVER_OBJECT oluşturur; standart rutinlerin giriş noktaları burada saklanır.' },
+      { b: 'DeviceObject = hedef', span: 'Aygıtı temsil eder ve tüm I/O işlemlerinin hedefidir. Bir sürücü her aygıt için en az bir tane oluşturur.' },
+      { b: 'Dispatch tablosu', span: 'MajorFunction[IRP_MJ_*] dizisi, hangi IRP türünü hangi rutinin işleyeceğini belirler — Linux file_operations\'ın karşılığı.' }
+    ]
+  },
+  lab: {
+    intro: 'Aşağıda eğitici, minimal bir "Hello Kernel" sürücü iskeleti var. Sağda sürücünün yaşam döngüsünü (DriverEntry → DeviceObject → symbolic link → dispatch kaydı → Unload) ve o anda hangi nesnenin oluştuğunu izle.',
+    codeLabel: 'driver.c (kernel mode, WDM iskeleti)', cmd: 'sc start MyDriver',
+    foot: 'İskelet, Microsoft Learn\'deki DRIVER_OBJECT / DEVICE_OBJECT modeline dayanır ve yalnızca eğitim amaçlıdır. ← → tuşlarıyla da ilerleyebilirsin.',
+    code: [
+      { t: '<span class="cm">// yüklemede I/O Manager tarafından çağrılır</span>' },
+      { t: '<span class="t">NTSTATUS</span> <span class="f">DriverEntry</span>(PDRIVER_OBJECT drv, PUNICODE_STRING reg) {' },
+      { t: '    <span class="cm">// dispatch tablosunu doldur: hangi IRP → hangi rutin</span>' },
+      { t: '    drv-&gt;MajorFunction[IRP_MJ_CREATE]  = MyCreateClose;' },
+      { t: '    drv-&gt;MajorFunction[IRP_MJ_CLOSE]   = MyCreateClose;' },
+      { t: '    drv-&gt;MajorFunction[IRP_MJ_DEVICE_CONTROL] = MyIoctl;' },
+      { t: '    drv-&gt;DriverUnload = MyUnload;       <span class="cm">// temiz çıkış</span>' },
+      { t: '    <span class="cm">// aygıt nesnesini oluştur</span>' },
+      { t: '    <span class="f">IoCreateDevice</span>(drv, <span class="n">0</span>, &amp;devName, FILE_DEVICE_UNKNOWN,' },
+      { t: '        <span class="n">0</span>, FALSE, &amp;g_dev);' },
+      { t: '    <span class="cm">// user mode\'un görebilmesi için symbolic link</span>' },
+      { t: '    <span class="f">IoCreateSymbolicLink</span>(&amp;symLink, &amp;devName);' },
+      { t: '    <span class="k">return</span> STATUS_SUCCESS;' },
+      { t: '}' },
+      { t: '' },
+      { t: '<span class="t">void</span> <span class="f">MyUnload</span>(PDRIVER_OBJECT drv) {' },
+      { t: '    <span class="f">IoDeleteSymbolicLink</span>(&amp;symLink);  <span class="cm">// sırayla geri al</span>' },
+      { t: '    <span class="f">IoDeleteDevice</span>(g_dev);' },
+      { t: '}' }
+    ],
+    steps: [
+      { pc: [1, 2], title: 'DriverEntry çağrılır', obj: 'driver',
+        text: 'Sürücü yüklendiğinde I/O Manager bir <b>DRIVER_OBJECT</b> oluşturur ve adresini <code>DriverEntry</code>\'ye verir. Bu, sürücünün giriş noktasıdır — Linux modülündeki <code>module_init</code>, IOKit\'teki <code>::init/start</code> karşılığı.',
+        node: 0, box: { a: 'DRIVER_OBJECT', av: 'I/O Manager tarafından oluşturuldu', b: null, bv: null } },
+      { pc: [3, 4, 5, 6], title: 'Dispatch tablosunu doldur', obj: 'driver',
+        text: 'Sürücü, <code>MajorFunction</code> dizisinin ilgili <code>IRP_MJ_*</code> indekslerine kendi rutinlerini yazar. Doldurulmayan türler varsayılan olarak reddedilir. Bu tablo, "hangi istek türünü hangi fonksiyon işler" eşlemesidir.',
+        node: 1, box: { a: 'DRIVER_OBJECT', av: 'MajorFunction[] dolduruldu', b: 'IRP_MJ_CREATE / CLOSE / DEVICE_CONTROL', bv: '→ rutinler kayıtlı' } },
+      { pc: [8, 9, 10], title: 'DeviceObject oluştur', obj: 'device',
+        text: '<code>IoCreateDevice</code> ile bir <b>DEVICE_OBJECT</b> oluşturulur. Bu nesne, sürücünün yönettiği aygıtı temsil eder ve tüm I/O işlemlerinin hedefidir. Her aygıt için en az bir tane gerekir.',
+        node: 2, box: { a: 'DRIVER_OBJECT', av: 'hazır', b: 'DEVICE_OBJECT', bv: 'oluşturuldu (\\Device\\MyDevice)' } },
+      { pc: [11, 12], title: 'Symbolic link yayınla', obj: 'device',
+        text: '<code>IoCreateSymbolicLink</code>, aygıtı user mode\'un erişebileceği bir isme (\\DosDevices\\MyDevice → \\\\.\\MyDevice) bağlar. Böylece bir uygulama <code>CreateFile</code> ile bu aygıta handle alabilir.',
+        node: 3, box: { a: 'DEVICE_OBJECT', av: '\\Device\\MyDevice', b: 'symbolic link', bv: '\\\\.\\MyDevice (user mode görür)' } },
+      { pc: [13, 14], title: 'Hazır: IRP bekleniyor', obj: 'device',
+        text: 'DriverEntry <code>STATUS_SUCCESS</code> döndürür. Sürücü artık yüklü ve çalışıyor; gelen her IRP, dispatch tablosundaki uygun rutine yönlendirilecek. Örneğin bir <code>DeviceIoControl</code> çağrısı <code>IRP_MJ_DEVICE_CONTROL</code> → <code>MyIoctl</code>\'a gider.',
+        node: 4, box: { a: 'Sürücü', av: 'YÜKLÜ · çalışıyor', b: 'bekleniyor', bv: 'gelen IRP → dispatch' } },
+      { pc: [16, 17, 18, 19], title: 'Unload: temiz geri alma', obj: 'driver',
+        text: 'Sürücü kaldırılırken <code>DriverUnload</code> çağrılır. İyi bir sürücü oluşturma sırasının <b>tersine</b> temizlik yapar: önce symbolic link (<code>IoDeleteSymbolicLink</code>), sonra device object (<code>IoDeleteDevice</code>). Sızdırılan her nesne, sistem yeniden başlayana dek kernel belleğinde kalır.',
+        node: 0, box: { a: 'symbolic link', av: 'silindi', b: 'DEVICE_OBJECT', bv: 'silindi · bellek iade' } }
+    ],
+    render: function (s, stateEl, u) {
+      var nodes = [
+        ['DriverEntry', 'giriş noktası'],
+        ['MajorFunction[]', 'dispatch kaydı'],
+        ['IoCreateDevice', 'DeviceObject'],
+        ['IoCreateSymbolicLink', 'user mode adı'],
+        ['STATUS_SUCCESS', 'IRP bekliyor']
+      ];
+      var life = nodes.map(function (n, i) {
+        var on = i === s.node;
+        return '<div class="node' + (on ? ' on' : '') + '"><span>' + u.esc(n[0]) + '</span><span class="ni">' + u.esc(n[1]) + '</span></div>';
+      }).join('');
+      var box = s.box;
+      stateEl.innerHTML =
+        '<p class="lab-label">Sürücü yaşam döngüsü</p><div class="life">' + life + '</div>' +
+        (box ? '<div class="objbox"><b>' + u.esc(box.a) + '</b> <span class="dim">· ' + u.esc(box.av) + '</span>' +
+          (box.b ? '<br><b>' + u.esc(box.b) + '</b> <span class="dim">· ' + u.esc(box.bv) + '</span>' : '') + '</div>' : '');
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: sürücü nesneleri, IRP dispatch ve kernel bellek",
+    html: `<p class="lead">Bir Windows sürücüsünün iskeleti üç şeyin üstüne kuruludur: nesneler (DriverObject/DeviceObject), IRP dispatch tablosu ve kernel bellek yönetimi. Bu bölüm Microsoft'un resmi belgelerine dayanır; kavramları Linux karakter aygıtı ve macOS IOKit karşılıklarıyla ilişkilendirir. Tamamı "doğru ve güvenli sürücü nasıl yazılır" perspektifindedir.</p>
+
+<h3>1. DriverObject: sürücünün kendisi</h3>
+<p>İşletim sistemi bir sürücüyü yüklediğinde, onu temsil eden bir nesne oluşturur ve bu nesneyi sürücünün giriş noktasına verir.</p>
+<div class="manpage src-docs"><div class="ref">Microsoft Learn · Driver objects</div><p class="orig">The I/O manager creates a driver object for each driver that has been installed and loaded. Driver objects are defined using DRIVER_OBJECT structures.</p><p>I/O Manager, yüklenen her sürücü için bir <strong>DRIVER_OBJECT</strong> oluşturur. Bu nesne sürücünün standart rutinlerinin (dispatch, unload vb.) giriş noktalarını saklar — sürücünün "kimlik kartı" ve fonksiyon tablosudur.</p></div>
+<div class="manpage src-docs"><div class="ref">Microsoft Learn · DriverEntry</div><p class="orig">When the I/O manager calls a driver's DriverEntry routine, it supplies the address of the driver's driver object. The driver object contains storage for entry points to many of a driver's standard routines. The driver is responsible for filling in these entry points.</p><p><code>DriverEntry</code> çağrıldığında sürücüye kendi <code>DRIVER_OBJECT</code>'inin adresi verilir. Sürücü, bu nesnedeki giriş noktalarını (örneğin <code>MajorFunction</code> dizisi ve <code>DriverUnload</code>) <strong>doldurmakla sorumludur</strong>. Boş bıraktığın her giriş noktası, o tür istek geldiğinde varsayılan davranışa düşer.</p></div>
+
+<h3>2. DeviceObject: isteklerin hedefi</h3>
+<p>Sürücünün yönettiği aygıt ayrı bir nesneyle temsil edilir. İstekler sürücüye değil, bu aygıt nesnesine gönderilir.</p>
+<div class="manpage src-docs"><div class="ref">Microsoft Learn · Device objects</div><p class="orig">The operating system represents devices by device objects. One or more device objects are associated with each device. Device objects serve as the target of all operations on the device.</p><p>İşletim sistemi aygıtları <strong>DEVICE_OBJECT</strong> ile temsil eder ve bu nesneler <strong>aygıt üzerindeki tüm işlemlerin hedefidir</strong>. Nesneler <code>object manager</code> tarafından yönetilir; sürücü genellikle <code>IoCreateDevice</code> ile oluşturur. Bir aygıt için birden fazla device object bir <strong>device stack</strong> oluşturabilir (filtre + fonksiyonel + alt sürücü) — bu, bir filtre sürücüsünün (örn. bir güvenlik ürününün minifilter'ı) I/O'yu araya girerek görmesini sağlayan yapıdır.</p></div>
+<div class="deflist">
+<div><dt>IoCreateDevice</dt><dd>Device object oluşturur. İsimli (\\Device\\...) veya isimsiz olabilir; isimli aygıtlar erişim denetimi açısından dikkat ister.</dd></div>
+<div><dt>Symbolic link</dt><dd><code>IoCreateSymbolicLink</code> aygıtı user mode isim alanına (\\\\.\\Name) bağlar; <code>CreateFile</code> bu isimle handle alır.</dd></div>
+<div><dt>Device stack</dt><dd>Aynı aygıt için katmanlı device object yığını; IRP tepeden aşağı iner, her katman görüp geçirebilir.</dd></div>
+</div>
+
+<h3>3. IRP dispatch: hangi istek hangi rutine?</h3>
+<p>Bir sürücü, işleyebileceği IRP türlerini <code>DRIVER_OBJECT</code>'in <code>MajorFunction</code> dizisine rutin adresleri yazarak bildirir. Dizi, <code>IRP_MJ_*</code> major function kodlarıyla (örn. <code>IRP_MJ_CREATE</code>, <code>IRP_MJ_READ</code>, <code>IRP_MJ_DEVICE_CONTROL</code>) indekslenir. Bir IRP geldiğinde I/O Manager, IRP'nin major function koduna karşılık gelen dispatch rutinini çağırır. Bu yapı, Linux'taki <code>file_operations</code> tablosunun (her operasyon için bir fonksiyon işaretçisi) ve IOKit'teki external method tablosunun doğrudan karşılığıdır. <em>(Microsoft Learn — Writing Dispatch Routines; sayfa bu oturumda yüklenemedi, tanım kanonik olarak verilmiştir.)</em></p>
+<p>Güvenli sürücü yazımının kalbi bu rutinlerdedir: özellikle <code>IRP_MJ_DEVICE_CONTROL</code> işleyicisi, user mode'dan gelen tampon ve uzunlukları <strong>kullanmadan önce doğrulamalıdır</strong>. Buffering yöntemi (buffered / direct / neither I/O) IOCTL kodunda kodlanır; "neither I/O" seçildiğinde ham user mode işaretçileri gelir ve bunları doğrulamadan dereference etmek klasik bir hata sınıfıdır. Bu, Linux'ta <code>copy_from_user</code> sınır denetimiyle ve XNU IOKit external method girdi doğrulamasıyla aynı risk sınıfıdır.</p>
+
+<h3>4. Kernel bellek: paged vs non-paged pool</h3>
+<p>Sürücüler kernel belleğini havuzlardan (pool) tahsis eder; modern API <code>ExAllocatePool2</code>'dur (eski <code>ExAllocatePoolWithTag</code> yerine). İki temel havuz türü vardır ve doğru seçim güvenlik/kararlılık için kritiktir:</p>
+<div class="deflist">
+<div><dt>non-paged pool</dt><dd>Her zaman fiziksel bellekte kalır (sayfalanmaz). DISPATCH_LEVEL ve üstünde (kesme/DPC bağlamında) erişilecek veri <strong>zorunlu</strong> buraya konur — çünkü o seviyede page fault çözülemez ve sistem çöker.</dd></div>
+<div><dt>paged pool</dt><dd>Gerektiğinde diske sayfalanabilir; yalnızca PASSIVE_LEVEL/APC_LEVEL'da (page fault'un çözülebildiği bağlamda) erişilebilir. Daha bol ama kısıtlı.</dd></div>
+<div><dt>pool tag</dt><dd>Tahsise 4 karakterlik etiket verilir; sızıntı ve bozulma teşhisini (poolmon, !pool) kolaylaştırır.</dd></div>
+</div>
+<p><em>(Microsoft Learn — ExAllocatePool2 / pool tagging sayfaları bu oturumda yüklenemedi; pool türü kuralları kanonik olarak özetlenmiştir.)</em> IRQL kavramının bellek tahsisini nasıl kısıtladığı, Windows yürütme modeli modülünde (APC/DPC/IRQL) ayrıntılı işlenir.</p>
+
+<h3>5. Temiz yaşam döngüsü: Unload</h3>
+<p>Sürücü <code>DriverUnload</code> rutinini doldurduysa kaldırılabilir. İyi bir sürücü, kurduğu her şeyi <strong>oluşturma sırasının tersine</strong> yıkar: önce symbolic link (<code>IoDeleteSymbolicLink</code>), sonra device object (<code>IoDeleteDevice</code>), ayrılan pool bellekleri ve kaydedilen callback'ler. Kernel mode'da garbage collector yoktur; sızdırılan bir device object veya pool tahsisi yeniden başlatmaya kadar kalır. macOS IOKit'te <code>free()</code>/<code>stop()</code> ve Linux'ta <code>module_exit</code> ile aynı disiplindir — yarattığını geri al.</p>`
+  },
+  quiz: {
+    questions: [
+      { q: 'DriverEntry rutini ne zaman çağrılır ve ne yapar?', opts: ['Her IRP geldiğinde çağrılır', 'Sürücü yüklendiğinde çağrılır; DriverObject giriş noktalarını doldurur ve device object oluşturur', 'Yalnızca sistem kapanırken çağrılır'], answer: 'Sürücü yüklendiğinde çağrılır; DriverObject giriş noktalarını doldurur ve device object oluşturur',
+        ok: 'Doğru. DriverEntry sürücünün giriş noktasıdır: I/O Manager ona DriverObject\'i verir, sürücü de MajorFunction tablosunu doldurup DeviceObject oluşturur.', no: 'İpucu: "main" fonksiyonu gibi, yalnızca yükleme anında bir kez.' },
+      { q: 'Bir sürücünün hangi IRP türünü hangi fonksiyonun işleyeceği nerede belirlenir?', opts: ['DeviceObject\'in adında', 'DriverObject\'in MajorFunction[] dizisinde', 'Registry\'de'], answer: 'DriverObject\'in MajorFunction[] dizisinde',
+        ok: 'Doğru. MajorFunction[IRP_MJ_*] dizisine rutin adresleri yazılır; Linux file_operations tablosunun karşılığıdır.', no: 'İpucu: IRP_MJ_* kodlarıyla indekslenen dizi hangisi?' },
+      { q: 'DISPATCH_LEVEL\'da erişilecek veri hangi pool\'da olmalıdır ve neden?', opts: ['paged pool — daha bol olduğu için', 'non-paged pool — çünkü o seviyede page fault çözülemez', 'fark etmez'], answer: 'non-paged pool — çünkü o seviyede page fault çözülemez',
+        ok: 'Doğru. non-paged pool sayfalanmaz; DISPATCH_LEVEL ve üstünde page fault çözülemediğinden oradaki veri zorunlu olarak non-paged olmalıdır.', no: 'İpucu: yüksek IRQL\'de sayfalanabilir belleğe dokunmak neden sistemi çökertir?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Windows Modül 3', title: 'Yürütme modeli: thread, APC, DPC, IRQL', href: 'win-exec.html', desc: 'System thread\'ler, APC/DPC, IRQL merdiveni ve kesme/syscall yolu.' },
+  sources: [
+    { href: 'https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/introduction-to-driver-objects', text: 'Microsoft Learn — Driver objects', note: 'DRIVER_OBJECT ve DriverEntry' },
+    { href: 'https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/introduction-to-device-objects', text: 'Microsoft Learn — Device objects', note: 'DEVICE_OBJECT, işlem hedefi' },
+    { href: 'https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/writing-dispatch-routines', text: 'Microsoft Learn — Writing dispatch routines', note: 'MajorFunction ve IRP_MJ_*' },
+    { href: 'https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/allocating-system-memory', text: 'Microsoft Learn — Allocating system memory (pool)', note: 'paged vs non-paged pool' },
+    { href: 'https://www.xintra.org/courses/11-windows-kernel-offensive-defensive-reverse-engineering', text: 'Xintra — Windows Kernel (O/D/RE)', note: 'izlek müfredatı' }
+  ],
+  pageTitle: 'Windows Sürücü Anatomisi'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

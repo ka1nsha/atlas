@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Windows Rootkit Kavramları</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: çift bağlı süreç listesi (DKOM görselleştirmesi) */
+.plist { display: grid; gap: 0; }
+.pnode { border: 1.5px solid var(--line); background: var(--surface); border-radius: 10px; padding: 10px 12px; display: grid; gap: 4px; position: relative; }
+.pnode .pl { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.pnode .pl b { font-family: var(--f-display); font-size: 14px; }
+.pnode .pl .mono { font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.pnode .lnk { font-family: var(--f-mono); font-size: 10.5px; color: var(--muted); }
+.pnode.mal { border-color: var(--bad); } .pnode.mal .pl b { color: var(--bad); }
+.pnode.hidden { opacity: .32; border-style: dashed; }
+.pnode.cur { box-shadow: inset 0 0 0 2px var(--track); }
+.arrow { text-align: center; font-family: var(--f-mono); font-size: 13px; color: var(--muted); padding: 2px 0; }
+.arrow.cut { color: var(--bad); font-weight: 700; }
+.arrow.cut::after { content: " ✂ kesildi"; font-size: 10px; }
+.tool-view { margin-top: 10px; border: 1px dashed var(--line); border-radius: 8px; padding: 8px 10px; font-family: var(--f-mono); font-size: 11.5px; }
+.tool-view .th { color: var(--muted); margin-bottom: 4px; }
+.tool-view .row { color: var(--ink); }
+.tool-view .row.gone { text-decoration: line-through; color: var(--bad); opacity: .6; }
+.guard-note { margin-top: 12px; border: 1px solid var(--ok); background: var(--ok-soft); border-radius: var(--r); padding: 8px 10px; font-size: 12.5px; }
+.guard-note b { color: var(--ok); font-family: var(--f-mono); font-size: 11px; }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'windows',
+  crumbs: 'windows › rootkit kavramları › modül 5',
+  eyebrow: 'Windows izleği · Modül 5 · Ofansif (kavramsal)',
+  titleHTML: 'Rootkit teknikleri ve <code>BYOVD</code>',
+  lede: 'Çekirdek (ring 0) ele geçirildiğinde saldırganın sonraki hedefi gizlenmek ve kalıcı olmaktır: süreçleri, dosyaları, ağ bağlantılarını güvenlik araçlarından saklamak. Bu modül Windows çekirdek rootkit tekniklerini — BYOVD, DKOM, callback kurcalama — ve her birini yakalayan savunmaları kavramsal olarak gösterir. Çalışır kod yoktur; amaç bu teknikleri anlayarak tespit ve önlemeyi öğrenmektir.',
+  meta: ['~20 dk', 'ön koşul: sürücü anatomisi + callback', 'bağlam: kavramsal'],
+  ethic: '<b>İlke.</b> Bu modül rootkit tekniklerini ve onlara karşı savunmaları yalnızca <b>kavramsal</b> olarak anlatır; çalışır ya da silahlandırılmış sürücü/rootkit kodu, somut offset veya bypass reçetesi içermez. Her teknik, onu nasıl tespit ve önleyeceğinle birlikte verilir. Amaç, saldırıyı anlayarak <b>daha iyi savunmaktır</b>.',
+  intuition: {
+    paras: [
+      'Bir saldırgan çekirdeğe (ring 0) ulaştığında, işletim sisteminin gördüğü <strong>gerçekliğin kendisini</strong> yazabilir hale gelir. Güvenlik araçları da nihayetinde işletim sisteminin sunduğu listelere güvenir: "çalışan süreçler", "yüklü sürücüler", "açık bağlantılar". Rootkit, tam da bu listeleri değiştirerek kendini görünmez kılar.',
+      'Ama çekirdeğe ulaşmak için önce bir kapı gerekir. Modern Windows\'ta imzasız sürücü yüklemek zordur; bu yüzden saldırganlar <strong>BYOVD</strong> (Bring Your Own Vulnerable Driver) yöntemine yönelir: imzalı ama zafiyetli <em>meşru</em> bir sürücüyü sisteme sokup, onun açığı üzerinden çekirdek okuma/yazma elde eder. Bu, "imza = güven" varsayımının neden tek başına yetmediğini gösterir.'
+    ],
+    ideas: [
+      { b: 'Rootkit = gerçekliği yazmak', span: 'Araçlar OS\'un listelerine güvenir. Çekirdekteki saldırgan o listeleri değiştirip kendini süreç/dosya/bağlantı görünümünden siler.' },
+      { b: 'BYOVD = imzayı kötüye kullanmak', span: 'İmzasız kod yüklenemiyorsa, imzalı ama zafiyetli bir sürücü yüklenir ve açığı çekirdek R/W\'ye çevrilir. İmza kimliği doğrular, güvenliği değil.' },
+      { b: 'Her gizleme bir iz bırakır', span: 'Listeden çıkarılan nesne başka yerde hâlâ vardır (zamanlayıcı, handle, bellek). Tutarsızlık, tespitin dayanağıdır.' }
+    ]
+  },
+  lab: {
+    intro: 'Aşağıda en klasik rootkit tekniği olan <strong>DKOM</strong> (Direct Kernel Object Manipulation) kavramsal olarak işleniyor: çekirdeğin aktif süreç listesi çift bağlı bir listedir; saldırgan kötü niyetli süreci bu listeden "unlink" ederek araçlardan gizler. Sağda listenin düğümlerini, kesilen bağları, araçların gördüğü görünümü ve bütünlük kontrolünün tutarsızlığı nasıl yakaladığını izle.',
+    codeLabel: 'kavramsal akış', cmd: '# ring 0: DKOM unlink',
+    foot: 'Bu akış kavramsaldır; gerçek yapı offset\'leri veya çalışır kod içermez. Düğümler temsilîdir.',
+    code: [
+      { t: '<span class="cm">// saldırgan zaten ring 0\'da (ör. BYOVD ile)</span>' },
+      { t: '<span class="cm">// çekirdeğin aktif süreç listesi: çift bağlı liste</span>' },
+      { t: '<span class="cm">//   her düğüm: EPROCESS.ActiveProcessLinks (Flink/Blink)</span>' },
+      { t: 'mal  = <span class="f">find_process</span>(<span class="s">"kotu.exe"</span>);  <span class="cm">// gizlenecek süreç</span>' },
+      { t: '<span class="cm">// --- DKOM: düğümü komşularından kopar ---</span>' },
+      { t: 'mal.Blink.Flink = mal.Flink;   <span class="cm">// önceki → sonraki</span>', danger: true },
+      { t: 'mal.Flink.Blink = mal.Blink;   <span class="cm">// sonraki → önceki</span>', danger: true },
+      { t: '<span class="cm">// süreç çalışmaya devam eder ama listede görünmez</span>', danger: true }
+    ],
+    steps: [
+      { pc: 1, title: 'Başlangıç: çekirdek R/W elde', term: ['[*] saldırgan: ring 0 (BYOVD sonrası)', '[*] hedef: kendini gizlemek'],
+        text: 'Saldırgan, zafiyetli bir imzalı sürücü (BYOVD) üzerinden çekirdek okuma/yazma yeteneği elde etmiş durumda. Artık çekirdek bellek yapılarını — aktif süreç listesi dahil — değiştirebilir. Amaç kalıcılık ve gizlenmedir.',
+        phase: 'r0', cut: false, hidden: false, tool: false,
+        nodes: [{ n: 'System', c: false }, { n: 'explorer.exe', c: false }, { n: 'kotu.exe', mal: true, c: true }, { n: 'svchost.exe', c: false }],
+        guard: { n: 'Driver blocklist · HVCI', t: 'BYOVD\'nin ilk adımını engelleyen katman: zafiyetli sürücüyü hiç yükletmemek. Microsoft vulnerable driver blocklist bilinen kötü sürücüleri reddeder; HVCI çekirdek bellek bütünlüğünü korur.' },
+        verdict: 'Durum: ring 0, süreç listede görünür' },
+      { pc: [2, 3], title: 'Aktif süreç listesi', term: ['[list] System ⇄ explorer ⇄ kotu.exe ⇄ svchost'],
+        text: 'Çekirdek, çalışan süreçleri <code>EPROCESS</code> yapılarından oluşan çift bağlı bir listede (<code>ActiveProcessLinks</code>: Flink=ileri, Blink=geri) tutar. Task Manager, <code>tasklist</code> ve çoğu araç bu listeyi gezerek süreçleri listeler — yani araçların "gerçeği" bu listedir.',
+        phase: 'list', cut: false, hidden: false, tool: true,
+        nodes: [{ n: 'System', c: false }, { n: 'explorer.exe', c: false }, { n: 'kotu.exe', mal: true, c: false }, { n: 'svchost.exe', c: false }],
+        guard: { n: 'Tek kaynağa güvenmemek', t: 'Araç yalnızca tek bir listeye güveniyorsa, o liste değiştirilerek kandırılabilir. Güçlü tespit, aynı bilgiyi birden çok bağımsız kaynaktan (zamanlayıcı, handle tablosu, bellek taraması) çapraz doğrular.' },
+        verdict: 'Yetenek: liste yapısı haritalandı' },
+      { pc: [5, 6], title: 'DKOM: düğümü unlink et', term: ['[>] mal.Blink.Flink = mal.Flink', '[>] mal.Flink.Blink = mal.Blink', '[!] bağlar yeniden yazıldı'],
+        text: 'Saldırgan, kötü niyetli sürecin komşularının işaretçilerini yeniden yazar: önceki düğüm artık onu atlayıp sonrakine, sonraki düğüm de öncekine bakar. Düğüm listeden koparılır (unlink) — ama süreç çekirdeğin zamanlayıcısında hâlâ kayıtlı olduğu için <em>çalışmaya devam eder</em>.',
+        phase: 'cut', cut: true, hidden: false, tool: true,
+        nodes: [{ n: 'System', c: false }, { n: 'explorer.exe', c: true }, { n: 'kotu.exe', mal: true, c: true, unlinking: true }, { n: 'svchost.exe', c: true }],
+        guard: { n: 'Kernel Patch Protection (PatchGuard)', t: 'Kritik çekirdek yapılarının izinsiz değiştirilmesini periyodik olarak denetler; tutarsızlık bulursa sistemi bilinçli olarak çökertir (bugcheck). Saldırganı daha gizli ama daha kırılgan yollara iter.' },
+        verdict: 'Kritik an: süreç listeden koparıldı' },
+      { pc: 8, title: 'Araçlardan gizlendi', term: ['[tool] tasklist: kotu.exe YOK', '[*] ama süreç hâlâ çalışıyor'],
+        text: 'Artık süreç listesini gezen araçlar (Task Manager, <code>tasklist</code>) kötü niyetli süreci göremez: bağlar onu atlıyor. Rootkit\'in temel hedefi — <strong>varlığını gizlemek</strong> — gerçekleşti. Kullanıcı ve çoğu temel araç için süreç "yok".',
+        phase: 'hidden', cut: true, hidden: true, tool: true,
+        nodes: [{ n: 'System', c: false }, { n: 'explorer.exe', c: false }, { n: 'kotu.exe', mal: true, c: false, unlinking: true }, { n: 'svchost.exe', c: false }],
+        guard: { n: 'ETW · davranışsal tespit', t: 'Süreç listede görünmese de davranışı (ağ, dosya, kayıt defteri erişimi) ETW olayları üretir. Davranışsal tespit, "görünmez" sürecin eylemlerini yakalayabilir.' },
+        verdict: 'Yetenek: süreç listesinden gizlendi' },
+      { pc: 8, title: 'Tutarsızlık: tespit', term: ['[edr] zamanlayıcıda var, listede yok', '[+] gizli süreç ortaya çıktı'],
+        text: 'Gizleme kusursuz değildir. Süreç listeden çıkarıldı ama <em>başka</em> çekirdek yapılarında hâlâ var: iş parçacığı zamanlayıcısı, handle tablosu, bellekteki <code>EPROCESS</code> imzası. Bir EDR, bellekteki tüm <code>EPROCESS</code> yapılarını tarayıp aktif listeyle karşılaştırırsa, listede olmayan ama bellekte duran süreç <strong>tutarsızlık</strong> olarak öne çıkar. Gizlenme çabasının kendisi bir tespit sinyaline dönüşür.',
+        phase: 'detect', cut: true, hidden: true, tool: true, detect: true,
+        nodes: [{ n: 'System', c: false }, { n: 'explorer.exe', c: false }, { n: 'kotu.exe', mal: true, c: true, unlinking: true, found: true }, { n: 'svchost.exe', c: false }],
+        guard: { n: 'Çapraz doğrulama (cross-view detection)', t: 'Aynı bilgiyi bağımsız kaynaklardan karşılaştırmak DKOM\'un akilleus topuğudur: liste ile bellek taraması uyuşmuyorsa gizlenmiş bir nesne vardır. Modern EDR\'ler ve PatchGuard bu ilkeyle çalışır.' },
+        verdict: 'Savunma: tutarsızlık gizli süreci ele verdi' }
+    ],
+    render: function (s, stateEl, u) {
+      var html = '<p class="lab-label">Aktif süreç listesi (EPROCESS · ActiveProcessLinks)</p><div class="plist">';
+      s.nodes.forEach(function (nd, i) {
+        var cls = 'pnode' + (nd.mal ? ' mal' : '') + (nd.c ? ' cur' : '') + (s.hidden && nd.hidden !== false && nd.mal ? ' hidden' : '');
+        var tag = nd.mal ? (nd.found ? 'bellekte bulundu ✓' : (s.hidden ? 'gizli' : 'kötü niyetli')) : 'normal';
+        html += '<div class="' + cls + '">' +
+          '<div class="pl"><b>' + u.esc(nd.n) + '</b><span class="mono">' + u.esc(tag) + '</span></div>' +
+          '<div class="lnk">Flink → · ← Blink</div></div>';
+        if (i < s.nodes.length - 1) {
+          var cut = s.cut && ((s.nodes[i].mal) || (s.nodes[i + 1] && s.nodes[i + 1].mal));
+          html += '<div class="arrow' + (cut ? ' cut' : '') + '">' + (cut ? '⇵' : '⇅') + '</div>';
+        }
+      });
+      html += '</div>';
+      if (s.tool) {
+        html += '<div class="tool-view"><div class="th">tasklist / Task Manager görünümü</div>';
+        s.nodes.forEach(function (nd) {
+          var gone = s.hidden && nd.mal && !s.detect;
+          html += '<div class="row' + (gone ? ' gone' : '') + '">' + u.esc(nd.n) + (gone ? '  (görünmez)' : '') + '</div>';
+        });
+        if (s.detect) html += '<div class="row" style="color:var(--ok)">↳ EDR bellek taraması: kotu.exe listede yok ama EPROCESS olarak var → tutarsızlık</div>';
+        html += '</div>';
+      }
+      html += '<div class="read-out"><div class="verdict breach"><span class="dot"></span><span>' + u.esc(s.verdict) + '</span></div></div>' +
+        '<div class="guard-note"><b>BU AŞAMAYI SAVUNAN KORUMA · ' + u.esc(s.guard.n) + '</b><br>' + u.esc(s.guard.t) + '</div>';
+      stateEl.innerHTML = html;
+    }
+  },
+  deepDive: {
+    heading: 'Derinlemesine: Windows çekirdek rootkit\'leri ve savunması',
+    html: `<p class="lead">Rootkit, bir saldırganın çekirdek ayrıcalığını <em>kalıcı ve görünmez</em> kılma sanatıdır. Ama her teknik bir varsayıma dayanır — "imza güvendir", "araçlar listeye güvenir" — ve her varsayımın karşısında onu çürüten bir savunma durur. Bu bölüm teknikleri saldırgan gözüyle haritalar; amaç her birinin karşısına varsayılan açık bir koruma koyabilmektir. Alıntılar doğrudan MITRE ATT&CK ve Microsoft'un kendi güvenlik belgelerinden gelir.</p>
+
+<h3>1. Rootkit nedir: gerçekliğin kendisini yazmak</h3>
+<p>Bir rootkit, kötü amaçlı yazılımın varlığını işletim sisteminin <em>kendi</em> bilgi kaynaklarını değiştirerek gizler. Güvenlik araçları süreç listesine, dosya sistemine, ağ tablolarına güvenir; çekirdekteki bir rootkit bu kaynakları çarpıtarak araçlara yalan söyletir.</p>
+<div class="manpage src-docs"><div class="ref">docs · MITRE ATT&amp;CK · T1014 Rootkit</div><p class="orig">programs that hide the existence of malware by intercepting/hooking and modifying operating system API calls that supply system information</p><p>Tanımın özü şu: rootkit yeni bir açık yaratmaz; <em>mevcut bilgi akışını</em> kesip değiştirir. API çağrıları "hangi süreçler çalışıyor?" sorusuna yanıt verirken araya girip kötü niyetli olanı listeden çıkarır. Bu yüzden rootkit tespiti, OS\'un verdiği cevaba değil, o cevabı <em>çapraz doğrulamaya</em> dayanır.</p></div>
+
+<h3>2. Giriş kapısı: BYOVD (Bring Your Own Vulnerable Driver)</h3>
+<p>Modern Windows imzasız çekirdek sürücüsü yüklenmesini engeller (Driver Signature Enforcement). Saldırgan bu duvarı aşmak için imzasız kod yazmaz; <strong>imzalı ama zafiyetli</strong> meşru bir sürücüyü sisteme yükler ve onun açığı üzerinden çekirdek R/W elde eder. "İmza" yalnızca sürücünün <em>kim tarafından</em> yazıldığını doğrular; <em>güvenli</em> olduğunu değil.</p>
+<div class="manpage src-docs"><div class="ref">docs · Microsoft · Vulnerable driver blocklist</div><p class="orig">The vulnerable driver blocklist is designed to help harden systems against non-Microsoft-developed drivers across the Windows ecosystem with any of the following attributes: Known security vulnerabilities that an attacker could exploit to elevate privileges in the Windows kernel</p><p>Microsoft\'un yanıtı imza modelini tamir etmek değil, <em>bilinen kötü sürücüleri bir blocklist ile reddetmek</em>. Çözümün burada olması, imzanın tek başına yetmediğinin resmi kabulüdür: güven, imzaya değil, sürücünün bilinen güvenlik geçmişine bağlanır. BYOVD\'ye karşı ilk ve en etkili katman budur.</p></div>
+
+<h3>3. DKOM: süreç listesinden "unlink"</h3>
+<p>Çekirdek R/W elde eden saldırganın klasik gizlenme tekniği <strong>Direct Kernel Object Manipulation</strong>\'dır. Çalışan süreçler <code>EPROCESS</code> yapılarından oluşan çift bağlı bir listede (<code>ActiveProcessLinks</code>) tutulur. Saldırgan kötü niyetli sürecin komşularının Flink/Blink işaretçilerini yeniden yazarak onu listeden koparır — süreç çalışmaya devam eder ama listeyi gezen araçlara görünmez olur.</p>
+<div class="deflist">
+<div><dt>EPROCESS</dt><dd>Her süreci temsil eden çekirdek yapısı. Listeden çıkarılsa bile zamanlayıcı, handle tablosu ve bellekte varlığını sürdürür.</dd></div>
+<div><dt>ActiveProcessLinks</dt><dd>Süreçleri birbirine bağlayan çift bağlı liste (Flink/Blink). Task Manager ve tasklist bunu gezer.</dd></div>
+<div><dt>unlink</dt><dd>Komşu işaretçileri hedefi atlayacak şekilde yeniden yazma. Nesneyi listeden siler ama bellekten silmez — tespit açığı buradadır.</dd></div>
+<div><dt>cross-view detection</dt><dd>Listeyi bellek taramasıyla karşılaştırma. Listede olmayan ama bellekte duran EPROCESS, gizlenmiş süreçtir.</dd></div>
+</div>
+
+<h3>4. Telemetriyi köreltmek: IRP hooking ve callback tampering</h3>
+<p>Rootkit yalnızca gizlenmekle kalmaz, kendisini izleyen gözleri de köreltmeye çalışır. <strong>IRP hooking</strong> ile sürücü istek paketlerini (I/O Request Packet) araya girip değiştirebilir; <strong>callback tampering</strong> ile EDR\'lerin kullandığı çekirdek bildirim kayıtlarını (process/thread/image yükleme callback\'leri) devre dışı bırakmaya veya kaldırmaya çalışır. Hedef, güvenlik ürününün olay akışını (telemetri) kesmektir. Ama bu callback\'lerin kendileri korunan yapılardır ve kurcalanmaları da bir anomalidir.</p>
+
+<h3>5. Savunmanın temeli: bütünlük ve çapraz doğrulama</h3>
+<p>Windows\'un modern çekirdek savunması, saldırganın çekirdek belleğini özgürce yazabileceği varsayımına karşı belleğin bütünlüğünü donanım/hypervisor düzeyinde korur. <strong>HVCI / memory integrity</strong>, çekirdek kod bütünlüğünü VBS\'in izole sanal ortamında çalıştırır; <strong>PatchGuard (KPP)</strong> kritik yapıların izinsiz değişimini denetler.</p>
+<div class="manpage src-docs"><div class="ref">docs · Microsoft · Memory integrity (HVCI)</div><p class="orig">Memory integrity is a critical component that protects and hardens Windows by running kernel mode code integrity within the isolated virtual environment of VBS. Memory integrity also restricts kernel memory allocations that could be used to compromise the system.</p><p>Fikir, çekirdeğin güvenliğini artık çekirdeğin <em>kendisine</em> emanet etmemektir: kod bütünlüğü denetimi, saldırganın ulaşamadığı daha ayrıcalıklı bir katmana (hypervisor) taşınır. Bu, macOS\'taki PPL/SPTM mantığının Windows karşılığıdır — çekirdek ele geçse bile belleğin bütünlüğünü koruyan ayrı bir güven alanı. DKOM ve rootkit\'lere karşı nihai savunma, "gizlenen her nesnenin başka bir yerde iz bıraktığı" ilkesiyle bu bütünlük denetimlerini birleştirmektir.</p></div>
+<p>Özet: her rootkit tekniği bir varsayıma yaslanır ve her varsayımın bir panzehiri vardır — BYOVD\'ye blocklist + HVCI, DKOM\'a cross-view detection + PatchGuard, callback tampering\'e korunan callback\'ler + ETW. Saldırıyı anlamanın savunmacı için anlamı budur: tekniği bilirsen, onun kaçınılmaz izini aramayı da bilirsin.</p>`
+  },
+  underHood: {
+    heading: 'Kaputun altında: teknik → savunma',
+    html: '<p class="prose">Her rootkit tekniğinin karşısında, onu tespit eden veya baştan engelleyen bir Windows koruması vardır:</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Teknik</th><th>Ne yapar</th><th>Onu yakalayan/engelleyen savunma</th></tr></thead><tbody>' +
+      '<tr><td><b>BYOVD</b></td><td>İmzalı zafiyetli sürücüyle ring 0</td><td>Vulnerable driver blocklist, HVCI, WDAC</td></tr>' +
+      '<tr><td><b>DKOM</b></td><td>Süreci listeden unlink ederek gizleme</td><td>Cross-view detection, PatchGuard</td></tr>' +
+      '<tr><td><b>IRP hooking</b></td><td>I/O isteklerini araya girip değiştirme</td><td>Korunan sürücü yığını, bütünlük denetimi</td></tr>' +
+      '<tr><td><b>Callback tampering</b></td><td>EDR telemetri callback\'lerini köreltme</td><td>Korunan callback kayıtları, ETW anomali</td></tr>' +
+      '<tr><td><b>Artifact gizleme</b></td><td>Süreç/modül/registry gizleme</td><td>Bellek taraması, davranışsal tespit</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px">Ortak ilke: <strong>gizlenen her nesne başka bir yerde iz bırakır.</strong> Listeden çıkarılan süreç zamanlayıcıda; köreltilen callback\'in boşluğu ETW\'de; yüklenen zafiyetli sürücü blocklist\'te görünür. Savunma, tek bir kaynağa değil, bağımsız kaynakların <em>çapraz doğrulamasına</em> dayanır.</p>'
+  },
+  quiz: {
+    questions: [
+      { q: 'BYOVD (Bring Your Own Vulnerable Driver) saldırısı neyi kötüye kullanır?', opts: ['İmzasız kod yükleme açığını', 'İmzalı ama zafiyetli meşru bir sürücüyü', 'Bir ağ protokolünü'], answer: 'İmzalı ama zafiyetli meşru bir sürücüyü',
+        ok: 'Doğru. Modern Windows imzasız sürücüyü engeller; saldırgan imzalı ama zafiyetli meşru bir sürücüyü yükleyip açığından çekirdek R/W elde eder. İmza kimliği doğrular, güvenliği değil.', no: 'İpucu: imzasız kod yüklenemiyorsa, saldırgan hangi tür sürücüyü tercih eder?' },
+      { q: 'DKOM ile gizlenen bir süreç nasıl tespit edilebilir?', opts: ['Süreç artık hiç çalışmadığı için edilemez', 'Aktif listeyle bellek taramasını çapraz doğrulayarak', 'Yalnızca yeniden başlatmayla'], answer: 'Aktif listeyle bellek taramasını çapraz doğrulayarak',
+        ok: 'Doğru. Süreç listeden çıkarılsa da EPROCESS olarak bellekte ve zamanlayıcıda durur. Liste ile bellek taraması uyuşmuyorsa gizlenmiş bir nesne vardır (cross-view detection).', no: 'İpucu: unlink nesneyi listeden siler ama bellekten silmez. Bu tutarsızlık nasıl yakalanır?' },
+      { q: 'HVCI / memory integrity çekirdeği nasıl korur?', opts: ['Antivirüs imzalarıyla', 'Kod bütünlüğünü VBS\'in izole hypervisor ortamında çalıştırarak', 'Diski şifreleyerek'], answer: 'Kod bütünlüğünü VBS\'in izole hypervisor ortamında çalıştırarak',
+        ok: 'Doğru. HVCI, çekirdek kod bütünlüğü denetimini çekirdeğin ulaşamadığı daha ayrıcalıklı bir katmana (VBS/hypervisor) taşır — macOS\'taki PPL/SPTM mantığının Windows karşılığı.', no: 'İpucu: çekirdek ele geçse bile belleğin bütünlüğünü hangi ayrı güven alanı korur?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Windows Modül 6', title: 'Savunma: AV/EDR, ETW, tespit', desc: 'EDR/XDR iç yapısı, ETW olay tüketimi, davranışsal tespit, önleme vs. iyileştirme.' },
+  sources: [
+    { href: 'https://attack.mitre.org/techniques/T1014/', text: 'MITRE ATT&CK · T1014 Rootkit', note: 'rootkit tanımı ve teknikleri' },
+    { href: 'https://learn.microsoft.com/en-us/windows/security/application-security/application-control/windows-defender-application-control/design/microsoft-recommended-driver-block-rules', text: 'Microsoft · Vulnerable driver blocklist', note: 'BYOVD\'ye karşı savunma' },
+    { href: 'https://learn.microsoft.com/en-us/windows/security/hardware-security/enable-virtualization-based-protection-of-code-integrity', text: 'Microsoft · Memory integrity (HVCI)', note: 'çekirdek bellek bütünlüğü' },
+    { href: 'https://www.xintra.org/courses/11-windows-kernel-offensive-defensive-reverse-engineering', text: 'Xintra · Windows Kernel Offensive/Defensive', note: 'müfredat kaynağı' }
+  ],
+  pageTitle: 'Windows Rootkit Kavramları'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

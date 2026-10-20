@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>launchd</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: launchd + servis listesi */
+.ld-head { border: 1.5px solid var(--track); background: var(--track-soft); border-radius: var(--r); padding: 10px; display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ld-head b { font-family: var(--f-display); font-size: 15px; color: var(--track); }
+.ld-head .mono { font-family: var(--f-mono); font-size: 12px; color: var(--muted); }
+.svc-list { display: grid; gap: 8px; margin-top: 10px; }
+.svc-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: var(--r); padding: 8px 10px; background: var(--surface); min-width: 0; }
+.svc-row.hot { border-color: var(--track); box-shadow: 0 0 0 1px var(--track); }
+.svc-row .sv { min-width: 0; }
+.svc-row b { font-family: var(--f-mono); font-size: 12.5px; display: block; overflow-wrap: anywhere; }
+.svc-row .plist { font-size: 11px; color: var(--muted); }
+.cli-note { margin-top: 12px; border: 1px dashed var(--line); border-radius: var(--r); padding: 8px 10px; font-size: 13px; color: var(--muted); }
+.cli-note b { color: var(--fg); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'macos',
+  crumbs: 'macos › launchd › modül 8',
+  eyebrow: 'Modül 8 · macOS / iOS · Servis yönetimi',
+  titleHTML: '<code>launchd</code>: PID 1 ve her şeyin atası',
+  lede: 'macOS ve iOS\'ta açılıştan sonra başlayan ilk süreç launchd\'dir (PID 1). Tüm artalan süreçlerinin (daemon) ve kullanıcı ajanlarının (agent) atasıdır, ama hepsini hemen başlatmaz: çoğunu talep üzerine (on-demand), yani birileri onlara ulaşmaya çalıştığı an başlatır.',
+  meta: ['~15 dk', 'ön koşul: Mach port\'ları (Modül 2)', 'bağlam: XNU / Darwin'],
+  intuition: {
+    paras: [
+      'Klasik Unix\'te servisleri bir init betiği sırayla başlatırdı; açılış yavaştı ve hiç kullanılmayan servisler bile bellekte dururdu. launchd bunu tersine çevirir: servisleri <strong>tanımlar</strong> ama başlatmaz. Her servis bir <code>.plist</code> dosyasıyla tarif edilir — hangi programı çalıştıracağı, hangi Mach servis adını (service name) veya soketi dinleyeceği.',
+      'launchd açılışta bu servislerin yalnızca <strong>portlarını ve soketlerini</strong> kaydeder (register). Bir istemci o porta mesaj yolladığı an launchd uyanır ve ilgili artalan sürecini (daemon) o an başlatır. Bu, Modül 2\'deki Mach port + bootstrap fikrinin doğrudan uygulamasıdır: bootstrap isim uzayını (namespace) işleten şey launchd\'dir.'
+    ],
+    ideas: [
+      { b: 'Tek ata', span: 'launchd PID 1\'dir; sistemdeki her daemon ve agent doğrudan ya da dolaylı olarak ondan doğar.' },
+      { b: 'plist = sözleşme', span: 'Her servis bir property list (plist) ile tanımlanır: Label, Program, MachServices, RunAtLoad.' },
+      { b: 'Talep üzerine (on-demand)', span: 'launchd portu kaydeder ama süreci geç başlatır (lazy). Mesaj gelince başlatır, boşta kalınca durdurabilir.' }
+    ]
+  },
+  lab: {
+    intro: 'Bir servis com.ornek.svc bir plist ile tanımlanıyor. launchd portunu kaydediyor ama RunAtLoad false olduğu için süreci başlatmıyor. Bir istemci servise ulaşmaya çalışınca launchd daemon\'ı o an başlatıyor. Sağda launchd\'yi, yönettiği servisleri ve durumlarını izle.',
+    codeLabel: 'com.ornek.svc.plist (temsilî)', cmd: 'launchd (pid 1)',
+    foot: 'Değerler ve çıktı temsilîdir. Gerçek dosyalar: /Library/LaunchDaemons, /System/Library/LaunchDaemons.',
+    code: [
+      { t: '<span class="cm">&lt;?xml version="1.0"?&gt;</span>' },
+      { t: '<span class="t">&lt;plist&gt;&lt;dict&gt;</span>' },
+      { t: '  <span class="k">&lt;key&gt;</span>Label<span class="k">&lt;/key&gt;</span>       <span class="s">&lt;string&gt;com.ornek.svc&lt;/string&gt;</span>' },
+      { t: '  <span class="k">&lt;key&gt;</span>Program<span class="k">&lt;/key&gt;</span>     <span class="s">&lt;string&gt;/usr/local/bin/svcd&lt;/string&gt;</span>' },
+      { t: '  <span class="k">&lt;key&gt;</span>MachServices<span class="k">&lt;/key&gt;</span>' },
+      { t: '  <span class="t">&lt;dict&gt;</span><span class="k">&lt;key&gt;</span>com.ornek.svc<span class="k">&lt;/key&gt;</span><span class="n">&lt;true/&gt;</span><span class="t">&lt;/dict&gt;</span>' },
+      { t: '  <span class="k">&lt;key&gt;</span>RunAtLoad<span class="k">&lt;/key&gt;</span>   <span class="n">&lt;false/&gt;</span>  <span class="cm">// talep üzerine (on-demand)</span>' },
+      { t: '<span class="t">&lt;/dict&gt;&lt;/plist&gt;</span>' }
+    ],
+    steps: [
+      { pc: [3], title: 'plist okunur', term: ['launchd: com.ornek.svc tanımı yüklendi'],
+        text: 'Açılışta launchd ilgili dizinlerdeki tüm <code>.plist</code> dosyalarını okur. Her biri bir servisi tanımlar (Label, Program, hangi portu dinleyeceği). Bu noktada hiçbir daemon başlamadı; launchd sadece sözleşmeleri (contract) öğrendi.',
+        trigger: null, note: 'Servis tanımlı ama henüz ne kayıtlı ne de çalışıyor.',
+        services: [{ name: 'com.ornek.svc', plist: 'LaunchDaemons', state: 'tanımlı', chip: '', hot: true }] },
+      { pc: [5, 6], title: 'Portu kaydet (register)', term: ['launchd: com.ornek.svc portu bootstrap\'a kaydedildi'],
+        text: 'launchd, plist\'teki MachServices adını bootstrap isim uzayına kaydeder ve servis için bir Mach portu (receive hakkı) tutar. Dikkat: süreç HÂLÂ başlamadı. launchd portu istemciler adına "vekil" (proxy) olarak elinde tutuyor.',
+        trigger: null, note: 'launchd portun sahibi; daemon uyuyor (lazy).',
+        services: [{ name: 'com.ornek.svc', plist: 'LaunchDaemons', state: 'kayıtlı · uyuyor', chip: 'sleep', hot: true }] },
+      { pc: [7], title: 'RunAtLoad = false', term: [],
+        text: '<code>RunAtLoad</code> false olduğu için launchd süreci açılışta başlatmaz. Çoğu sistem servisi böyledir: bellek ve açılış süresi boşa gitmez. Süreç yalnızca gerçekten lazım olunca doğacak.',
+        trigger: null, note: 'Talep üzerine (on-demand) mod: beklemede.',
+        services: [{ name: 'com.ornek.svc', plist: 'LaunchDaemons', state: 'kayıtlı · uyuyor', chip: 'sleep', hot: false }] },
+      { pc: [6], title: 'İstemci servise ulaşır', term: ['istemci: bootstrap_look_up("com.ornek.svc") → mesaj'],
+        text: 'Bir istemci, Modül 2\'deki gibi <code>bootstrap_look_up</code> ile servisi adıyla bulur ve portuna bir mesaj yollar. Mesaj launchd\'nin tuttuğu porta düşer. İşte tetikleyici (trigger) olay budur.',
+        trigger: 'istemci → com.ornek.svc portuna mesaj', note: 'Mesaj launchd\'nin vekil portuna geldi.',
+        services: [{ name: 'com.ornek.svc', plist: 'LaunchDaemons', state: 'istek geldi', chip: 'new', hot: true }] },
+      { pc: [4], title: 'launchd daemon\'ı başlatır', term: ['launchd: /usr/local/bin/svcd başlatıldı (pid 744)'],
+        text: 'Mesajı gören launchd, plist\'teki <code>Program</code>\'ı o an fork + exec ile başlatır. Yeni daemon, launchd\'den portun receive hakkını <em>check-in</em> ile devralır. Bundan sonra istemci doğrudan daemon ile konuşur. Boşta kalırsa launchd daemon\'ı sonradan durdurabilir (idle exit).',
+        trigger: 'istemci → com.ornek.svc (artık canlı)', note: 'Daemon çalışıyor; portun sahibi artık o.',
+        services: [{ name: 'com.ornek.svc', plist: 'pid 744', state: 'çalışıyor', chip: 'run', hot: true }] }
+    ],
+    render: function (s, stateEl, u) {
+      var rows = s.services.map(function (sv) {
+        var chip = sv.chip ? '<span class="chip ' + sv.chip + '">' + u.esc(sv.state) + '</span>' : '<span class="chip">' + u.esc(sv.state) + '</span>';
+        return '<div class="svc-row' + (sv.hot ? ' hot' : '') + '"><div class="sv"><b>' + u.esc(sv.name) + '</b><span class="plist">' + u.esc(sv.plist) + '</span></div>' + chip + '</div>';
+      }).join('');
+      stateEl.innerHTML =
+        '<p class="lab-label">launchd ve servisler</p>' +
+        '<div class="ld-head"><b>launchd</b><span class="mono">PID 1 · bootstrap sahibi</span></div>' +
+        '<div class="svc-list">' + rows + '</div>' +
+        (s.trigger ? '<div class="cli-note"><b>Tetikleyici:</b> ' + u.esc(s.trigger) + '</div>' : '') +
+        (s.note ? '<p class="note" style="margin-top:10px">' + u.esc(s.note) + '</p>' : '');
+    }
+  },
+  underHood: {
+    html: '<p class="prose">launchd, XPC altyapısını (libxpc) içeren özel bir süreçtir. Servis tanımını plist\'ten okur, Mach servis adını bootstrap\'a bağlar ve daemon başlayınca ona portun receive hakkını <em>check-in</em> ile devreder. systemd\'nin socket activation özelliği bu fikrin Linux\'taki benzeridir.</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">launchd</span><span class="where">PID 1 · libxpc</span><p>Açılışta LaunchDaemons / LaunchAgents dizinlerindeki plist\'leri okur.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">bootstrap_register</span><span class="where">bootstrap</span><p>MachServices adını isim uzayına bağlar; portun receive hakkını launchd tutar (süreç başlamaz).</p></div></li>' +
+      '<li class="boundary"><div>talep üzerine (on-demand) tetikleme</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">fork + posix_spawn</span><span class="where">daemon başlatma</span><p>İlk mesaj gelince launchd Program\'ı başlatır.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">bootstrap_check_in</span><span class="where">check-in</span><p>Daemon portun receive hakkını launchd\'den devralır; artık istemciyle doğrudan konuşur.</p></div></li>' +
+      '</ol>' +
+      '<p class="prose" style="margin-top:14px">Neden önemli? Bir servisin plist\'i, onun hangi ayrıcalıklarla (entitlement) ve hangi kullanıcıyla çalışacağını da belirler. Yanlış yapılandırılmış bir LaunchDaemon, güvenlik açısından bir ayrıcalık yükseltme (privilege escalation) yoluna dönüşebilir; bu yüzden launchd yapılandırması saldırı yüzeyinin (attack surface) bir parçasıdır.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Yüklü servisleri listele', p: 'launchd\'nin yönettiği servisleri ve durumlarını (PID, son çıkış kodu) gör.',
+        shells: [{ label: 'terminal (macOS)', copy: 'launchctl list', pre: '<span class="c">$</span> launchctl list   <span class="c"># temsilî</span>\nPID    Status  Label\n744    0       com.ornek.svc\n-      0       com.apple.cfprefsd\n<span class="c"># PID "-" → kayıtlı ama şu an uyuyor (on-demand)</span>' }] },
+      { h3: '2. Bir servisin ayrıntısını gör', p: 'Bir servisin hangi portları/soketleri dinlediğini ve durumunu incele.',
+        shells: [{ label: 'terminal (macOS)', copy: 'launchctl print system/com.ornek.svc', pre: '<span class="c">$</span> launchctl print system/com.ornek.svc   <span class="c"># temsilî</span>\n<span class="c"># state, program, endpoints (Mach servisleri), domain bilgisi</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'RunAtLoad false olan bir servis ne zaman başlar?', opts: ['Açılışta', 'Birisi portuna ulaşınca (on-demand)', 'Hiçbir zaman'], answer: 'Birisi portuna ulaşınca (on-demand)',
+        ok: 'Doğru. launchd portu kaydeder ama süreci geç başlatır (lazy); ilk mesaj geldiği an fork+exec eder. Bu, belleği ve açılış süresini korur.', no: 'İpucu: launchd portu açılışta kaydeder ama süreci... ne zaman başlatır?' },
+      { q: 'launchd hangi süreçtir?', opts: ['PID 0 (çekirdek)', 'PID 1 (ilk kullanıcı süreci)', 'Rastgele bir daemon'], answer: 'PID 1 (ilk kullanıcı süreci)',
+        ok: 'Doğru. launchd PID 1\'dir ve tüm daemon/agent\'ların atasıdır — Linux\'taki systemd/init konumunda.', no: 'İpucu: Unix\'te ilk kullanıcı-alanı sürecinin PID\'si kaçtır?' },
+      { q: 'launchd\'nin servis isimlerini çözmesi Modül 2\'deki hangi mekanizmaya dayanır?', opts: ['TCP/DNS', 'Mach port + bootstrap', 'Dosya sistemi sembolik bağları'], answer: 'Mach port + bootstrap',
+        ok: 'Doğru. launchd bootstrap isim uzayını işletir; servis adları Mach portlarına çözülür. Mach port modelini anlamadan launchd anlaşılmaz.', no: 'İpucu: bootstrap_look_up neyi çözüyordu?' }
+    ]
+  },
+  deepDive: {
+    heading: "Derinlemesine: launchd ve on-demand servisler",
+    html: `<p class="lead">launchd, macOS/iOS'ta PID 1'dir: kernel'den sonra çalışan ilk kullanıcı-alanı process'i ve diğer tüm servislerin atası. Ama klasik init'ten farkı şudur: servisleri kendisi dinler ve yalnızca gerektiğinde (on-demand) başlatır. Bu bölüm launchd.plist man sayfasına ve Levin'in OS Internals serisine dayanır.</p>
+
+<h3>1. PID 1 ve tek merkezden yönetim</h3>
+<p>Eski Unix'te init, rc betikleri çalıştırır ve gerisine karışmazdı; ayrı daemon'lar fork/exec ile kendilerini başlatırdı. launchd bunu tersine çevirir: tüm daemon ve agent'lar launchd tarafından, bildirimsel plist tanımlarına göre başlatılır, izlenir ve yeniden başlatılır. Bir servis çökerse launchd onu KeepAlive kuralına göre geri getirir.</p>
+<div class="manpage src-apple"><div class="ref">launchd.plist · DESCRIPTION</div><p class="orig">This document details the parameters that can be given to an XML property list</p><p>Her job bir XML property list (plist) ile tanımlanır; launchd bu plist'teki anahtarlara bakarak job'u ne zaman ve nasıl çalıştıracağını bilir.</p></div>
+
+<h3>2. LaunchDaemon vs LaunchAgent</h3>
+<p>İkisi de plist ile tanımlanır ama farklı bağlamlarda çalışır:</p>
+<div class="deflist">
+<div><dt>LaunchDaemon</dt><dd>Sistem geneli, kullanıcı oturumundan bağımsız; root veya belirtilen UID ile, oturum açılmadan da çalışır. GUI'ye erişemez. <code>/Library/LaunchDaemons</code>.</dd></div>
+<div><dt>LaunchAgent</dt><dd>Bir kullanıcı oturumu bağlamında, o kullanıcının haklarıyla çalışır; GUI ve kullanıcı ortamına erişebilir. <code>/Library/LaunchAgents</code>, <code>~/Library/LaunchAgents</code>.</dd></div>
+</div>
+
+<h3>3. plist: bir job'un reçetesi</h3>
+<p>Job'un davranışı tamamen plist anahtarlarıyla belirlenir — kod değil, bildirimsel tanım:</p>
+<div class="deflist">
+<div><dt>Label</dt><dd>Job'un benzersiz kimliği (zorunlu).</dd></div>
+<div><dt>ProgramArguments</dt><dd>Çalıştırılacak program ve argümanları (argument vector).</dd></div>
+<div><dt>RunAtLoad</dt><dd>Job yüklenir yüklenmez bir kez başlat.</dd></div>
+<div><dt>KeepAlive</dt><dd>Job'u sürekli canlı tut; çökerse yeniden başlat (koşullu da olabilir).</dd></div>
+<div><dt>MachServices</dt><dd>launchd'nin bu job adına ilan edeceği (advertise) Mach servis isimleri.</dd></div>
+<div><dt>Sockets</dt><dd>On-demand için launchd'nin dinleyeceği socket'ler.</dd></div>
+</div>
+<div class="manpage src-apple"><div class="ref">launchd.plist · LABEL</div><p class="orig">This required key uniquely identifies the job to launchd.</p><p>Label, bootstrap namespace'inde job'un adıdır; launchctl ile bu isimden yönetilir.</p></div>
+<div class="manpage src-apple"><div class="ref">launchd.plist · KEEPALIVE</div><p class="orig">The value may be set to true to unconditionally keep the job alive.</p><p>Kritik servisler için koşulsuz canlı tutma; ama çoğu servis on-demand olduğundan KeepAlive yerine MachServices/Sockets tercih edilir.</p></div>
+
+<h3>4. On-demand launching: dinlemeyi launchd yapar</h3>
+<p>launchd'nin asıl gücü budur: servisi sürekli çalışır tutmak yerine, onun adına Mach port'unu veya socket'i <strong>launchd dinler</strong>. İlk istek geldiğinde job o an başlatılır ve dinleyen descriptor ona devredilir (check-in protokolü). Böylece açılışta onlarca servis boşuna çalışmaz; istek gelince milisaniyeler içinde canlanır.</p>
+<div class="manpage src-apple"><div class="ref">launchd.plist · MACHSERVICES</div><p class="orig">Each key in this dictionary should be the name of a service to be advertised.</p><p>launchd bu ismi bootstrap namespace'ine kaydeder ve o porta mesaj gelene kadar job'u başlatmaz — Mach port modülündeki bootstrap_look_up tam da bu ismi çözer.</p></div>
+<div class="manpage src-apple"><div class="ref">launchd.plist · SOCKETS</div><p class="orig">This optional key is used to specify launch on demand sockets</p><p>Ağ servisleri için aynı mantık: launchd socket'i dinler, bağlantı gelince job'u başlatıp socket'i ona verir (inetd'nin modern hali).</p></div>
+
+<h3>5. bootstrap namespace ve domain'ler</h3>
+<p>Mach servis isimleri bir <strong>bootstrap namespace</strong>'inde yaşar; launchd bu namespace'in sahibidir ve isimden port'a çözümlemeyi yapar (Mach dünyasının "Service Manager"ı). Modern launchd bunları domain'lere ayırır: <code>system</code> (daemon'lar), <code>user</code>/<code>login</code> (agent'lar), <code>pid</code> (tek process'e özel). Bu izolasyon, bir kullanıcının servislerinin başka kullanıcıya sızmamasını sağlar.</p>
+
+<h3>6. launchctl ve systemd ile karşılaştırma</h3>
+<p>launchctl, launchd ile konuşma aracıdır (<code>launchctl load/bootstrap/print/kickstart</code>). Linux systemd aynı fikri paylaşır — bildirimsel unit dosyaları, socket/dbus activation, bağımlılık yönetimi — ama systemd cgroup'larla sıkı kaynak kontrolü ekler; launchd ise Mach port activation ve Apple güvenlik mimarisiyle (code signing, SIP korumalı servisler) iç içedir.</p>`
+  },
+  next: { eyebrow: 'Sıradaki · macOS Modül 9', title: 'Çekirdek açılışı ve panic', desc: 'iBoot\'tan XNU\'ya açılış zinciri; boot argümanları ve kernel panic nasıl oluşur ve okunur?' },
+  sources: [
+    { href: 'https://newosxbook.com/toc1.html', text: 'Levin — OS Internals Cilt I', note: 'Bölüm 14: launchd' },
+    { href: 'https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html', text: 'Apple — launchd ve plist' },
+    { href: 'https://www.manpagez.com/man/5/launchd.plist/', text: 'man 5 launchd.plist', note: 'plist anahtarları' }
+  ],
+  pageTitle: 'launchd'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

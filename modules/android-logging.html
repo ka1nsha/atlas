@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Android Loglama</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: halka tamponu */
+.ring { display: grid; gap: 4px; border: 1.5px solid var(--track); border-radius: var(--r); background: var(--track-soft); padding: 10px; }
+.ring .rh { font-family: var(--f-mono); font-size: 11px; color: var(--track); font-weight: 700; letter-spacing: .04em; display: flex; justify-content: space-between; gap: 8px; }
+.slot { font-family: var(--f-mono); font-size: 11.5px; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; overflow-wrap: anywhere; }
+.slot.fresh { border-color: var(--track); }
+.slot.evicted { opacity: .45; text-decoration: line-through; }
+.slot .lv { font-weight: 700; margin-right: 6px; }
+.slot .lv.D { color: var(--accent); } .slot .lv.I { color: var(--ok); } .slot .lv.W { color: var(--warn); } .slot .lv.E { color: var(--bad); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'android',
+  crumbs: 'android › loglama ve izleme › modül 7',
+  eyebrow: 'Modül 7 · Android · Gözlem',
+  titleHTML: 'Bir log satırının <code>logcat</code>\'e yolculuğu',
+  lede: 'Android\'de loglama masaüstü Linux\'tan farklı çalışır: merkezî bir daemon (logd) logları türlerine göre halka tamponlarında (ring buffer) tutar. Bu modülde Log.d()\'den logcat\'e giden yolu izleyecek, logd/statsd/eBPF üçlüsünü tanıyacaksın.',
+  meta: ['~12 dk', 'ön koşul: Android mimarisi', 'bağlam: AOSP'],
+  intuition: {
+    paras: [
+      'Linux\'ta bir program genelde stderr\'e ya da syslog\'a yazar. Android ise yüzlerce uygulama ve servisin ürettiği logu tek bir yerde, hızlı ve sınırlı bellekte toplamak zorundadır. Çözüm: <strong>logd</strong> adlı bir daemon ve türlere ayrılmış <strong>halka tamponları (ring buffer)</strong>.',
+      'Her log, türüne göre bir tampona gider: <code>main</code> (uygulama logları), <code>system</code> (framework), <code>radio</code> (telefon/modem), <code>events</code> (ikili sistem olayları), <code>crash</code>. Tampon sabit boyutludur; dolunca en eski satır silinir (bu yüzden logcat\'te eski loglar "kaybolur"). İzleme (tracing) tarafında ise statsd metrik toplar, eBPF ise çekirdek olaylarını düşük maliyetle örnekler.'
+    ],
+    ideas: [
+      { b: 'Merkezî daemon', span: 'logd tüm logları toplar; uygulamalar liblog ile ona bir soket üzerinden yazar.' },
+      { b: 'Halka tamponu (ring buffer)', span: 'Sabit boyut; dolunca en eski satır düşer. Bu yüzden logcat geçmişi sınırlıdır.' },
+      { b: 'Türlere ayrık', span: 'main / system / radio / events / crash ayrı tamponlarda; logcat -b ile seçilir.' }
+    ]
+  },
+  lab: {
+    intro: 'Bir uygulamanın Log.d() çağrısının logd\'ye, oradan halka tamponuna ve logcat\'e nasıl aktığını izle. Sağda ilgili tampon (main) ve içindeki satırlar görünür; tampon dolunca en eskisinin nasıl düştüğünü gör.',
+    codeLabel: 'App.java + logcat', cmd: 'log yolu: app → logd → logcat',
+    foot: 'Satırlar ve tampon boyutu temsilîdir; gerçek değerler cihaza ve yapılandırmaya göre değişir.',
+    code: [
+      { t: '<span class="cm">// uygulama tarafı</span>' },
+      { t: 'Log.<span class="f">d</span>(<span class="s">"MainActivity"</span>, <span class="s">"onCreate basladi"</span>);' },
+      { t: '' },
+      { t: '<span class="cm">// liblog → logd soketi (/dev/socket/logdw)</span>' },
+      { t: '<span class="f">__android_log_write</span>(ANDROID_LOG_DEBUG, tag, msg);' },
+      { t: '' },
+      { t: '<span class="cm">// okuyucu tarafı</span>' },
+      { t: '$ adb logcat -b main' }
+    ],
+    steps: [
+      { pc: 2, title: 'Uygulama log yazar', hi: null,
+        text: 'Uygulama <code>Log.d(TAG, mesaj)</code> çağırır. Bu, seviye (debug/info/warn/error), etiket (tag) ve mesajdan oluşan bir kayıttır. Henüz hiçbir yere ulaşmadı; sadece liblog\'a verildi.',
+        buf: [], fresh: -1 },
+      { pc: 4, title: 'liblog → logd soketi', hi: null,
+        text: '<code>Log.d</code> aslında native <code>__android_log_write</code>\'a iner; bu da kaydı bir yerel sokete (<code>/dev/socket/logdw</code>) yazar. logd daemon\'ı bu soketten dinler. Uygulama ile log deposu böylece ayrılır: uygulama çökse bile log güvende kalır.',
+        buf: [], fresh: -1 },
+      { pc: 4, title: 'logd tampona koyar', hi: 'main',
+        text: 'logd kaydın türüne bakar — bu bir uygulama logu, yani <code>main</code> tamponuna gider. Kayıt tamponun sonuna eklenir, zaman damgası ve PID/UID ile birlikte.',
+        buf: [{ lv: 'D', t: 'MainActivity: onCreate basladi' }], fresh: 0 },
+      { pc: 4, title: 'Tampon dolar', hi: 'main',
+        text: 'Uygulamalar yazmaya devam eder; <code>main</code> tamponu sabit boyutludur (örn. 256 KB). Dolduğunda yeni satır eklenebilmesi için en eski satır silinmek zorundadır. Halka tamponu (ring buffer) tam da budur.',
+        buf: [
+          { lv: 'D', t: 'MainActivity: onCreate basladi' },
+          { lv: 'I', t: 'ActivityManager: START u0 {act=MAIN}' },
+          { lv: 'W', t: 'Choreographer: 2 kare atlandi' },
+          { lv: 'E', t: 'OkHttp: baglanti zaman asimi' }
+        ], fresh: 3 },
+      { pc: 4, title: 'En eski düşer (eviction)', hi: 'main',
+        text: 'Tampon doluyken yeni bir satır gelir. logd baştaki en eski satırı (onCreate) atar ve yeniyi sona ekler. Bu yüzden logcat\'te çok eski loglar görünmez; görmek istiyorsan ya tamponu büyütmeli (logcat -G) ya da anında yakalamalısın.',
+        buf: [
+          { lv: 'D', t: 'MainActivity: onCreate basladi', evicted: true },
+          { lv: 'I', t: 'ActivityManager: START u0 {act=MAIN}' },
+          { lv: 'W', t: 'Choreographer: 2 kare atlandi' },
+          { lv: 'E', t: 'OkHttp: baglanti zaman asimi' },
+          { lv: 'I', t: 'MainActivity: veri yuklendi' }
+        ], fresh: 4 },
+      { pc: 8, title: 'logcat okur', hi: 'main',
+        text: '<code>adb logcat -b main</code> logd\'ye bağlanır ve tampondaki satırları (ve sonrasında gelenleri canlı) okur. Diğer gözlem araçları farklı işler yapar: <strong>statsd</strong> sayısal metrikleri toplar (pil, ağ), <strong>eBPF</strong> ise çekirdek olaylarını düşük maliyetle örnekler.',
+        buf: [
+          { lv: 'I', t: 'ActivityManager: START u0 {act=MAIN}' },
+          { lv: 'W', t: 'Choreographer: 2 kare atlandi' },
+          { lv: 'E', t: 'OkHttp: baglanti zaman asimi' },
+          { lv: 'I', t: 'MainActivity: veri yuklendi' }
+        ], fresh: -1, reading: true }
+    ],
+    render: function (s, stateEl, u) {
+      var slots = s.buf.length
+        ? s.buf.map(function (b, i) {
+            var cls = 'slot' + (b.evicted ? ' evicted' : '') + (i === s.fresh ? ' fresh' : '');
+            return '<div class="' + cls + '"><span class="lv ' + b.lv + '">' + b.lv + '</span>' + u.esc(b.t) + '</div>';
+          }).join('')
+        : '<div class="slot" style="opacity:.6">(tampon boş — henüz logd\'ye ulaşan kayıt yok)</div>';
+      var cap = s.buf.filter(function (b) { return !b.evicted; }).length;
+      stateEl.innerHTML =
+        '<p class="lab-label">logd halka tamponu (ring buffer)</p>' +
+        '<div class="ring"><div class="rh"><span>-b main' + (s.hi === 'main' ? ' ◀ aktif' : '') + '</span><span>' + cap + ' / 4 satır</span></div>' +
+        slots + '</div>' +
+        (s.reading ? '<p class="note" style="margin-top:10px">logcat bu tampona bağlandı ve satırları okuyor. statsd ve eBPF ayrı yollardan metrik/olay toplar.</p>'
+                   : '<p class="note" style="margin-top:10px">Diğer tamponlar: system · radio · events · crash. logcat -b ile seçilir.</p>');
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: bir log satırı nereye gider?",
+    html: `<p class="lead">Android'in loglama sistemi masaüstü Linux'un syslog'undan tamamen farklıdır: merkezde logd daemon'ı ve bir dizi circular buffer vardır. Bir log satırı, üretildiği andan logcat'te görünene kadar liblog, bir socket ve bir ring buffer'dan geçer.</p>
+
+<h3>1. logd ve circular buffer'lar</h3>
+<p>Loglar diske değil, bellekte tutulan sabit boyutlu circular buffer'lara yazılır ve bu buffer'ları logd adlı sistem process'i yönetir. Buffer dolunca en eski satırlar düşer (eviction) — yani log geçmişi sınırlıdır, kalıcı değildir. Loglar kategoriye göre ayrı buffer'lara gider.</p>
+<div class="manpage src-docs"><div class="ref">logcat · buffers</div><p class="orig">The Android logging system is a set of structured circular buffers maintained by the system process logd.</p><p>Sistemin kalbi logd'dir; her buffer yapısal (structured) ve dairesel (circular) bir kuyruktur ve diske değil belleğe yazar. Bu yüzden logcat anlık bir pencere gösterir, tam bir tarih değil.</p></div>
+<div class="deflist">
+<div><dt>main</dt><dd>Uygulama logları (Log.d/i/w/e). Varsayılan buffer.</dd></div>
+<div><dt>system</dt><dd>Android OS / framework mesajları.</dd></div>
+<div><dt>crash</dt><dd>Çökme (crash) logları — ayrı tutulur ki kaybolmasın.</dd></div>
+<div><dt>radio</dt><dd>Telefon/radyo (RIL) mesajları.</dd></div>
+<div><dt>events</dt><dd>İkili sistem olayları (binary event); event.logtags ile çözülür.</dd></div>
+</div>
+<div class="manpage src-docs"><div class="ref">logcat · -b</div><p class="orig">To see additional log messages, run the logcat command with the -b option to request viewing of an alternate circular buffer.</p><p>logcat varsayılan olarak main, system ve crash'i birlikte gösterir; radio veya events gibi diğer buffer'ları görmek için <code>logcat -b radio</code> şeklinde -b ile seçersin.</p></div>
+
+<h3>2. liblog ve yazma yolu</h3>
+<p>Bir uygulama <code>Log.d()</code> çağırdığında, çağrı liblog üzerinden bir socket ile logd'ye iletilir ve log satırı ilgili buffer'a eklenir. Native kod <code>__android_log_print</code>, Java tarafı <code>android.util.Log</code> kullanır — ikisi de aynı liblog'a iner, yani format ve buffer seçimi tek yerden yönetilir.</p>
+<div class="manpage src-aosp"><div class="ref">logging · liblog</div><p class="orig">Android uses the liblog library for general system logging.</p><p>Tüm log üreticileri (Java framework, native kod, kernel köprüsü) tek bir ortak kütüphaneden, liblog'dan geçer. Bu, Android'i bir dosyaya append eden klasik syslog'dan ayıran temel tasarım kararıdır.</p></div>
+
+<h3>3. Priority ve tag ile filtreleme</h3>
+<p>Her log satırının bir priority seviyesi ve bir tag'i vardır. Priority sıralaması düşükten yükseğe: V (Verbose), D (Debug), I (Info), W (Warn), E (Error), F (Fatal). logcat'te <code>ActivityManager:I *:S</code> gibi tag:priority filtreleriyle gürültüyü kısarsın — buradaki <code>*:S</code> "diğer her şeyi sustur (Silent)" demektir.</p>
+<div class="deflist">
+<div><dt>V / D</dt><dd>Verbose / Debug — geliştirme sırasında; release build'de genelde kapalı.</dd></div>
+<div><dt>I</dt><dd>Info — normal çalışma bilgisi.</dd></div>
+<div><dt>W / E</dt><dd>Warn / Error — beklenmeyen ama kurtarılabilir / gerçek hata.</dd></div>
+<div><dt>F</dt><dd>Fatal — ölümcül; genelde bir çökme (crash) eşlik eder.</dd></div>
+</div>
+
+<h3>4. statsd ve metrikler</h3>
+<p>Log satırları insan okuması içindir; sistem geneli ölçümler için <strong>statsd</strong> kullanılır. statsd, atom adı verilen yapısal olayları toplar — pushed atom olay olduğu anda gönderilir, pulled atom'u ise statsd periyodik olarak çeker. Bir config'e göre bunları birleştirir ve metrik üretir; pil, performans ve kullanım telemetrisi bunun üstüne kuruludur. Ham log'un aksine statsd verisi yapısaldır ve toplu analiz için uygundur.</p>
+
+<h3>5. Sistem izleme: atrace, Perfetto, eBPF</h3>
+<p>Tek tek log satırlarının ötesinde, zaman içindeki davranışı görmek için tracing araçları vardır. atrace/ftrace, kernel ve framework olaylarını bir zaman çizelgesine yazar; Perfetto bunları toplayıp görselleştirir (CPU, scheduling, binder transaction'ları, frame kaçakları/jank). Android ayrıca ağ ve I/O sayaçları için eBPF kullanır; ptrace tabanlı araçlar (debuggerd, strace) tek bir process'i yakından izler. Loglama "ne oldu"yu, tracing ise "ne zaman ve ne kadar sürdü"yü yanıtlar.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">Bir log satırının çekirdeğe kadar inmeden kat ettiği yol kısadır ama birkaç bileşenden geçer:</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">Log.d() / Log.i()</span><span class="where">android.util.Log</span><p>Java API; seviye, etiket ve mesajı alır.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">__android_log_write</span><span class="where">liblog</span><p>Native katman; kaydı ikili biçime koyar ve soket üzerinden gönderir.</p></div></li>' +
+      '<li class="boundary"><div>yerel soket · /dev/socket/logdw</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">logd (LogBuffer)</span><span class="where">system/logging/logd</span><p>Kaydı türüne göre ilgili halka tamponuna ekler; dolunca en eskiyi atar.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">logcat / logdr soketi</span><span class="where">system/logging</span><p>Okuyucular logd\'ye bağlanıp tamponu ve canlı akışı alır.</p></div></li>' +
+      '</ol>' +
+      '<div class="tbl-wrap" style="margin-top:14px"><table class="bugs"><thead><tr><th>Araç</th><th>Ne toplar</th><th>Nasıl</th></tr></thead><tbody>' +
+      '<tr><td><b>logd / logcat</b></td><td>Metin logları</td><td>Halka tamponları, türlere ayrık</td></tr>' +
+      '<tr><td><b>statsd</b></td><td>Sayısal metrikler (pil, ağ, kullanım)</td><td>Atom\'lar + yapılandırma; pull/push</td></tr>' +
+      '<tr><td><b>eBPF</b></td><td>Çekirdek olayları (I/O, ağ, zamanlama)</td><td>Çekirdekte program, düşük maliyet</td></tr>' +
+      '<tr><td><b>ptrace / inotify</b></td><td>Süreç izleme / dosya değişimi</td><td>Hata ayıklama ve dosya olayları</td></tr>' +
+      '</tbody></table></div>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Belirli bir tamponu oku', p: 'logcat türe göre ayrı tamponlardan okur. Yalnızca uygulama loglarını (main) ya da sistem loglarını (system) seçebilirsin (temsilî çıktı).',
+        shells: [{ label: 'adb (temsilî)', copy: 'adb logcat -b main -v time', pre: '<span class="c">$</span> adb logcat -b main -v time\n10-19 01:40:12.221 D/MainActivity( 4120): onCreate basladi\n10-19 01:40:12.233 I/ActivityManager(  712): START u0 {act=MAIN}\n10-19 01:40:12.419 <span class="hi">E/OkHttp( 4120): baglanti zaman asimi</span>' }] },
+      { h3: '2. Tampon boyutlarını gör / büyüt', p: 'Halka tamponu dolunca log kaybı yaşarsın. Boyutları listeleyip büyütebilirsin.',
+        shells: [{ label: 'adb (temsilî)', copy: 'adb logcat -g; adb logcat -G 1M', pre: '<span class="c">$</span> adb logcat -g\nmain: ring buffer is 256 KiB (max 2 MiB)\nsystem: ring buffer is 256 KiB\n<span class="c">$</span> adb logcat -G 1M   # main tamponunu 1 MiB yap</span>' }] },
+      { h3: '3. Metrikler: statsd', p: 'Sayısal sistem metrikleri logcat\'te değil statsd\'de toplanır; dumpsys ile özetine bakabilirsin.',
+        shells: [{ label: 'adb (temsilî)', copy: 'adb shell dumpsys stats', pre: '<span class="c">$</span> adb shell dumpsys stats\n<span class="c"># kayıtlı atom\'lar, metrik yapılandırmaları (config)</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'logcat\'te çok eski loglar neden görünmez?', opts: ['Şifrelenir', 'Halka tamponu dolunca en eski satır silinir', 'logcat sadece hataları tutar'], answer: 'Halka tamponu dolunca en eski satır silinir',
+        ok: 'Doğru. Tampon sabit boyutludur; dolduğunda yeni satır için en eski satır atılır (ring buffer). Daha fazlası için -G ile büyütülür.', no: 'İpucu: tampon sabit boyutlu bir ring buffer. Dolunca ne olur?' },
+      { q: 'Bir uygulama çöktüğünde logları neden yine de görülebilir?', opts: ['Loglar uygulama belleğinde durur', 'Loglar ayrı bir daemon\'da (logd) tutulur', 'logcat uygulamayı yeniden başlatır'], answer: 'Loglar ayrı bir daemon\'da (logd) tutulur',
+        ok: 'Doğru. liblog kaydı sokete yazar, logd ayrı bir süreçte saklar. Uygulama çökse de log logd\'de kalır.', no: 'İpucu: log, uygulamanın kendi belleğinde mi yoksa ayrı bir yerde mi tutuluyor?' },
+      { q: 'Çekirdek olaylarını (I/O, ağ) düşük maliyetle örneklemek için hangisi kullanılır?', opts: ['logcat', 'statsd', 'eBPF'], answer: 'eBPF',
+        ok: 'Doğru. eBPF çekirdekte çalışan küçük programlarla olayları düşük maliyetle toplar; logcat metin logu, statsd ise üst düzey metrik içindir.', no: 'İpucu: çekirdek içinde çalışan, düşük maliyetli gözlem teknolojisi hangisiydi?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Android Modül 8', title: 'Güç yönetimi', desc: 'PowerManagerService, wakelock, thermal ve Power HAL: Android pili nasıl korur?' },
+  sources: [
+    { href: 'https://newandroidbook.com/TOC.html', text: 'Levin — Android Internals', note: 'Cilt I, Bölüm 12' },
+    { href: 'https://source.android.com/docs/core/tests/debug/understanding-logging', text: 'AOSP — Logging' },
+    { href: 'https://cs.android.com/android/platform/superproject/main/+/main:system/logging/logd/', text: 'logd kaynağı', note: 'AOSP' }
+  ],
+  pageTitle: 'Android Loglama'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

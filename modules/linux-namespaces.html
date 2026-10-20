@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Namespace ve cgroup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'linux',
+  crumbs: 'linux › namespace ve cgroup › modül 14',
+  eyebrow: 'Modül 14 · Linux · İzolasyon',
+  titleHTML: 'Konteynerin iki yarısı: <code>namespace</code> ve <code>cgroup</code>',
+  lede: 'Docker\'ın "büyüsü" diye bir şey yok; altında iki çekirdek özelliği var. Namespace bir kaynağın GÖRÜNÜMÜNÜ izole eder (ad alanı / namespace), cgroup ise KULLANIMINI sınırlar (kaynak limiti / resource limit). Bu modülde normal bir sürecin adım adım kendi izole, sınırlı dünyasına nasıl girdiğini — yani bir konteyner olduğunu — izleyeceksin.',
+  meta: ['~18 dk', 'ön koşul: fork, PID, mount', 'çekirdek: Linux 6.x'],
+  intuition: {
+    paras: [
+      'Bir konteyner, aslında sıradan bir Linux sürecidir; sadece etrafına iki duvar örülmüştür. Birinci duvar <strong>namespace</strong> (ad alanı): süreç, çekirdeğin kaynaklarının yalnızca kendine ayrılmış bir dilimini görür. Kendi PID ad alanında kendini PID 1 sanır, host\'taki diğer süreçleri hiç göremez. Yedi tür vardır: pid, net, mnt (mount), uts (hostname), ipc, user, cgroup.',
+      'İkinci duvar <strong>cgroup</strong> (control group): süreç görmesini kısıtladığımız kaynakları bir de ne kadar <em>kullanabileceğini</em> sınırlar — en fazla 100 MB bellek, CPU\'nun yarısı gibi. Namespace "neyi görürsün"ü, cgroup "ne kadar alırsın"ı belirler. İkisi birlikte bir konteyner yapar; ne LXC, ne Docker bunun dışında sihir içermez.'
+    ],
+    ideas: [
+      { b: 'Namespace = görünüm', span: 'Bir kaynağın (PID, ağ, mount...) yalnızca sürece ait bir diliminin görünmesi. İzolasyon (isolation) budur.' },
+      { b: 'cgroup = limit', span: 'CPU, bellek, I/O gibi kaynakların ne kadar kullanılabileceğinin sınırlanması. Kaynak limiti (resource limit).' },
+      { b: 'Konteyner = ikisi', span: 'clone()/unshare() ile namespace yaratılır, cgroup ile limit konur. Konteyner bunların toplamıdır.' }
+    ]
+  },
+  lab: {
+    intro: 'Normal bir süreci alıp sırayla duvarlarını öreceğiz: önce PID, sonra ağ, sonra mount ad alanını izole edeceğiz, en sonunda cgroup ile sınırlayacağız. Sağda sürecin gördüğü dünyayı (ad alanları) ve kaynak limitini birlikte izle.',
+    codeLabel: 'konteyner.sh (temsilî)', cmd: 'unshare / cgroup',
+    foot: 'Ad alanı (namespace) kimlikleri örnektir. "PID 1" görünümü ve hostname izolasyonu bu konteynerde gerçek unshare ile üretildi; aşağıdaki "Kendin dene" gerçek çıktıları gösterir.',
+    code: [
+      { t: '<span class="cm">// konteyner = namespace (izolasyon) + cgroup (limit)</span>' },
+      { t: '<span class="f">unshare</span>(<span class="n">CLONE_NEWPID</span>);   <span class="cm">// kendi PID ad alanı</span>' },
+      { t: '<span class="f">unshare</span>(<span class="n">CLONE_NEWNET</span>);   <span class="cm">// kendi ağ yığını</span>' },
+      { t: '<span class="f">unshare</span>(<span class="n">CLONE_NEWNS</span>);    <span class="cm">// kendi mount görünümü</span>' },
+      { t: '' },
+      { t: '<span class="cm">// cgroup: kaynak limiti</span>' },
+      { t: '<span class="f">echo</span> 100M  &gt; memory.max    <span class="cm">// en fazla 100 MB</span>' },
+      { t: '<span class="f">echo</span> "50000 100000" &gt; cpu.max  <span class="cm">// CPU %50</span>' }
+    ],
+    steps: [
+      { pc: 1, title: 'Normal süreç', term: [],
+        text: 'Sıradan bir süreç host ile her şeyi paylaşır: tüm süreçleri görür (host PID), host\'un ağını, host\'un dosya sistemini. Hiçbir duvar yok, hiçbir limit yok.',
+        proc: { name: 'süreç', pid: 1164, state: 'host görünümü', k: 'run' },
+        ns: { pid: 0, net: 0, mnt: 0, uts: 0 },
+        cgroup: { mem: 'limitsiz', cpu: 'limitsiz', limited: false },
+        caption: 'Süreç host\'u olduğu gibi görüyor.' },
+      { pc: 2, title: 'PID ad alanı: kendini 1 gör', term: ['$ unshare --fork --pid --mount-proc sh', 'ns icinde: $$ = 1'],
+        text: '<code>unshare(CLONE_NEWPID)</code> ile yeni bir PID ad alanı açılır. Çocuk süreç artık kendini <strong>PID 1</strong> olarak görür ve host\'taki diğer süreçleri göremez. Host hâlâ onu kendi tablosunda (örn. 1164) görür — bir süreç, iki farklı PID. İzolasyon tek yönlüdür: içeriden dışarısı görünmez.',
+        proc: { name: 'süreç', pid: 1, state: 'PID 1 (izole)', k: 'kern' },
+        ns: { pid: 1, net: 0, mnt: 0, uts: 0 },
+        cgroup: { mem: 'limitsiz', cpu: 'limitsiz', limited: false },
+        caption: 'İçeride $$ = 1; host\'taki süreçler görünmez.' },
+      { pc: 3, title: 'Ağ ad alanı: ayrı yığın', term: ['$ unshare --net sh', '# ip link  →  yalnızca lo (DOWN)'],
+        text: '<code>unshare(CLONE_NEWNET)</code> ile süreç kendi ağ yığınını (network stack) alır: kendi arayüzleri, yönlendirme tablosu, güvenlik duvarı kuralları. Yeni ad alanında yalnızca bir <code>lo</code> (loopback) vardır, o da kapalı. Konteynerlere ağ böyle verilir: içeriye bir sanal arayüz (veth) uzatılır.',
+        proc: { name: 'süreç', pid: 1, state: 'izole ağ', k: 'kern' },
+        ns: { pid: 1, net: 1, mnt: 0, uts: 0 },
+        cgroup: { mem: 'limitsiz', cpu: 'limitsiz', limited: false },
+        caption: 'Host\'un ağ arayüzleri (eth0 vb.) artık görünmüyor.' },
+      { pc: 4, title: 'Mount ad alanı: ayrı dosya sistemi', term: ['$ unshare --mount sh', '# mount --bind ... ; pivot_root'],
+        text: '<code>unshare(CLONE_NEWNS)</code> ile süreç kendi mount görünümünü alır. Artık bağladığı (mount) şeyler host\'u etkilemez ve host\'un mount\'ları değişebilir. Konteyner imajının kök dosya sistemi (rootfs) buraya <code>pivot_root</code> ile oturtulur; konteyner artık host\'un <code>/</code>\'ını değil, kendi küçük dünyasını görür.',
+        proc: { name: 'süreç', pid: 1, state: 'izole mount', k: 'kern' },
+        ns: { pid: 1, net: 1, mnt: 1, uts: 1 },
+        cgroup: { mem: 'limitsiz', cpu: 'limitsiz', limited: false },
+        caption: 'uts ad alanı da ayrıldı: kendi hostname\'i (ör. izole-kap).' },
+      { pc: 7, title: 'cgroup: kaynağı sınırla', term: ['# echo 100M > .../memory.max', '# echo "50000 100000" > .../cpu.max'],
+        text: 'Namespace sürecin ne gördüğünü ayarladı ama ne kadar kaynak harcayacağını değil. İşte burada <strong>cgroup</strong> devreye girer: <code>memory.max</code> ile belleği 100 MB\'a, <code>cpu.max</code> ile CPU\'yu %50\'ye sabitleriz. Süreç limiti aşmaya kalkarsa bellek için OOM ile öldürülür, CPU için yavaşlatılır (throttle).',
+        proc: { name: 'süreç', pid: 1, state: 'izole + sınırlı', k: 'run' },
+        ns: { pid: 1, net: 1, mnt: 1, uts: 1 },
+        cgroup: { mem: '100 MB', cpu: '%50', limited: true },
+        caption: 'Artık hem izole hem sınırlı.' },
+      { pc: 1, title: 'Bir konteyner doğdu', term: ['# whoami; hostname; echo $$', 'root  izole-kap  1'],
+        text: 'Hepsini bir araya koy: izole PID + ağ + mount + uts ad alanları (namespace) ve bellek + CPU limiti (cgroup). Bu süreç artık host\'u göremez, host\'un kaynaklarını tüketemez. Yani bir konteyner. Docker bu adımları (artı imaj yönetimi ve ağ köprüleme) senin için otomatikleştirir; mekanizma budur.',
+        proc: { name: 'konteyner', pid: 1, state: 'konteyner', k: 'run' },
+        ns: { pid: 1, net: 1, mnt: 1, uts: 1 },
+        cgroup: { mem: '100 MB', cpu: '%50', limited: true },
+        flash: true,
+        caption: 'namespace (izolasyon) + cgroup (limit) = konteyner.' }
+    ],
+    render: function (s, stateEl, u) {
+      var p = s.proc;
+      var procCard = '<div class="proc parent"><div class="proc-h"><b>' + u.esc(p.name) + '</b><span class="mono">PID ' + p.pid + '</span></div><span class="chip ' + p.k + '">' + u.esc(p.state) + '</span></div>';
+      var NS = [
+        { key: 'pid', label: 'pid', host: 'host süreçleri', iso: 'kendi PID\'leri (1\'den)' },
+        { key: 'net', label: 'net', host: 'host ağı', iso: 'ayrı ağ (yalnız lo)' },
+        { key: 'mnt', label: 'mnt', host: 'host mount\'ları', iso: 'ayrı dosya sistemi' },
+        { key: 'uts', label: 'uts', host: 'host hostname', iso: 'kendi hostname' }
+      ];
+      var nsBoxes = NS.map(function (n) {
+        var iso = s.ns[n.key] === 1;
+        var id = iso ? 'ns:[4026532' + (NS.indexOf(n) + 11) + ']' : 'ns:[host]';
+        return '<div class="box' + (iso ? ' hi' : '') + '"><b>' + n.label + (iso ? ' · izole' : '') + '</b><span>' + u.esc(iso ? n.iso : n.host) + '</span><span class="mono">' + id + '</span></div>';
+      }).join('');
+      var cg = s.cgroup;
+      var cgBoxes =
+        '<div class="box' + (cg.limited ? ' warn' : '') + '"><b>memory.max</b><span class="mono">' + u.esc(cg.mem) + '</span></div>' +
+        '<div class="box' + (cg.limited ? ' warn' : '') + '"><b>cpu.max</b><span class="mono">' + u.esc(cg.cpu) + '</span></div>';
+      stateEl.innerHTML =
+        '<p class="lab-label">Süreç</p><div class="procs" style="grid-template-columns:1fr">' + procCard + '</div>' +
+        '<p class="lab-label" style="margin-top:14px">Gördüğü dünya (ad alanları / namespaces)</p>' +
+        '<div class="boxgrid" id="nsEl"><div class="boxrow">' + nsBoxes + '</div></div>' +
+        '<p class="lab-label" style="margin-top:14px">Kaynak limiti (cgroup)</p>' +
+        '<div class="boxgrid"><div class="boxrow">' + cgBoxes + '</div></div>' +
+        (s.caption ? '<p class="note" style="margin-top:12px">' + u.esc(s.caption) + '</p>' : '');
+      if (s.flash) ATLAS.flash(document.getElementById('nsEl'), false);
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: namespaces ve cgroups",
+    html: `<p class="lead">Bir container sihir değildir; iki çekirdek mekanizmasının birleşimidir. Namespaces bir sürecin <strong>ne gördüğünü</strong> izole eder, cgroups ise bir sürecin <strong>ne kadar kaynak kullanabileceğini</strong> sınırlar. Docker, Podman ve systemd-nspawn hepsi bu ikisini (artı seccomp ve capabilities) birbirine dokur. Bu bölüm man sayfalarına dayanır.</p>
+
+<h3>1. Namespace nedir?</h3>
+<p>Bir namespace, küresel bir sistem kaynağını (process ID'ler, ağ arayüzleri, mount listesi gibi) sarıp, o namespace içindeki süreçlere kaynağın kendilerine ait izole bir kopyası gibi gösterir. Dışarıdaki süreçler bu kopyayı göremez; içerideki süreçler de kendi kopyalarından başkasını göremez.</p>
+<div class="manpage"><div class="ref">7 namespaces · DESCRIPTION</div><p class="orig">A namespace wraps a global system resource in an abstraction that makes it appear to the processes within the namespace that they have their own isolated instance of the global resource.</p><p>İzolasyonun özü budur: kaynak aslında tektir (örneğin tek bir kernel), ama her namespace ona kendi penceresinden bakar. PID namespace içindeki bir süreç kendini PID 1 sanabilir, oysa host'ta PID\'si 4120\'dir.</p></div>
+
+<h3>2. Sekiz namespace türü</h3>
+<p>Her namespace türü tek bir kaynak sınıfını izole eder. Bir container tipik olarak bunların çoğunu birden açar.</p>
+<div class="deflist">
+<div><dt>mnt (CLONE_NEWNS)</dt><dd>Mount point\'leri izole eder: sürecin gördüğü dosya sistemi yerleşimi. Container\'ın kendi root filesystem\'i buradan gelir. En eski namespace (2002).</dd></div>
+<div><dt>pid (CLONE_NEWPID)</dt><dd>Process ID numaralandırmasını izole eder. İçerideki ilk süreç PID 1 olur ve reaper görevi görür; namespace\'in PID 1\'i ölünce tüm namespace çöker.</dd></div>
+<div><dt>net (CLONE_NEWNET)</dt><dd>Network interface\'leri, protocol stack\'leri, routing table\'ları ve port\'ları izole eder. Her container kendi loopback\'ine ve kendi 80 portuna sahip olabilir.</dd></div>
+<div><dt>ipc (CLONE_NEWIPC)</dt><dd>System V IPC nesnelerini ve POSIX message queue\'ları izole eder.</dd></div>
+<div><dt>uts (CLONE_NEWUTS)</dt><dd>Hostname ve NIS domain adını izole eder. Container\'ın kendi hostname\'i bu sayede olur.</dd></div>
+<div><dt>user (CLONE_NEWUSER)</dt><dd>User ID ve group ID map\'lerini izole eder. Rootless container\'ların anahtarı (aşağıda).</dd></div>
+<div><dt>cgroup (CLONE_NEWCGROUP)</dt><dd>Sürecin gördüğü cgroup root dizinini izole eder; container içinden host\'un cgroup yapısı görünmez.</dd></div>
+<div><dt>time (CLONE_NEWTIME)</dt><dd>Boot ve monotonic clock offset\'lerini izole eder (en yeni namespace, 5.6).</dd></div>
+</div>
+
+<h3>3. User namespace: rootless container\'ın anahtarı</h3>
+<p>User namespace en güçlü ve en tehlikeli olanıdır. İçinde bir süreç root (UID 0) olabilirken, bu UID host\'ta sıradan bir unprivileged kullanıcıya map\'lenir. Böylece ayrıcalık gerektirmeden container kurulabilir (rootless). Mapping <code>/proc/pid/uid_map</code> ve <code>gid_map</code> dosyalarıyla tanımlanır: "container içindeki UID 0, host\'taki UID 100000\'e karşılık gelir" gibi. Diğer namespace türlerini açmak normalde CAP_SYS_ADMIN ister; user namespace bu capability\'yi namespace içinde verdiği için, unprivileged kullanıcılar user namespace üzerinden ötekileri de açabilir — bu hem büyük bir esneklik hem de tekrar eden bir attack surface\'tir.</p>
+
+<h3>4. Namespace yaşam döngüsü</h3>
+<p>Üç system call namespace\'lerle çalışır. Bir namespace, ona ait süreç veya bind-mount/açık fd kalmayınca yok olur.</p>
+<div class="deflist">
+<div><dt>clone(CLONE_NEW*)</dt><dd>Yeni süreci yeni namespace(ler)de başlatır.</dd></div>
+<div><dt>unshare()</dt><dd>Çağıran süreci, mevcut namespace\'inden yeni bir namespace\'e taşır (yeni süreç yaratmadan).</dd></div>
+<div><dt>setns()</dt><dd>Çağıran süreci, var olan bir namespace\'e katar (örneğin <code>nsenter</code> aracı bunu kullanır).</dd></div>
+</div>
+<div class="manpage"><div class="ref">7 namespaces · setns</div><p class="orig">The setns(2) system call allows the calling process to join an existing namespace.</p><p>Bir sürecin hangi namespace\'lerde olduğu <code>/proc/pid/ns/</code> altında birer symlink olarak görünür; bu symlink\'in inode numarası namespace\'in kimliğidir. İki sürecin aynı namespace\'te olup olmadığını bu numaraları karşılaştırarak anlarsın.</p></div>
+
+<h3>5. cgroups: izolasyon değil, limit</h3>
+<p>Namespace neyi gördüğünü ayarlar; cgroup ne kadar tükettiğini sınırlar. İkisi bağımsızdır ama container\'da birlikte kullanılır.</p>
+<div class="manpage"><div class="ref">7 cgroups · DESCRIPTION</div><p class="orig">Control groups, usually referred to as cgroups, are a Linux kernel feature which allow processes to be organized into hierarchical groups whose usage of various types of resources can then be limited and monitored.</p><p>Süreçler bir ağaç halinde gruplanır; her gruba CPU, bellek, I/O gibi kaynaklar için limit konabilir ve kullanım ölçülebilir. OOM değil de limit dolunca throttling veya öldürme devreye girer.</p></div>
+<p>Kaynakları yöneten çekirdek bileşenlerine <strong>controller</strong> denir.</p>
+<div class="manpage"><div class="ref">7 cgroups · CONTROLLERS</div><p class="orig">Subsystems are sometimes also known as resource controllers (or simply, controllers).</p><p>Başlıca controller\'lar: <code>cpu</code> (CPU zamanı payı/limiti), <code>memory</code> (bellek limiti ve baskı), <code>io</code> (disk bant genişliği), <code>pids</code> (süreç sayısı — fork bombalarına karşı). Her controller cgroup dizinindeki dosyalar üzerinden ayarlanır.</p></div>
+<div class="manpage"><div class="ref">7 cgroups · CGROUPS V2</div><p class="orig">In cgroups v2, all mounted controllers reside in a single unified hierarchy.</p><p>v1\'de her controller\'ın ayrı bir hiyerarşisi olabiliyordu ve bu karmaşaya yol açıyordu. v2 hepsini tek bir birleşik ağaçta toplar; modern sistemler (systemd dahil) v2 kullanır.</p></div>
+
+<h3>6. delegation ve container denklemi</h3>
+<p>cgroup ağacının bir alt dalının yönetimini ayrıcalıksız bir kullanıcıya devretmek mümkündür; buna delegation denir ve v2 bunu güvenli bir şekilde tasarımdan destekler.</p>
+<div class="manpage"><div class="ref">7 cgroups · DELEGATION</div><p class="orig">Cgroups v2 supports delegation with containment by explicit design.</p><p>Böylece bir container runtime, kendi alt ağacını yönetebilir ama host\'un geri kalanını etkileyemez. Özet denklem: <strong>container = namespaces (izolasyon) + cgroups (limit) + seccomp (syscall filtresi) + capabilities (ayrıcalık kısıtı)</strong>. Dördü birden olmadan izolasyon eksiktir.</p></div>`
+  },
+  underHood: {
+    html: '<p class="prose">Namespace\'ler fork/thread ile aynı çekirdek yoluna iner: <code>clone()</code> bayraklarıyla yeni ad alanları istenir, ya da var olan süreç <code>unshare()</code> ile mevcut ad alanından ayrılır. cgroup ise bir dosya sistemi (<code>/sys/fs/cgroup</code>) üzerinden yönetilir: bir süreci bir cgroup\'a yazarsın, limitleri de o cgroup\'un dosyalarına.</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://man7.org/linux/man-pages/man2/unshare.2.html" target="_blank" rel="noopener">unshare() / clone(CLONE_NEW*)</a><span class="where">glibc</span><p>Yeni ad alanı(ları) ister. clone ile yeni süreçte, unshare ile mevcut süreçte.</p></div></li>' +
+      '<li class="boundary"><div>sistem çağrısı sınırı · kullanıcı → çekirdek</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/copy_namespaces" target="_blank" rel="noopener">copy_namespaces()</a><span class="where">kernel/nsproxy.c</span><p>Süreç yaratılırken ad alanlarını devralır ya da istenen türler için yenilerini kurar.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/create_new_namespaces" target="_blank" rel="noopener">create_new_namespaces()</a><span class="where">kernel/nsproxy.c</span><p>İstenen her tür (pid, net, mnt...) için yeni ad alanı nesnesi oluşturur.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">cgroup v2 (/sys/fs/cgroup)</span><span class="where">kernel/cgroup/</span><p>Süreç bir cgroup\'a yazılır; memory.max, cpu.max gibi dosyalar limitleri belirler; aşım OOM veya throttle ile sonuçlanır.</p></div></li>' +
+      '</ol>' +
+      '<p class="prose" style="margin-top:14px"><strong>Tek cümlede:</strong> namespace sürecin dünyasını küçültür (ne görür), cgroup o dünyadaki kaynakları tavanlar (ne kadar alır). Konteyner teknolojileri (Docker, LXC, systemd-nspawn) bu iki çekirdek özelliğinin üstüne kurulu araçlardır.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Kendini PID 1 gör', p: 'Yeni bir PID ad alanında bir kabuk aç; içeride kabuğun PID\'si 1 olur ve yalnızca kendi ad alanındaki süreçleri görürsün. Bu çıktı bu konteynerde gerçek çalıştırıldı.',
+        shells: [{ label: 'terminal', copy: 'sudo unshare --fork --pid --mount-proc sh -c \'echo "pid=$$"; ps -e\'', pre: '<span class="c">$</span> unshare --fork --pid --mount-proc sh -c \'echo "ns icinde: $$"; ps -e -o pid,comm\'\n<span class="hi">ns icinde: 1</span>\n    PID COMMAND\n      1 sh\n      2 ps        <span class="c"># host\'un yuzlerce sureci YOK</span>' }] },
+      { h3: '2. Ad alanlarını listele', p: 'Her sürecin bağlı olduğu ad alanları /proc/<pid>/ns altında; lsns ise sistemdeki tüm ad alanlarını ve kaç sürecin paylaştığını gösterir.',
+        shells: [{ label: 'terminal', copy: 'ls -l /proc/self/ns; lsns', pre: '<span class="c">$</span> ls -l /proc/self/ns\npid  -&gt; <span class="y">pid:[4026531836]</span>\nnet  -&gt; net:[4026531833]\nmnt  -&gt; mnt:[4026531832]\nuts  -&gt; uts:[4026531838]\n<span class="c"># ayni id = ayni ad alani (paylasiliyor)</span>' }] },
+      { h3: '3. Bir uts ad alanı izole et', p: 'Yeni bir uts ad alanında hostname değiştir; değişiklik host\'a sızmaz. İzolasyonun en basit gösterimi.',
+        shells: [{ label: 'terminal', copy: 'sudo unshare --uts sh -c \'hostname izole-kap; hostname\'; hostname', pre: '<span class="c">$</span> unshare --uts sh -c \'hostname izole-kap; hostname\'\n<span class="hi">izole-kap</span>        <span class="c"># ad alani icinde</span>\n<span class="c">$</span> hostname\nasil-host         <span class="c"># host etkilenmedi</span>' }] },
+      { h3: '4. cgroup limitini gör', p: 'Sürecin hangi cgroup\'ta olduğunu /proc/self/cgroup gösterir; cgroup v2\'de limitler /sys/fs/cgroup altındaki dosyalardan okunur/yazılır.',
+        shells: [{ label: 'terminal', copy: 'cat /proc/self/cgroup; cat /sys/fs/cgroup/memory.max 2>/dev/null', pre: '<span class="c">$</span> cat /proc/self/cgroup\n0::/kullanici.slice/...\n<span class="c"># memory.max = max  (limitsiz)  ya da bir sayi (byte)</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Bir süreç yeni bir PID ad alanında (namespace) kendini hangi PID olarak görür?', opts: ['Host\'taki gerçek PID\'si', '1', '0'], answer: '1',
+        ok: 'Doğru. Yeni PID ad alanında ilk süreç kendini PID 1 görür; host ise onu kendi tablosundaki gerçek PID ile görür. Bir süreç, iki farklı PID.', no: 'İpucu: her PID ad alanının kendi 1\'i vardır (init rolü).' },
+      { q: 'Namespace ile cgroup arasındaki fark nedir?', opts: ['Aynı şeydir', 'Namespace görünümü izole eder, cgroup kaynağı sınırlar', 'cgroup görünümü, namespace limiti ayarlar'], answer: 'Namespace görünümü izole eder, cgroup kaynağı sınırlar',
+        ok: 'Doğru. Namespace "neyi görürsün" (izolasyon), cgroup "ne kadar kullanırsın" (limit). Konteyner ikisinin toplamıdır.', no: 'Tekrar dene. Biri görünümle (izolasyon), diğeri kaynak miktarıyla (limit) ilgili.' },
+      { q: 'Docker bir konteyneri çalıştırmak için temelde neyi kullanır?', opts: ['Sanal makine (hypervisor)', 'Namespace + cgroup', 'Ayrı bir çekirdek'], answer: 'Namespace + cgroup',
+        ok: 'Doğru. Konteyner sanal makine değildir; host çekirdeğini paylaşan, namespace ile izole edilmiş ve cgroup ile sınırlanmış sıradan bir süreçtir.', no: 'İpucu: konteyner host çekirdeğini paylaşır; sihir bu iki çekirdek özelliğinde.' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Linux Modül 15', title: 'eBPF ile gözlem', desc: 'Çekirdeği yeniden derlemeden, çalışırken güvenli biçimde nasıl izleriz?' },
+  sources: [
+    { href: 'https://man7.org/linux/man-pages/man7/namespaces.7.html', text: 'man 7 namespaces', note: 'tüm ad alanı türleri' },
+    { href: 'https://man7.org/linux/man-pages/man7/cgroups.7.html', text: 'man 7 cgroups', note: 'cgroup v2' },
+    { href: 'https://man7.org/linux/man-pages/man1/unshare.1.html', text: 'man 1 unshare' },
+    { href: 'https://lwn.net/Articles/531114/', text: 'LWN — Namespaces in operation', note: 'derinlemesine dizi' },
+    { href: 'https://elixir.bootlin.com/linux/latest/source/kernel/nsproxy.c', text: 'kernel/nsproxy.c', note: 'Elixir' }
+  ],
+  pageTitle: 'Namespace ve cgroup'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Mach Sanal Bellek</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: dikey soyutlama yığını */
+.vmstack { display: grid; gap: 6px; }
+.layer { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 9px 11px; display: grid; gap: 2px; min-width: 0; transition: border-color .2s, background .2s; }
+.layer.active { border-color: var(--track); background: var(--track-soft); }
+.layer .ln-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.layer b { font-family: var(--f-display); font-size: 14px; }
+.layer .lv { font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.layer span.d { font-size: 12px; color: var(--muted); }
+.layer.active .lv { color: var(--track); }
+.vmarrow { text-align: center; color: var(--muted); font-size: 12px; line-height: 1; }
+.frame-row { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.frame-box { border: 1.5px dashed var(--line); border-radius: 8px; padding: 8px 12px; font-family: var(--f-mono); font-size: 12px; color: var(--muted); }
+.frame-box.mapped { border-style: solid; border-color: var(--ok); background: var(--ok-soft); color: var(--ok); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'macos',
+  crumbs: 'macos › mach sanal bellek › modül 12',
+  eyebrow: 'Modül 12 · macOS / iOS · Çekirdek belleği',
+  titleHTML: 'Mach sanal bellek: <code>VM object</code> ve pager\'lar',
+  lede: 'XNU bir süreç belleğini Linux gibi tek bir sayfa tablosu olarak değil, katmanlı soyutlamalarla yönetir: VM map, VM object ve pager\'lar. Bu modülde bir sayfa hatasının (page fault) bu katmanlardan nasıl geçtiğini izleyecek ve Linux\'un donanım sayfa tablosuyla karşılaştıracaksın.',
+  meta: ['~18 dk', 'ön koşul: sanal bellek (Linux Modül 4)', 'bağlam: XNU osfmk/vm'],
+  intuition: {
+    paras: [
+      'Linux\'ta adres çevirisi büyük ölçüde donanım sayfa tablosu + çekirdek VMA listesi üzerinden yürür. Mach daha soyut bir model kurar: bir <strong>VM map</strong> (task\'ın adres uzayı), içinde adres aralıklarını <strong>VM object</strong>\'lere eşleyen girdiler barındırır. Her VM object, sayfaların nereden geleceğini bilen bir <strong>pager</strong>\'a bağlıdır.',
+      'Bu soyutlama güçlüdür: aynı VM object birden çok task\'a eşlenebilir (paylaşımlı bellek, copy-on-write (yazınca kopyala), bellek eşlemeli dosya hepsi aynı mekanizma). <strong>pmap</strong> ise en altta, makineye özel katmandır: VM\'in soyut kararlarını gerçek donanım sayfa tablosuna (ARM64/Intel) yazan kısım. Çekirdek nesneleri de ayrı bir <strong>zone allocator (bölge ayırıcı)</strong> ile tahsis edilir.'
+    ],
+    ideas: [
+      { b: 'VM object = içerik kaynağı', span: 'Bir bellek aralığının sayfalarının mantıksal sahibi. Dosya, swap veya sıfır-dolgu olabilir.' },
+      { b: 'Pager = getirici', span: 'Sayfa bellekte yoksa onu getiren eklenti: vnode pager (dosyadan), default pager (swap/sıkıştırma).' },
+      { b: 'pmap = donanım katmanı', span: 'Soyut VM kararlarını gerçek sayfa tablosuna yazar. Linux\'un donanım katmanının karşılığı.' }
+    ]
+  },
+  lab: {
+    intro: 'Bir thread, henüz bellekte olmayan bir sayfaya erişiyor. Oluşan sayfa hatasının VM map → VM object → pager → pmap katmanlarından geçişini izle. Sağda aktif katman ve fiziksel çerçevenin durumu görünür.',
+    codeLabel: 'erişim (kavramsal)', cmd: './vm_demo',
+    foot: 'Katman adları XNU osfmk/vm yapılarıdır; değerler gösterim içindir.',
+    code: [
+      { t: '<span class="cm">// thread bir adrese erişir</span>' },
+      { t: '<span class="t">char</span> c = *ptr;        <span class="cm">// 0x1_0000_4000</span>' },
+      { t: '' },
+      { t: '<span class="cm">// sayfa bellekte değilse donanım</span>' },
+      { t: '<span class="cm">// bir sayfa hatası (fault) üretir →</span>' },
+      { t: '<span class="cm">// çekirdek vm_fault() ile çözer</span>' }
+    ],
+    steps: [
+      { pc: 2, title: 'Erişim', active: 'thread', mapped: false,
+        term: ['thread: read @ 0x1_0000_4000'],
+        text: 'Bir thread sanal bir adrese erişir. Bu adrese karşılık gelen fiziksel sayfa henüz bellekte değil (ilk erişim veya sayfa dışarı atılmış). Donanım bir sayfa hatası (page fault) üretir ve çekirdeğin <code>vm_fault()</code> yolu devreye girer.',
+        note: 'Henüz fiziksel sayfa yok; çözüm katmanlardan geçecek.' },
+      { pc: 5, title: 'VM map araması', active: 'vm_map', mapped: false,
+        term: ['vm_fault: adres VM map\'te aranıyor'],
+        text: 'Çekirdek, task\'ın <strong>VM map</strong>\'inde bu adresi kapsayan girdiyi (vm_map_entry) bulur. Girdi, adres aralığının hangi <strong>VM object</strong>\'e ve o object içinde hangi ofsete denk geldiğini söyler. Linux\'taki VMA (vm_area_struct) aramasının karşılığıdır.',
+        note: 'VM map entry → VM object + ofset bulundu.' },
+      { pc: 5, title: 'Sayfa yok (page fault)', active: 'vm_object', mapped: false,
+        term: ['vm_fault: VM object\'te sayfa resident değil'],
+        text: '<strong>VM object</strong> bu ofsetteki sayfanın bellekte (resident) olup olmadığını kontrol eder. Yok. Object\'in nereden içerik alacağını bilen pager\'ına başvurulması gerekir. Burada copy-on-write veya paylaşım da bu object düzeyinde çözülür.',
+        note: 'Sayfa bellekte değil → pager çağrılacak.' },
+      { pc: 6, title: 'Pager getirir (page-in)', active: 'pager', mapped: false,
+        term: ['pager: sayfa getiriliyor (page-in)'],
+        text: 'VM object\'in <strong>pager</strong>\'ı sayfayı fiziksel belleğe getirir: bir dosya eşlemesiyse <em>vnode pager</em> diskten okur; anonim/swap ise <em>default pager</em> (macOS\'ta sıkıştırılmış bellekten) çözer. Artık içerik bir fiziksel çerçevede.',
+        note: 'Fiziksel çerçeve 0x2a7f dolduruldu.' },
+      { pc: 6, title: 'pmap eşler', active: 'pmap', mapped: true,
+        term: ['pmap_enter: 0x1_0000_4000 → PFN 0x2a7f'],
+        text: '<strong>pmap</strong> katmanı, <code>pmap_enter()</code> ile fiziksel çerçeveyi sanal adrese bağlar: yani gerçek donanım sayfa tablosu girdisini (ARM64/Intel) yazar. VM\'in soyut kararı artık donanıma inmiştir. Linux\'ta bu adım doğrudan donanım sayfa tablosunda yapılır.',
+        note: 'Eşleme kuruldu; donanım artık çeviriyi biliyor.' },
+      { pc: 2, title: 'Sonraki erişim', active: 'thread', mapped: true,
+        term: ['thread: read @ 0x1_0000_4000 → hızlı (eşli)'],
+        text: 'Aynı adrese ikinci erişim artık hatasızdır: donanım sayfa tablosu (ve TLB) çeviriyi doğrudan yapar; katmanlara hiç inilmez. <strong>Karşılaştırma:</strong> Linux bu işi tek bir donanım-sayfa-tablosu + VMA modeliyle yapar; Mach araya VM object + pager soyutlamasını koyarak aynı mekanizmayla dosya eşleme, paylaşım ve CoW\'u tek çatıda toplar.',
+        note: 'Soğuk yol (fault) pahalı; sıcak yol (eşli) donanım hızında.' }
+    ],
+    render: function (s, stateEl, u) {
+      var layers = [
+        { id: 'thread', n: 'Thread erişimi', lv: '*ptr', d: 'Sanal adrese okuma/yazma' },
+        { id: 'vm_map', n: 'VM map', lv: 'vm_map_entry', d: 'Adres aralığı → VM object + ofset' },
+        { id: 'vm_object', n: 'VM object', lv: 'vm_object_t', d: 'Sayfaların mantıksal kaynağı; CoW/paylaşım' },
+        { id: 'pager', n: 'Pager', lv: 'vnode / default', d: 'Sayfayı diskten/swap\'ten getirir' },
+        { id: 'pmap', n: 'pmap', lv: 'pmap_enter()', d: 'Donanım sayfa tablosuna yazar' }
+      ];
+      var rows = [];
+      for (var i = 0; i < layers.length; i++) {
+        var L = layers[i], on = s.active === L.id;
+        rows.push('<div class="layer' + (on ? ' active' : '') + '"><div class="ln-top"><b>' + L.n + '</b><span class="lv">' + L.lv + '</span></div><span class="d">' + L.d + '</span></div>');
+        if (i < layers.length - 1) rows.push('<div class="vmarrow">↓</div>');
+      }
+      stateEl.innerHTML =
+        '<p class="lab-label">Mach VM katmanları</p>' +
+        '<div class="vmstack">' + rows.join('') + '</div>' +
+        '<div class="frame-row"><span class="lab-label" style="margin:0">Fiziksel çerçeve</span>' +
+          '<span class="frame-box' + (s.mapped ? ' mapped' : '') + '" id="frm">' + (s.mapped ? 'PFN 0x2a7f · eşli' : 'henüz yok') + '</span></div>' +
+        (s.note ? '<p class="note" style="margin-top:10px">' + u.esc(s.note) + '</p>' : '');
+      if (s.mapped) ATLAS.flash(document.getElementById('frm'), false);
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: Mach VM'in katmanlı soyutlaması",
+    html: `<p class="lead">Mach'ın virtual memory sistemi, Linux'un nispeten düz "VMA + donanım page table" modelinden daha katmanlıdır. Bellek, üç soyutlama üzerinden yönetilir: bir task'ın adres uzayını tanımlayan VM map, belleğin içeriğini temsil eden paylaşılabilir VM object ve bunların gerçek sayfa tablosuna indiği machine-dependent pmap katmanı. Bu ayrım, aynı çekirdeğin hem Intel hem Apple Silicon üzerinde çalışmasını ve belleğin esnek biçimde paylaşılmasını sağlar. Bu bölüm Apple'ın XNU kaynağına ve Kernel Programming Guide'a dayanır.</p>
+
+<h3>1. Üç katman: VM map → VM object → VM page</h3>
+<p>Bir task'ın belleği tek bir tablo değil, iç içe geçmiş soyutlamalardan oluşur. En üstte adres uzayını tarif eden harita, altında belleğin "nereden geldiğini" bilen kaynak nesnesi vardır.</p>
+<div class="deflist">
+<div><dt>VM map</dt><dd>Bir task'ın tüm adres uzayı. Sıralı vm_map_entry aralıklarından oluşur; her entry bir adres aralığını bir VM object'e ve offset'e bağlar. Linux'taki vm_area_struct (VMA) listesine karşılık gelir.</dd></div>
+<div><dt>VM object</dt><dd>Belleğin içeriğinin soyut kaynağı — bir dosya, anonim bellek ya da paylaşılan bir bölge. Birden çok map entry aynı VM object'i gösterebilir; paylaşımın temeli budur.</dd></div>
+<div><dt>VM page</dt><dd>VM object içindeki tek bir sayfa (resident page). Fiziksel bir sayfa çerçevesine karşılık gelebilir ya da henüz bellekte olmayıp pager'dan getirilmeyi bekliyor olabilir.</dd></div>
+</div>
+<div class="manpage src-apple"><div class="ref">xnu · vm_map.h</div><p class="orig">A VM map represents an address space or sub-address space that is managed by the Mach VM.</p><p>VM map, bir task'ın (veya alt adres uzayının) tüm adres uzayıdır. İçindeki her entry bir adres aralığını bir VM object'e bağlar — yani "bu adreslerde hangi bellek var?" sorusunun cevabı buradadır.</p></div>
+
+<h3>2. pmap: machine-dependent katman</h3>
+<p>XNU'nun en güçlü tasarım kararlarından biri, VM sistemini ikiye ayırmaktır. Üst kısım (VM map/object/page) tamamen machine-independent'tır — mimariden bağımsız mantık burada yaşar. Gerçek donanım sayfa tablosunu kuran ve virtual-to-physical çeviriyi yapan machine-dependent kısım ise ayrı bir katmanda, pmap'te toplanır. Yeni bir mimariye (örneğin Intel'den Apple Silicon'a) geçerken yalnızca pmap yeniden yazılır; VM sisteminin geri kalanı değişmez.</p>
+<div class="manpage src-apple"><div class="ref">apple · Kernel Programming Guide</div><p class="orig">VM objects are managed by the machine-independent VM system, with the underlying virtual to physical mappings handled by the machine-dependent pmap system.</p><p>Linux'ta sayfa tablosu doğrudan donanıma bağlıdır; Mach'ta araya pmap girer. Böylece üst katman soyut kalır, pmap ise donanımın (x86-64 veya ARM64) gerçek page table formatını bilir. Bu ayrım, Linux'ta ayrı ayrı çözülen sorunları tek bir yerde toplar.</p></div>
+
+<h3>3. Pager'lar: sayfa nereden gelir?</h3>
+<p>Bir VM object bellekte olmayan bir sayfaya erişildiğinde, o sayfanın içeriği bir <strong>pager</strong> tarafından getirilir. Pager, "bu sayfanın gerçek verisi nerede saklanıyor?" sorusunun cevabını veren nesnedir. Farklı bellek türleri farklı pager kullanır.</p>
+<div class="deflist">
+<div><dt>vnode pager</dt><dd>mmap'lenmiş bir dosyayı destekler. Page fault olunca sayfayı diskteki dosyadan okur. Çalıştırılabilir dosyalar ve mmap'li veriler bununla gelir.</dd></div>
+<div><dt>default pager</dt><dd>Anonim belleği (malloc, stack) destekler. Bellek baskısı altında bu sayfalar sıkıştırılır ya da (macOS'ta) swap'e yazılır.</dd></div>
+<div><dt>device pager</dt><dd>Bir aygıtın fiziksel belleğini (örneğin GPU/framebuffer) adres uzayına eşler; içerik donanımdadır.</dd></div>
+</div>
+<div class="manpage src-apple"><div class="ref">apple · Kernel Programming Guide</div><p class="orig">A VM object can be backed by one or more memory objects, which are, in turn, managed by a pager.</p><p>VM object'in kendisi veriyi tutmaz; onu bir memory object üzerinden bir pager besler. Bu dolaylılık sayesinde aynı mekanizma hem dosya hem anonim bellek hem aygıt belleği için çalışır — fark yalnızca hangi pager'ın bağlı olduğudur.</p></div>
+
+<h3>4. Page fault: vm_fault'un yolculuğu</h3>
+<p>Bir thread henüz bellekte olmayan (ya da izinsiz) bir adrese dokunduğunda donanım bir page fault üretir ve kernel <code>vm_fault</code>'a girer. vm_fault önce adresi VM map'te bulur (hangi entry, hangi VM object, hangi offset), sonra o VM object'in sayfa zincirinde (shadow chain) sayfayı arar. Sayfa hiçbir yerde resident değilse, bağlı pager'dan page-in yapılır: içerik getirilir, bir fiziksel çerçeveye yerleştirilir ve pmap ile sanal adrese eşlenir. Bundan sonraki erişimler doğrudan donanımdan, fault olmadan gerçekleşir.</p>
+
+<h3>5. Copy-on-write ve shadow object</h3>
+<p>fork() ve bazı paylaşım senaryolarında Mach, copy-on-write'ı <strong>shadow object</strong> ile uygular. İki task bir VM object'i paylaşırken biri yazmaya kalkarsa, kernel yazan tarafın önüne boş bir shadow object koyar: değiştirilen sayfalar shadow'da birikir, değiştirilmeyenler alttaki orijinal object'ten okunmaya devam eder. Böylece fiziksel kopya yalnızca gerçekten yazılan sayfalar için yapılır — Linux'un do_wp_page mantığının Mach karşılığıdır, ama object zinciri üzerinden ifade edilir.</p>
+
+<h3>6. 16KB page ve Linux karşılaştırması</h3>
+<p>Apple Silicon'da temel page boyutu 16KB'dir (Intel'de ve çoğu Linux sisteminde 4KB). Daha büyük sayfa, daha az page table entry ve daha iyi TLB kapsama anlamına gelir ama iç parçalanmayı (internal fragmentation) artırır. Özetle fark: Linux'ta adres uzayı VMA listesi + tek bir donanım page table ile ifade edilir; Mach'ta aynı iş VM map + paylaşılabilir VM object + ayrık pmap ile, daha katmanlı ama daha esnek biçimde yapılır. Bu esneklik, dyld shared cache gibi geniş bellek paylaşımını ve pager tabanlı mmap'i doğal kılar.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">Sayfa hatası çözümü XNU\'da <code>vm_fault()</code> ile başlar ve katman katman iner. Kaynak <code>apple-oss-distributions/xnu</code> içinde <code>osfmk/vm</code> altındadır.</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">vm_fault()</span><span class="where">osfmk/vm/vm_fault.c</span><p>Donanım sayfa hatasının çekirdek giriş noktası; hatalı adresi çözmeye başlar.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">vm_map_lookup_locked()</span><span class="where">osfmk/vm/vm_map.c</span><p>VM map\'te adresi kapsayan girdiyi ve karşılık gelen VM object + ofseti bulur.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">vm_object · memory_object (pager)</span><span class="where">osfmk/vm</span><p>Sayfa resident değilse pager\'dan page-in istenir (vnode pager / compressor).</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">pmap_enter()</span><span class="where">osfmk/arm64 · i386/pmap</span><p>Makineye özel katman; fiziksel sayfayı donanım sayfa tablosuna bağlar.</p></div></li>' +
+      '</ol>' +
+      '<p class="prose" style="margin-top:14px">Çekirdek nesneleri (task, thread, port vb.) ise bu VM yolundan ayrı, <strong>zone allocator (bölge ayırıcı)</strong> ile tahsis edilir; <code>kalloc</code> genel amaçlı küçük tahsisler için bunun üstüne kurulur. Bu zone\'lar, çekirdek heap zafiyetlerinin (UAF, taşma) yaşandığı yerdir — ileri güvenlik modüllerinin konusu.</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Kavram</th><th>Mach (XNU)</th><th>Linux karşılığı</th></tr></thead><tbody>' +
+      '<tr><td>Adres uzayı</td><td>vm_map</td><td>mm_struct</td></tr>' +
+      '<tr><td>Aralık girdisi</td><td>vm_map_entry</td><td>vm_area_struct (VMA)</td></tr>' +
+      '<tr><td>İçerik kaynağı</td><td>VM object + pager</td><td>address_space + readpage</td></tr>' +
+      '<tr><td>Donanım katmanı</td><td>pmap</td><td>donanım sayfa tablosu (pgd/pud/pmd/pte)</td></tr>' +
+      '</tbody></table></div>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Bir sürecin bölge haritasını gör (macOS)', p: 'vmmap, bir sürecin VM bölgelerini, paylaşım/CoW durumunu ve pager türünü listeler.',
+        shells: [{ label: 'terminal (macOS · temsilî)', copy: 'vmmap <pid>', pre: '<span class="c">$</span> vmmap 742\n<span class="c"># REGION TYPE  START - END  [ VSIZE ] PRT/MAX SHRMOD  REGION DETAIL</span>\n<span class="c"># __TEXT ... r-x/r-x COW  /Applications/...</span>\n<span class="c"># MALLOC_SMALL ... rw-/rwx PRV</span>' }] },
+      { h3: '2. Sistem belleği istatistiği (macOS)', p: 'vm_stat sayfa giriş/çıkışlarını, sıkıştırmayı ve page-in sayılarını gösterir.',
+        shells: [{ label: 'terminal (macOS · temsilî)', copy: 'vm_stat', pre: '<span class="c">$</span> vm_stat\n<span class="c"># Pageins / Pageouts / Compressions / Decompressions ...</span>' }] },
+      { h3: '3. Linux karşılaştırması (bu makinede gerçek)', p: 'Linux\'ta aynı fikrin karşılığı: /proc/self/maps bölgeleri, VMA listesini doğrudan gösterir.',
+        shells: [{ label: 'terminal', copy: 'cat /proc/self/maps | head', pre: '<span class="c">$</span> cat /proc/self/maps | head\n<span class="c"># 555... r-xp ... /usr/bin/cat   ← Mach\'taki __TEXT VM object\'in karşılığı</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Mach\'ta bir bellek aralığının sayfalarının "nereden geleceğini" bilen bileşen hangisidir?', opts: ['pmap', 'VM object\'in pager\'ı', 'vm_map_entry'], answer: 'VM object\'in pager\'ı',
+        ok: 'Doğru. Pager (vnode/default) sayfayı diskten veya swap/sıkıştırmadan getirir. VM object içeriğin mantıksal sahibidir, pager fiziksel kaynaktır.', no: 'İpucu: sayfa bellekte yokken onu getiren eklenti hangisi?' },
+      { q: 'pmap katmanının görevi nedir?', opts: ['Dosyadan sayfa okumak', 'Soyut VM kararını donanım sayfa tablosuna yazmak', 'Port haklarını yönetmek'], answer: 'Soyut VM kararını donanım sayfa tablosuna yazmak',
+        ok: 'Doğru. pmap makineye özel katmandır; VM\'in kararını gerçek ARM64/Intel sayfa tablosuna çevirir. Linux\'un donanım katmanının karşılığı.', no: 'İpucu: "machine-dependent" katman hangi işi yapar?' },
+      { q: 'Mach\'ın VM object + pager soyutlaması Linux\'a göre ne kazandırır?', opts: ['Daha hızlı TLB', 'Dosya eşleme, paylaşım ve CoW\'u tek mekanizmada toplar', 'Sayfa tablosunu gereksiz kılar'], answer: 'Dosya eşleme, paylaşım ve CoW\'u tek mekanizmada toplar',
+        ok: 'Doğru. Aynı VM object birden çok task\'a eşlenebildiği için paylaşımlı bellek, CoW ve bellek-eşlemeli dosya aynı çatıda çözülür.', no: 'İpucu: aynı VM object birden çok task\'a eşlenirse ne elde edilir?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · macOS Modül 13', title: 'BSD katmanı', desc: 'XNU\'nun POSIX yüzü: süreç yapıları, fork, Mach-O yükleme ve sinyaller BSD katmanında nasıl çalışır?' },
+  sources: [
+    { href: 'https://newosxbook.com/TOC2-2.html', text: 'Levin — OS Internals Cilt II', note: 'Bölüm 12: Mach VM' },
+    { href: 'https://github.com/apple-oss-distributions/xnu', text: 'XNU kaynağı', note: 'osfmk/vm' },
+    { href: 'https://developer.apple.com/documentation/kernel/mach', text: 'Apple — Mach API' },
+    { href: 'https://pages.cs.wisc.edu/~remzi/OSTEP/', text: 'OSTEP', note: 'sanal bellek temeli' }
+  ],
+  pageTitle: 'Mach Sanal Bellek'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

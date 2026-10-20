@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Dosya Sistemleri: VFS ve APFS</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: blok paylaşımı görselleştirmesi */
+.fsrow { display: grid; gap: 10px; margin-top: 4px; }
+.fsnode { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 9px 11px; }
+.fsnode b { font-family: var(--f-display); font-size: 13px; }
+.fsnode .sub { font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.fsnode.snap { border-style: dashed; }
+.fsnode.snap.active { border-color: var(--track); background: var(--track-soft); }
+.fsnode.live.active { border-color: var(--ok); background: var(--ok-soft); }
+.blocks { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.blk { width: 42px; height: 30px; border-radius: 6px; border: 1.5px solid var(--line); display: flex; align-items: center; justify-content: center; font-family: var(--f-mono); font-size: 11px; color: var(--muted); background: var(--surface); transition: all .2s; }
+.blk.shared { border-color: var(--track); color: var(--track); background: var(--track-soft); }
+.blk.fresh { border-color: var(--ok); color: var(--ok); background: var(--ok-soft); }
+.blk.old { opacity: .55; }
+.ptr-note { font-family: var(--f-mono); font-size: 11px; color: var(--muted); margin-top: 6px; }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'macos',
+  crumbs: 'macos › dosya sistemleri › modül 24',
+  eyebrow: 'Modül 24 · macOS / iOS · Depolama',
+  titleHTML: 'Dosya sistemleri: <code>VFS</code> ve APFS',
+  lede: 'XNU, farklı dosya sistemlerini tek bir arayüzün arkasında birleştiren bir VFS katmanı taşır; onun üstünde APFS, SSD çağı için tasarlanmış copy-on-write bir dosya sistemidir. Bu modülde bir snapshot tutulurken dosyaya yazıldığında blokların nasıl paylaşıldığını adım adım izleyecek ve Linux ext4 ile karşılaştıracaksın.',
+  meta: ['~18 dk', 'ön koşul: ext4 iç yapısı (Linux Modül 9)', 'bağlam: XNU bsd/vfs + APFS'],
+  intuition: {
+    paras: [
+      'Bir programın <code>open</code>, <code>read</code>, <code>write</code> çağrıları hiçbir zaman doğrudan bir dosya sistemine inmez: önce <strong>VFS</strong> (virtual file system) katmanına gelir. VFS, her açık dosyayı bir <strong>vnode</strong> ile temsil eder ve işlemleri (<strong>VOP</strong>, vnode operation) alttaki dosya sisteminin (APFS, HFS+, FAT, bellek-tabanlı) kendi uygulamasına yönlendirir. Böylece çekirdeğin geri kalanı hangi dosya sistemiyle konuştuğunu bilmek zorunda kalmaz.',
+      'APFS\'in en belirleyici kararı şudur: diskteki nesneler <strong>asla yerinde değiştirilmez</strong>. Bir metadata ya da veri değişince, değişen kopya diskte <strong>yeni bir yere</strong> yazılır ve üstteki işaretçi güncellenir — buna copy-on-write denir. Bu tek karar; ucuz <strong>snapshot</strong>\'ları, anında dosya <strong>clone</strong>\'larını ve çökme korumasını (crash protection) aynı mekanizmadan doğurur.'
+    ],
+    ideas: [
+      { b: 'VFS = ortak arayüz', span: 'vnode + VOP soyutlaması; çekirdek tek bir API ile her dosya sistemine konuşur.' },
+      { b: 'Container ≠ volume', span: 'Bir container boş alanı yönetir; içindeki volume\'lar bu havuzu paylaşır — önceden bölmeye gerek yok.' },
+      { b: 'Yerinde değiştirme yok', span: 'Değişen blok yeni yere yazılır; eski blok bir snapshot onu tutuyorsa yaşar. Snapshot ve clone bedava gibi olur.' }
+    ]
+  },
+  lab: {
+    intro: 'Bir dosya 4 blok veri tutuyor. Önce bir snapshot alıyoruz, sonra dosyanın 2. bloğunu değiştiriyoruz. APFS yerinde yazmak yerine yeni bir blok ayırır; snapshot eski bloğu görmeye devam eder. Sağda canlı dosya ile snapshot\'ın blokları paylaşması görünür.',
+    codeLabel: 'kavramsal akış', cmd: './apfs_cow',
+    foot: 'Bloklar ve XID değerleri gösterim içindir; APFS gerçek düzeni object map üzerinden çözer.',
+    code: [
+      { t: '<span class="cm">// dosya: 4 blok (B0..B3)</span>' },
+      { t: 'write(fd, buf, ...);        <span class="cm">// başlangıç içeriği</span>' },
+      { t: '' },
+      { t: '<span class="cm">// 1) snapshot al</span>' },
+      { t: 'fs_snapshot_create("snap1");' },
+      { t: '' },
+      { t: '<span class="cm">// 2) dosyanın 2. bloğunu değiştir</span>' },
+      { t: 'pwrite(fd, buf, len, 1*BS);' },
+      { t: '' },
+      { t: '<span class="cm">// 3) snapshot hâlâ eski bloğu görür</span>' },
+      { t: 'read(snap_fd, ...);' }
+    ],
+    steps: [
+      { pc: 2, phase: 'init', title: 'Başlangıç: 4 blok',
+        term: ['dosya "notes.txt": B0 B1 B2 B3 (XID 100)'],
+        text: 'Dosya dört veri bloğuna sahip: <code>B0 B1 B2 B3</code>. Henüz tek bir sürüm var; canlı dosya (live) bu dört bloğu doğrudan gösterir. Blokların her biri bir fiziksel adrestedir ve object map bu sürümü <code>XID 100</code> ile işaretler.',
+        note: 'Tek sürüm; snapshot yok.' },
+      { pc: 4, phase: 'snap', title: 'Snapshot alındı',
+        term: ['snapshot "snap1" @ XID 100', 'bellek/disk maliyeti: ~0 (yeni blok yok)'],
+        text: 'Bir <strong>snapshot</strong> aldık. APFS hiçbir bloğu kopyalamaz: snapshot sadece mevcut sürümü (XID 100) referanslar. Artık hem canlı dosya hem snapshot <strong>aynı dört bloğu paylaşıyor</strong>. İşte bu yüzden snapshot almak neredeyse bedavadır — yalnızca bir referans eklenir.',
+        note: 'Live ve snap1 aynı B0..B3 bloklarını paylaşır.' },
+      { pc: 7, phase: 'cow', title: 'Yazma → yeni blok (copy-on-write)',
+        term: ['pwrite: B1 değişecek', 'APFS: B1 yerinde DEĞİL → yeni blok B1\' ayrıldı', 'live.B1 → B1\' (XID 101)'],
+        text: 'Canlı dosyanın 2. bloğunu (<code>B1</code>) değiştiriyoruz. APFS <strong>yerinde yazmaz</strong>: yeni bir blok <code>B1\'</code> ayırır, değişikliği oraya yazar ve canlı dosyanın işaretçisini <code>B1\'</code>\'e çevirir. Eski <code>B1</code> hâlâ diskte durur çünkü snapshot ona bağlıdır.',
+        note: 'Yalnızca değişen blok kopyalandı; B0, B2, B3 hâlâ paylaşımlı.' },
+      { pc: 10, phase: 'diverge', title: 'Snapshot eskiyi görür',
+        term: ['read(snap1): B0 B1 B2 B3  ← değişmeden', 'read(live):  B0 B1\' B2 B3  ← güncel'],
+        text: 'Artık iki sürüm ayrıştı ama yalnızca <strong>tek bir blok kadar</strong> yer tuttular. Snapshot okunduğunda eski <code>B1</code> gelir (anlık görüntü değişmez — read-only); canlı dosya okunduğunda yeni <code>B1\'</code> gelir. Paylaşılan <code>B0 B2 B3</code> tek kopya olarak durur. Bu, Time Machine\'in yerel anlık görüntülerinin neden bu kadar ucuz olduğunu açıklar.',
+        note: 'Delta = 1 blok. Snapshot read-only, canlı dosya güncel.' }
+    ],
+    render: function (s, stateEl, u) {
+      // blok durumları faza göre
+      var live = [
+        { id: 'B0', cls: 'shared' }, { id: 'B1', cls: 'shared' }, { id: 'B2', cls: 'shared' }, { id: 'B3', cls: 'shared' }
+      ];
+      var snap = null;
+      if (s.phase === 'init') {
+        live = [{ id: 'B0', cls: '' }, { id: 'B1', cls: '' }, { id: 'B2', cls: '' }, { id: 'B3', cls: '' }];
+      } else if (s.phase === 'snap') {
+        snap = [{ id: 'B0', cls: 'shared' }, { id: 'B1', cls: 'shared' }, { id: 'B2', cls: 'shared' }, { id: 'B3', cls: 'shared' }];
+      } else if (s.phase === 'cow' || s.phase === 'diverge') {
+        snap = [{ id: 'B0', cls: 'shared' }, { id: 'B1', cls: 'old' }, { id: 'B2', cls: 'shared' }, { id: 'B3', cls: 'shared' }];
+        live = [{ id: 'B0', cls: 'shared' }, { id: "B1'", cls: 'fresh' }, { id: 'B2', cls: 'shared' }, { id: 'B3', cls: 'shared' }];
+      }
+      function blocks(arr) { return '<div class="blocks">' + arr.map(function (b) { return '<div class="blk ' + b.cls + '">' + u.esc(b.id) + '</div>'; }).join('') + '</div>'; }
+      var out = '<p class="lab-label">Blok paylaşımı</p><div class="fsrow">';
+      if (snap) {
+        out += '<div class="fsnode snap' + (s.phase === 'diverge' ? ' active' : '') + '"><b>snapshot "snap1"</b> <span class="sub">read-only · XID 100</span>' + blocks(snap) + '<p class="ptr-note">eski sürüme bağlı → değişmez</p></div>';
+      }
+      out += '<div class="fsnode live' + (s.phase === 'cow' || s.phase === 'diverge' ? ' active' : '') + '"><b>canlı dosya "notes.txt"</b> <span class="sub">' + (s.phase === 'init' || s.phase === 'snap' ? 'XID 100' : 'XID 101') + '</span>' + blocks(live) + '<p class="ptr-note">' + (s.phase === 'init' ? 'tek sürüm' : (s.phase === 'snap' ? 'snapshot ile blokları paylaşıyor' : 'B1 → B1\' (yeni blok); gerisi paylaşımlı')) + '</p></div>';
+      out += '</div>';
+      out += (s.note ? '<p class="note" style="margin-top:10px">' + u.esc(s.note) + '</p>' : '');
+      stateEl.innerHTML = out;
+      if (s.phase === 'cow') { var f = stateEl.querySelector('.blk.fresh'); if (f) ATLAS.flash(f, false); }
+    }
+  },
+  deepDive: {
+    heading: 'Derinlemesine: VFS katmanı ve APFS tasarımı',
+    html: `<p class="lead">macOS/iOS depolaması iki kattan oluşur. Üstte, çekirdeğin herhangi bir dosya sistemiyle tek bir arayüzden konuşmasını sağlayan VFS; altında, SSD çağı için sıfırdan tasarlanmış copy-on-write dosya sistemi APFS. APFS\'in neredeyse tüm "sihirli" özellikleri (ucuz snapshot, anında clone, çökme koruması) tek bir tasarım kararından — nesneleri asla yerinde değiştirmemekten — doğar. Bu bölüm Apple\'ın "Apple File System Reference" belgesine ve XNU\'nun bsd/vfs kaynağına dayanır.</p>
+
+<h3>1. VFS: vnode ve VOP soyutlaması</h3>
+<p>Bir süreç <code>read()</code> çağırdığında çekirdek hangi dosya sistemine ineceğini bilmek zorunda değildir. VFS, her açık dosyayı bir <strong>vnode</strong> (virtual node) ile temsil eder; dosya üzerindeki her işlem bir <strong>VOP</strong> (vnode operation) olarak ifade edilir ve alttaki dosya sisteminin kendi fonksiyonuna yönlendirilir. Aynı <code>VNOP_READ</code> çağrısı APFS\'te bir fonksiyona, bir ağ dosya sisteminde bambaşka bir fonksiyona gider.</p>
+<div class="deflist">
+<div><dt>vnode</dt><dd>Açık bir dosya/dizini temsil eden çekirdek nesnesi. Dosya sistemi bağımsızdır; Linux\'taki inode önbelleğinin + dentry\'nin işlevsel karşılığı.</dd></div>
+<div><dt>VOP / VNOP</dt><dd>vnode üzerindeki işlem (lookup, read, write, getattr…). VFS bunları alttaki dosya sisteminin uygulamasına bağlar.</dd></div>
+<div><dt>mount</dt><dd>Bir dosya sistemi örneğinin ağaç içindeki bağlanma noktası. Her mount kendi VFS operasyon tablosunu taşır.</dd></div>
+</div>
+<div class="manpage"><div class="ref">4 vnode · BSD</div><p class="orig">The vnode is the focus of all file activity in UNIX. There is a unique vnode allocated for each active file, each current directory, each mounted-on file, text file, and the root.</p><p>vnode, UNIX\'te tüm dosya etkinliğinin merkezidir: aktif her dosya, her çalışma dizini ve mount noktası için bir vnode ayrılır. Çekirdeğin geri kalanı dosyayla bu soyutlama üzerinden konuşur; alttaki dosya sistemini bilmez.</p></div>
+
+<h3>2. Container ve volume: paylaşılan boş alan</h3>
+<p>APFS\'te bir disk bölümü tek bir <strong>container</strong> taşır; container boş alanı ve çökme korumasını yönetir. İçinde bir veya daha çok <strong>volume</strong> (asıl dosya sistemi) bulunur. Klasik bölümlemenin aksine, volume\'lar alanı <strong>önceden paylaştırmaz</strong>: hepsi container\'ın ortak havuzundan çeker. macOS\'ta System, Data, Preboot, Recovery ayrı volume\'lardır ama tek bir alan havuzunu paylaşır.</p>
+<div class="manpage src-apple"><div class="ref">apple · APFS Reference</div><p class="orig">An Apple File System partition has a single container, which provides space management and crash protection. A container can contain multiple volumes, each of which contains a directory structure for files and folders.</p><p>Bir container alan yönetimi ve çökme korumasından sorumludur; içindeki her volume kendi dizin yapısını tutar. "Bu volume\'a kaç GB ayırayım?" sorusu ortadan kalkar çünkü boş alan ortaktır.</p></div>
+<div class="manpage src-apple"><div class="ref">apple · APFS Reference</div><p class="orig">All three of these volumes share free space, meaning you don't have to decide ahead of time how to divide space between them.</p><p>Aynı container\'daki volume\'lar boş alanı paylaşır — alanı önceden bölmek gerekmez. Bir volume büyüdükçe havuzdan çeker; diğerleri daralmak zorunda kalmaz.</p></div>
+
+<h3>3. Copy-on-write: yerinde değiştirme yok</h3>
+<p>APFS\'in temel taşı: diskteki nesneler asla üzerine yazılmaz. Bir nesne (metadata ya da veri) değişince, değişmiş kopya diskte yeni bir konuma yazılır ve ona işaret eden üst nesne de — yine kopyalanarak — güncellenir. Bu zincir en tepedeki süperbloka (checkpoint) kadar çıkar. Değişiklik atomik olarak "yayınlanana" kadar eski sürüm diskte bütünüyle tutarlı durur; güç kesilse bile dosya sistemi ya eski ya yeni tutarlı hâlde kalır — bozuk bir ara durum oluşmaz.</p>
+<div class="manpage src-apple"><div class="ref">apple · APFS Reference</div><p class="orig">Regardless of their storage, objects on disk are never modified in place, and modified copies of an object are always written to a new location on disk.</p><p>Nesneler diskte asla yerinde değiştirilmez; değişen kopya her zaman yeni bir konuma yazılır. ext4\'ün journaling ile sağladığı tutarlılığı APFS bu copy-on-write deseniyle, ayrı bir journal\'a ihtiyaç duymadan sağlar.</p></div>
+<div class="manpage src-apple"><div class="ref">apple · APFS Reference</div><p class="orig">Within a container, the checkpoint mechanism and the copy-on-write approach to modifying objects enable crash protection.</p><p>Çökme koruması ayrı bir mekanizma değil, copy-on-write + checkpoint\'in doğal sonucudur. Yeni sürüm tam yazılmadan "geçerli" sayılmaz; yarıda kalan yazma eski tutarlı sürümü bozmaz.</p></div>
+
+<h3>4. Snapshot ve clone: aynı mekanizmanın meyvesi</h3>
+<p>Nesneler yerinde değişmediği için, bir anı "dondurmak" bedavaya yakındır. Bir <strong>snapshot</strong>, volume\'un o anki sürümüne (transaction identifier, XID) bir referans tutar; hiçbir blok kopyalanmaz. Sonradan yazılan her blok copy-on-write ile yeni yere gittiğinden, snapshot eski blokları görmeye devam eder. Benzer biçimde bir dosya <strong>clone</strong>\'u başta hiç veri kopyalamaz; yalnızca değişen kısımlar <em>delta extent</em> olarak ayrı yazılır.</p>
+<div class="deflist">
+<div><dt>snapshot</dt><dd>Volume\'un belirli bir andaki read-only kopyası. Maliyeti ~0; yalnızca sonradan değişen bloklar yer tutar. Time Machine yerel anlık görüntüleri bunu kullanır.</dd></div>
+<div><dt>clone</dt><dd>Bir dosyanın anında kopyası; başlangıçta aynı blokları paylaşır. Değişiklikler delta extent olarak eklenir, böylece kopya yer kaplamaz.</dd></div>
+<div><dt>XID (transaction id)</dt><dd>Her değişiklik sürümünü numaralar. Object map, bir nesneyi okurken istenen XID\'ye göre doğru (en yakın küçük) sürümü çözer.</dd></div>
+</div>
+<div class="manpage src-docs"><div class="ref">docs · APFS</div><p class="orig">APFS volumes support snapshots for creating a point-in-time, read-only instance of the file system.</p><p>Snapshot, dosya sisteminin belirli bir andaki read-only örneğidir. Değişmez olması, onu yedekleme ve geri alma için güvenli bir temel yapar — snapshot sonrası yazmalar yalnızca canlı sürümü etkiler.</p></div>
+<div class="manpage src-docs"><div class="ref">docs · APFS</div><p class="orig">Changes to a cloned file are saved as delta extents, reducing storage space required for document revisions and copies.</p><p>Clone\'lanmış bir dosyadaki değişiklikler delta extent olarak saklanır; ortak bloklar tek kopya kalır. Bu yüzden büyük bir dosyayı kopyalamak anında olur ve neredeyse hiç yer tutmaz.</p></div>
+
+<h3>5. Şifreleme ve metadata bütünlüğü</h3>
+<p>APFS şifrelemeyi sonradan eklenmiş bir katman değil, doğuştan gelen bir özellik olarak taşır: volume başına ve dosya başına anahtarlar desteklenir. iOS\'ta bu, <strong>Data Protection</strong> sınıflarıyla birleşir — her dosyanın anahtarı, cihazın kilit durumuna bağlı bir anahtar hiyerarşisiyle korunur (ayrıntısı SEP modülünde). Ayrıca APFS metadata\'sı checksum\'lıdır: bozulma sessizce yayılmak yerine yakalanabilir.</p>
+<div class="manpage src-docs"><div class="ref">docs · APFS</div><p class="orig">Apple File System natively supports full disk encryption</p><p>Tam disk şifreleme APFS\'in yerleşik parçasıdır. iOS\'ta dosya başına anahtarlar Data Protection ile cihazın kilidine bağlanır; macOS\'ta FileVault aynı altyapıyı kullanır.</p></div>
+
+<h3>6. HFS+ mirası ve Linux karşılaştırması</h3>
+<p>APFS\'ten önce Apple\'ın dosya sistemi HFS+\'tı: journaling, B-tree tabanlı catalog dosyası ve fork\'lar (data/resource) ile çalışırdı. HFS+ yerinde-güncelleme yapar ve tutarlılığı ayrı bir journal ile sağlardı — kavramsal olarak ext4\'e yakındır. APFS bu modeli terk edip copy-on-write\'a geçti. Linux tarafında APFS\'in en yakın akrabası, yine copy-on-write ve snapshot temelli <strong>Btrfs</strong>\'tir; ext4 ise HFS+ gibi journaling + yerinde-güncelleme kampındadır. Özetle: ext4/HFS+ "değiştir ve journal\'a yaz", APFS/Btrfs "hiç değiştirme, yeni yaz ve işaretçiyi çevir" der.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">Bir <code>read()</code> çağrısı VFS\'ten geçerek APFS\'in VNOP uygulamasına iner. Kaynak, <code>apple-oss-distributions/xnu</code> içinde <code>bsd/vfs</code> altındadır; APFS\'in kendisi kapalı kaynaktır ama on-disk formatı "Apple File System Reference" ile belgelidir.</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">read() / write()</span><span class="where">bsd/vfs/vfs_syscalls.c</span><p>Sistem çağrısı; dosya tanımlayıcısından vnode\'a ulaşır.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">VNOP_READ / VNOP_WRITE</span><span class="where">bsd/vfs/kpi_vfs.c</span><p>VFS, işlemi alttaki dosya sisteminin operasyon tablosuna yönlendirir.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">APFS VNOP uygulaması</span><span class="where">com.apple.filesystems.apfs (kext)</span><p>Object map üzerinden doğru sürümü (XID) bulur; copy-on-write ile yeni blok ayırır.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">blok G/Ç</span><span class="where">IOMedia / depolama yığını</span><p>Fiziksel blok okuma/yazma; IOKit depolama sürücülerine iner.</p></div></li>' +
+      '</ol>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Kavram</th><th>APFS (macOS/iOS)</th><th>Linux karşılığı</th></tr></thead><tbody>' +
+      '<tr><td>Ortak arayüz</td><td>VFS · vnode · VOP</td><td>VFS · inode/dentry · file_operations</td></tr>' +
+      '<tr><td>Tutarlılık</td><td>copy-on-write + checkpoint</td><td>ext4 journaling</td></tr>' +
+      '<tr><td>Ucuz snapshot</td><td>APFS snapshot</td><td>Btrfs/LVM snapshot</td></tr>' +
+      '<tr><td>Anında kopya</td><td>clone (delta extent)</td><td>cp --reflink (Btrfs/XFS)</td></tr>' +
+      '<tr><td>Alan paylaşımı</td><td>container → volume</td><td>LVM / Btrfs subvolume</td></tr>' +
+      '</tbody></table></div>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Container ve volume yapısını gör (macOS)', p: 'diskutil apfs list, container\'ları ve içindeki volume\'ları, paylaşılan boş alanı gösterir.',
+        shells: [{ label: 'terminal (macOS · temsilî)', copy: 'diskutil apfs list', pre: '<span class="c">$</span> diskutil apfs list\n<span class="c"># APFS Container disk1 ...  Size (Capacity Ceiling): ...</span>\n<span class="c">#   Volume disk1s1  Macintosh HD        (System, read-only)</span>\n<span class="c">#   Volume disk1s2  Macintosh HD - Data (Data)</span>\n<span class="c"># → ikisi de aynı container\'ın boş alanını paylaşır</span>' }] },
+      { h3: '2. Snapshot listele (macOS)', p: 'tmutil / diskutil ile yerel anlık görüntüleri görebilirsin; her biri bir XID referansıdır.',
+        shells: [{ label: 'terminal (macOS · temsilî)', copy: 'tmutil listlocalsnapshots /', pre: '<span class="c">$</span> tmutil listlocalsnapshots /\n<span class="c"># com.apple.TimeMachine.2024-... (local snapshot)</span>' }] },
+      { h3: '3. Reflink/CoW kopya (bu makinede, Linux)', p: 'APFS clone\'un Linux karşılığı reflink\'tir. CoW destekleyen bir FS\'te kopya anında ve yer tutmadan olur.',
+        shells: [{ label: 'terminal', copy: 'cp --reflink=auto notes.txt notes_copy.txt && ls -s notes*', pre: '<span class="c">$</span> cp --reflink=auto notes.txt notes_copy.txt\n<span class="c"># CoW destekliyse: kopya blokları paylaşır (APFS clone gibi)</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'APFS\'te bir snapshot almak neden neredeyse bedavadır?', opts: ['Tüm bloklar RAM\'e kopyalanır', 'Hiçbir blok kopyalanmaz; yalnızca mevcut sürüme bir referans tutulur', 'Disk sıkıştırılır'], answer: 'Hiçbir blok kopyalanmaz; yalnızca mevcut sürüme bir referans tutulur',
+        ok: 'Doğru. Snapshot sadece bir XID referansıdır. Yer, ancak sonradan copy-on-write ile değişen bloklar kadar artar.', no: 'İpucu: nesneler yerinde değişmediğine göre, eski sürümü tutmak için ne gerekir?' },
+      { q: 'Canlı dosyanın bir bloğu, bir snapshot tutulurken değiştirilirse ne olur?', opts: ['Eski blok üzerine yazılır', 'Yeni bir blok ayrılır; eski blok snapshot için korunur', 'Snapshot otomatik silinir'], answer: 'Yeni bir blok ayrılır; eski blok snapshot için korunur',
+        ok: 'Doğru. Copy-on-write: değişiklik yeni bloğa yazılır, canlı işaretçi oraya döner, eski blok snapshot\'a bağlı kaldığı için yaşamaya devam eder.', no: 'İpucu: APFS nesneleri yerinde değiştirir mi?' },
+      { q: 'VFS katmanının görevi nedir?', opts: ['Blokları şifrelemek', 'Çekirdeğin farklı dosya sistemleriyle tek bir arayüzden (vnode/VOP) konuşmasını sağlamak', 'Boş alanı volume\'lara bölmek'], answer: 'Çekirdeğin farklı dosya sistemleriyle tek bir arayüzden (vnode/VOP) konuşmasını sağlamak',
+        ok: 'Doğru. VFS, her dosyayı bir vnode ile temsil eder ve işlemleri (VOP) alttaki dosya sistemine yönlendirir; çekirdek APFS mi HFS+ mi olduğunu bilmek zorunda kalmaz.', no: 'İpucu: aynı read() çağrısı farklı dosya sistemlerine nasıl iner?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · macOS Modül 25', title: 'EndpointSecurity', desc: 'Dosya ve süreç olaylarını gözlemleyip yetkilendiren güvenlik çerçevesi: ES istemcileri, auth vs notify olayları.', href: 'macos-endpointsecurity.html' },
+  sources: [
+    { href: 'https://developer.apple.com/support/downloads/Apple-File-System-Reference.pdf', text: 'Apple — Apple File System Reference', note: 'on-disk format, container/volume, CoW' },
+    { href: 'https://github.com/apple-oss-distributions/xnu', text: 'XNU kaynağı', note: 'bsd/vfs' },
+    { href: 'https://newosxbook.com/TOC2-2.html', text: 'Levin — OS Internals Cilt II', note: 'Bölüm 15–16: VFS ve dosya sistemleri' },
+    { href: 'https://en.wikipedia.org/wiki/Apple_File_System', text: 'APFS — genel bakış', note: 'snapshot, clone, encryption' }
+  ],
+  pageTitle: 'Dosya Sistemleri: VFS ve APFS'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

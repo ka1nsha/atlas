@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Zaman ve Zamanlayıcılar</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: saat kutuları ve timer kuyruğu */
+.clock-box { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 10px 12px; display: grid; gap: 2px; }
+.clock-box .cl { font-family: var(--f-mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.clock-box .cv { font-family: var(--f-mono); font-weight: 700; font-size: 20px; }
+.clock-box.mono { border-color: var(--track); background: var(--track-soft); } .clock-box.mono .cv { color: var(--track); }
+.clock-box.jump { border-color: var(--bad); background: var(--bad-soft); } .clock-box.jump .cv { color: var(--bad); }
+.clock-box .tag { font-size: 12px; color: var(--muted); }
+.tq { display: grid; gap: 6px; }
+.tq .slot { font-family: var(--f-mono); font-size: 12.5px; border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 7px 10px; display: flex; justify-content: space-between; gap: 8px; }
+.tq .slot.armed { border-color: var(--warn); background: var(--warn-soft); color: var(--warn); }
+.tq .slot.fired { border-color: var(--track); background: var(--track-soft); color: var(--track); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'linux',
+  crumbs: 'linux › zaman › modül 16',
+  eyebrow: 'Modül 16 · Linux · Zaman ve zamanlayıcılar',
+  titleHTML: 'Zaman: çekirdek saati nasıl tutar ve <code>timer</code> nasıl ateşler?',
+  lede: 'Bir süreç 2 saniye uyuduğunda, çekirdek bunu nasıl ölçer? Bir ağ zaman aşımı tam zamanında nasıl tetiklenir? Bu modülde iki ayrı saat kavramını (monotonic ve realtime), çekirdeğin donanım sayaçlarını zamana nasıl çevirdiğini ve bir timer\'ın kuyruğa girip ateşlemesini izleyeceksin — sonra kendi makinende saatleri okuyacaksın.',
+  meta: ['~15 dk', 'ön koşul: kesmeler, süreç kavramı', 'çekirdek: Linux 6.x'],
+  intuition: {
+    paras: [
+      'Çekirdeğin elinde serbest akan bir donanım sayacı vardır (örneğin CPU\'nun TSC\'si): sürekli tıklayan bir metronom. Çekirdek bu sayacı bir <strong>clocksource</strong> olarak soyutlar ve ondan "şu an ne zaman?" sorusunun cevabını üretir. Ayrı olarak, programlanabilir bir donanım (<strong>clockevents</strong>) "N nanosaniye sonra beni kes" diyebilir; işte zamanlayıcılar (timer) bunun üstüne kurulur.',
+      'İki tür "şu an" vardır ve karıştırmak hataya yol açar. <strong>CLOCK_MONOTONIC</strong> açılıştan beri hiç geri gitmeden ilerler — süre <em>ölçmek</em> için idealdir. <strong>CLOCK_REALTIME</strong> ise duvar saatidir (takvim zamanı); NTP veya bir leap second yüzünden ileri/geri <em>sıçrayabilir</em>. "2 saniye geçti mi?" sorusunu realtime ile ölçersen, saat o an geri alınırsa negatif süre bile ölçebilirsin.'
+    ],
+    ideas: [
+      { b: 'clocksource', span: 'Serbest akan donanım sayacının (TSC, HPET) soyutlaması; "şu an" okuması buradan gelir.' },
+      { b: 'clockevents', span: 'Programlanabilir kesme üreten donanım; "şu kadar sonra kes" der, timer\'lar bunu kullanır.' },
+      { b: 'monotonic ≠ realtime', span: 'Süre ölçmek için monotonic; takvim/zaman damgası için realtime. İkisi farklı amaçlar içindir.' }
+    ]
+  },
+  lab: {
+    intro: 'Soldaki program iki saati de okur, 2 saniye uyur ve geçen süreyi ölçer. Sağda iki saatin nasıl ilerlediğini izle: bir noktada yönetici duvar saatini geri alır (NTP/leap second) ve neden süre ölçümünde monotonic\'e güvenmen gerektiğini gör.',
+    codeLabel: 'C — clock_gettime + nanosleep', cmd: './clocks',
+    foot: 'Değerler gösterim amaçlı sadeleştirildi. Aşağıdaki "Kendin dene" ile kendi makinendeki clocksource ve saatleri okuyabilirsin. ← → ile de ilerleyebilirsin.',
+    code: [
+      { t: '<span class="t">struct timespec</span> mono, real, t0;' },
+      { t: '' },
+      { t: '<span class="cm">// süre ölçümü için: monotonic başlangıç</span>' },
+      { t: '<span class="f">clock_gettime</span>(CLOCK_MONOTONIC, &amp;t0);' },
+      { t: '<span class="f">clock_gettime</span>(CLOCK_REALTIME,  &amp;real);' },
+      { t: '' },
+      { t: '<span class="cm">// en az 2 sn uyu</span>' },
+      { t: '<span class="f">nanosleep</span>(&amp;(<span class="t">struct timespec</span>){.tv_sec=2}, <span class="k">NULL</span>);' },
+      { t: '' },
+      { t: '<span class="f">clock_gettime</span>(CLOCK_MONOTONIC, &amp;mono);' },
+      { t: 'elapsed = mono - t0;   <span class="cm">// güvenilir süre</span>' },
+      { t: '<span class="f">clock_gettime</span>(CLOCK_REALTIME,  &amp;real); <span class="cm">// sıçramış olabilir!</span>' }
+    ],
+    steps: [
+      { pc: [0], title: 'İki saat, iki amaç', mono: 1000.000, real: '12:00:00.000', armed: false, fired: false, jump: false, note: 'Program başlıyor. İki ayrı saat var: biri açılıştan beri sayan monotonic, biri takvim zamanını gösteren realtime.',
+        term: [] },
+      { pc: [3, 4], title: 'Başlangıcı oku', mono: 1000.000, real: '12:00:00.000', armed: false, fired: false, jump: false, note: 'Her iki saat de okunur. Süre ölçümü için t0 olarak monotonic değeri saklanır — çünkü monotonic geri gitmez.',
+        term: ['t0 (mono) = 1000.000', 'real     = 12:00:00.000'] },
+      { pc: [7], title: 'nanosleep: çekirdek bir timer kurar', mono: 1000.000, real: '12:00:00.000', armed: true, fired: false, jump: false, note: 'nanosleep süreci uykuya yatırır. Çekirdek "2 sn sonra uyandır" diyen bir hrtimer\'ı kuyruğa koyar (armed) ve clockevents donanımını buna göre programlar.',
+        term: ['uyku: 2.000 sn istendi', 'hrtimer kuruldu → kuyruğa girdi'] },
+      { pc: [7], title: 'Süre geçer, timer ateşler', mono: 1002.000, real: '12:00:02.000', armed: false, fired: true, jump: false, note: 'clockevents kesmesi gelir; çekirdek süresi dolan timer\'ı kuyruktan çıkarıp ateşler (fired) ve süreci uyandırır. Her iki saat de ~2 sn ilerlemiştir.',
+        term: ['clockevents kesmesi', 'hrtimer ateşledi → süreç uyandı'] },
+      { pc: [9, 10], title: 'Monotonic ile ölç: doğru', mono: 1002.000, real: '12:00:02.000', armed: false, fired: true, jump: false, note: 'elapsed = mono - t0 = 2.000 sn. Monotonic hiç geri gitmediği için bu ölçüm her koşulda güvenilirdir.',
+        term: ['elapsed (mono) = 2.000 sn  ✓'] },
+      { pc: [11], title: 'Realtime geri sıçrarsa?', mono: 1002.000, real: '11:59:59.500', armed: false, fired: true, jump: true, note: 'Tam bu sırada yönetici/NTP duvar saatini 2.5 sn geri aldı. realtime ile ölçseydin elapsed = -0.5 sn çıkardı! İşte bu yüzden süre ölçümü daima monotonic ile yapılır.',
+        term: ['real geri alındı: 12:00:02 → 11:59:59.5', 'realtime ile ölçüm: -0.500 sn  ✗'] }
+    ],
+    render: function (s, stateEl, u) {
+      var slotCls = s.fired ? 'fired' : (s.armed ? 'armed' : '');
+      var slotTxt = s.fired ? 'hrtimer: ATEŞLEDİ' : (s.armed ? 'hrtimer: kuruldu (bekliyor)' : 'hrtimer: kuyruk boş');
+      var slotRight = s.fired ? '→ süreç uyandı' : (s.armed ? '2.000 sn sonra' : '—');
+      stateEl.innerHTML =
+        '<p class="lab-label">Saatler</p>' +
+        '<div class="clock-box mono"><span class="cl">CLOCK_MONOTONIC</span><span class="cv">' + s.mono.toFixed(3) + '</span><span class="tag">açılıştan beri, geri gitmez — süre ölçümü için</span></div>' +
+        '<div class="clock-box ' + (s.jump ? 'jump' : '') + '" style="margin-top:8px"><span class="cl">CLOCK_REALTIME</span><span class="cv">' + u.esc(s.real) + '</span><span class="tag">' + (s.jump ? 'NTP/leap second ile GERİ sıçradı!' : 'duvar saati — sıçrayabilir') + '</span></div>' +
+        '<p class="lab-label" style="margin-top:14px">Timer kuyruğu (hrtimer)</p>' +
+        '<div class="tq"><div class="slot ' + slotCls + '"><span>' + slotTxt + '</span><span>' + slotRight + '</span></div></div>' +
+        '<div class="box" style="margin-top:12px"><span class="mono">' + u.esc(s.note) + '</span></div>';
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: sayaçtan saate, tick\'ten timer\'a",
+    html: `<p class="lead">Çekirdeğin zaman altyapısı iki soruya cevap verir: "şu an ne zaman?" (timekeeping) ve "N sonra beni uyandır" (timer). İlki clocksource\'tan okunur, ikincisi clockevents donanımıyla kurulur. Araya jiffies, tickless çekirdek ve vDSO hızlandırması girer. Bu bölüm bu katmanları ayrıntılandırır.</p>
+
+<h3>1. jiffies ve HZ: en kaba zaman birimi</h3>
+<p>Tarihsel olarak çekirdek zamanı <strong>jiffies</strong> ile sayar: periyodik bir timer interrupt (tick) her geldiğinde artan global bir sayaç. Tick frekansı derleme zamanı sabiti <strong>HZ</strong> ile belirlenir (tipik olarak 100, 250 veya 1000) — yani <code>HZ=1000</code> ise her jiffy 1 ms\'tir. jiffies kaba ama ucuzdur; zaman aşımı gibi milisaniye hassasiyeti yeten işler için hâlâ kullanılır.</p>
+<div class="manpage"><div class="ref">docs · linux-insides · jiffies</div><p class="orig">[jiffies] holds the number of ticks that have occurred since the system booted.</p><p>jiffies açılıştan beri geçen tick sayısıdır. Gerçek saniyeye çevirmek için HZ\'e bölersin: <code>saniye = jiffies / HZ</code>. Düşük çözünürlüğü (bir tick\'ten ince ölçemez) yüzünden modern kod hassas iş için hrtimer\'a geçmiştir.</p></div>
+
+<h3>2. clocksource: "şu an"ın okunduğu yer</h3>
+<p>Hassas ve geri gitmeyen zaman jiffies\'ten değil, bir <strong>clocksource</strong>\'tan gelir. Clocksource, serbest akan bir donanım sayacının çekirdek soyutlamasıdır; çekirdek birden çok aday arasından (TSC, HPET, ACPI PM timer...) en iyi çözünürlüklü ve kararlı olanı seçer. x86\'da genellikle <strong>TSC</strong> (Time Stamp Counter) kazanır çünkü en hızlı okunandır.</p>
+<div class="manpage"><div class="ref">docs · linux-insides · clocksource</div><p class="orig">[A clocksource is a] hardware abstraction for a free-running counter.</p><p>Clocksource yalnızca "sayaç şu an kaçta?" sorusunu cevaplar — kesme üretmez. Çekirdek bu ham sayacı bir çarpan/kaydırma (mult/shift) ile nanosaniyeye çevirir. Hangi clocksource\'un seçildiğini <code>/sys/devices/system/clocksource/.../current_clocksource</code>\'tan görebilirsin.</p></div>
+
+<h3>3. İki zaman tabanı: MONOTONIC ve REALTIME</h3>
+<p>Aynı clocksource\'tan çekirdek birkaç mantıksal saat türetir. İkisi en kritiktir ve farkları süre ölçümünde hayatidir:</p>
+<div class="deflist">
+<div><dt>CLOCK_MONOTONIC</dt><dd>Açılıştan beri tek yönlü ilerler; ayarlanamaz, geri gitmez. İki olay arası <strong>süreyi</strong> ölçmek için tek doğru seçenektir.</dd></div>
+<div><dt>CLOCK_REALTIME</dt><dd>Takvim/duvar saati. NTP düzeltmesi veya leap second ile ileri/geri <strong>sıçrayabilir</strong>. Zaman damgası, dosya tarihi, "saat kaç?" için uygundur; süre ölçümü için değil.</dd></div>
+<div><dt>CLOCK_BOOTTIME</dt><dd>Monotonic gibidir ama suspend (uyku) süresini de sayar — cihaz uyurken geçen süreyi de kapsaması gerektiğinde kullanılır.</dd></div>
+</div>
+<p>man sayfası bu farkı tam olarak şöyle tanımlar:</p>
+<div class="manpage"><div class="ref">2 clock_gettime · DESCRIPTION</div><p class="orig">CLOCK_REALTIME: A settable system-wide clock that measures real (i.e., wall-clock) time.</p><p>"Settable" (ayarlanabilir) kelimesi kritik: bu saat dışarıdan değiştirilebildiği için ölçüm sırasında sıçrayabilir.</p></div>
+<div class="manpage"><div class="ref">2 clock_gettime · DESCRIPTION</div><p class="orig">CLOCK_MONOTONIC: A nonsettable system-wide clock that represents monotonic time since—as described by POSIX—"some unspecified point in the past".</p><p>"Nonsettable" ve "monotonic": ayarlanamaz ve geri gitmez. Başlangıç noktasının "belirsiz bir an" olması önemli değildir çünkü sen yalnızca <em>fark</em>ı (iki okuma arası) kullanırsın.</p></div>
+<p>Çekirdek içi kod için önerilen erişimci <code>ktime_get()</code>\'tir (monotonic):</p>
+<div class="manpage"><div class="ref">docs · core-api · timekeeping</div><p class="orig">Starts at system boot time but stops during suspend.</p><p>ktime_get() güvenilir zaman damgası ve kısa aralık ölçümü için önerilir. Çekirdek dokümanı realtime tabanlı erişimciler için şu uyarıyı yapar: leap second güncellemesi yüzünden "geriye sıçrayabilir", bu yüzden iç ölçümlerde kaçınılmalıdır.</p></div>
+
+<h3>4. clockevents, timer wheel ve hrtimer</h3>
+<p>Okuma tarafı clocksource ise, <strong>uyandırma</strong> tarafı <strong>clockevents</strong>\'tir: "N nanosaniye sonra bir kesme üret" diyebilen programlanabilir donanım. Timer\'lar bunun üstüne iki farklı yapıyla kurulur:</p>
+<div class="deflist">
+<div><dt>timer wheel (timer_list)</dt><dd>Klasik, düşük çözünürlüklü (jiffy tabanlı) timer\'lar. Zaman aşımları gibi "yaklaşık" hassasiyet yeten işler için; O(1) ekleme sağlayan "tekerlek" veri yapısında tutulur.</dd></div>
+<div><dt>hrtimer</dt><dd>Yüksek çözünürlüklü (high-resolution) timer\'lar. Nanosaniye hassasiyeti; bir <strong>red-black tree</strong>\'de süresine göre sıralı tutulur, en yakın süre dolanı clockevents donanımına programlanır. nanosleep, POSIX timer\'lar ve gerçek zamanlı iş bunu kullanır.</dd></div>
+</div>
+<p>Lab\'daki <code>nanosleep</code> işte bir hrtimer kurar: red-black tree\'ye bir düğüm girer, en yakın süre clockevents\'e yüklenir, kesme gelince timer ateşler ve süreç uyandırılır.</p>
+
+<h3>5. Tickless çekirdek (NO_HZ) ve vDSO</h3>
+<p>Eskiden çekirdek HZ frekansında <em>sürekli</em> tick kesmesi alırdı — CPU boştayken bile. Bu güç israfıdır. <strong>Dyntick / NO_HZ</strong> (tickless) bunu düzeltir: CPU boştaysa veya tek bir görev çalışıyorsa periyodik tick durdurulur, bir sonraki gerçek iş (en yakın timer) için tek bir clockevents kesmesi programlanır. <strong>Tick broadcast</strong>, derin uyku modunda kendi timer\'ı duran CPU\'ları başka bir CPU\'nun uyandırması için kullanılır.</p>
+<p>Diğer yönde bir hız sorunu daha vardır: <code>clock_gettime</code> çok sık çağrılır ve her seferinde tam bir syscall (user→kernel geçişi) pahalıdır. Çözüm <strong>vDSO</strong>\'dur: çekirdek, saat verisini kullanıcı alanına eşlenmiş bir sayfaya yazar; <code>clock_gettime</code> bu sayfadan okuyarak çoğu zaman <em>hiç</em> çekirdeğe girmeden cevap verir. Bu yüzden milyonlarca <code>clock_gettime</code> çağrısı bile ucuzdur.</p>
+
+<h3>6. Uykunun hangi saatle ölçüldüğü</h3>
+<p>nanosleep\'in kendisi de bu ayrımın içindedir. man sayfası davranışı net verir:</p>
+<div class="manpage"><div class="ref">2 nanosleep · DESCRIPTION</div><p class="orig">nanosleep() suspends the execution of the calling thread until either at least the time specified in *duration has elapsed…</p><p>"at least" (en az): nanosleep istenen süreden <em>erken</em> dönmez ama zamanlayıcı gecikmesi yüzünden biraz geç dönebilir. Linux bu süreyi CLOCK_MONOTONIC ile ölçer — yani duvar saati ayarlansa bile uyku bundan etkilenmez. Hassas aralıklı uyku için <code>clock_nanosleep</code> ile saat ve mutlak zaman da seçilebilir.</p></div>`
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Hangi clocksource seçilmiş?', p: 'Çekirdeğin "şu an"ı hangi donanım sayacından okuduğunu ve hangi adayların mevcut olduğunu gör.',
+        shells: [{ label: 'terminal', copy: 'cat /sys/devices/system/clocksource/clocksource0/current_clocksource; cat /sys/devices/system/clocksource/clocksource0/available_clocksource', pre: '<span class="c">$</span> cat .../current_clocksource\ntsc\n<span class="c">$</span> cat .../available_clocksource\ntsc hpet acpi_pm\n<span class="c"># çekirdek en hızlı/kararlı olanı (tsc) seçmiş</span>' }] },
+      { h3: '2. İki saati karşılaştır', p: 'Aynı anda monotonic ve realtime oku. Monotonic açılıştan beri geçen saniyedir; realtime takvim zamanıdır.',
+        shells: [{ label: 'terminal', copy: 'cat /proc/uptime; date +%s.%N', pre: '<span class="c">$</span> cat /proc/uptime\n48213.75 95622.10   <span class="c"># 1. alan ≈ CLOCK_MONOTONIC (sn)</span>\n<span class="c">$</span> date +%s.%N\n1730000000.123456789   <span class="c"># CLOCK_REALTIME (epoch sn)</span>' }] },
+      { h3: '3. Timer ve uyku çözünürlüğünü ölç', p: 'clock_gettime çözünürlüğünü ve kısa bir uykunun gerçekte ne kadar sürdüğünü gör (çizelgeleme gecikmesi yüzünden hep biraz fazladır).',
+        shells: [{ label: 'terminal', copy: 'for i in 1 2 3; do \\\n  /usr/bin/time -v sleep 0.001 2>&1 | grep Elapsed; \\\ndone', pre: '<span class="c">$</span> clock_getres(CLOCK_MONOTONIC) ≈ 1 ns\n<span class="c">$</span> sleep 0.001  →  gerçekte ~0.001–0.002 sn\n<span class="c"># istenen \'en az\'dır; timer gecikmesi eklenir</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'İki olay arasındaki <em>süreyi</em> ölçmek için hangi saat kullanılmalı?', opts: ['CLOCK_REALTIME', 'CLOCK_MONOTONIC', 'Fark etmez'], answer: 'CLOCK_MONOTONIC',
+        ok: 'Doğru. Monotonic geri gitmez ve ayarlanamaz; realtime ise NTP/leap second ile sıçrayabilir ve negatif süre bile ölçtürebilir.', no: 'İpucu: hangisi "nonsettable" ve geri gitmez?' },
+      { q: '<code>clocksource</code> ile <code>clockevents</code> arasındaki temel fark nedir?', opts: ['clocksource "şu an"ı okur; clockevents "N sonra kes" diyen programlanabilir donanımdır', 'İkisi aynı şeyin iki adıdır', 'clocksource yalnızca jiffies içindir'], answer: 'clocksource "şu an"ı okur; clockevents "N sonra kes" diyen programlanabilir donanımdır',
+        ok: 'Doğru. clocksource okuma (serbest akan sayaç), clockevents ise uyandırma (programlanabilir kesme) tarafıdır. Timer\'lar clockevents üstüne kurulur.', no: 'İpucu: biri okuma, diğeri kesme üretme içindir.' },
+      { q: 'Tickless çekirdek (NO_HZ) ne sağlar?', opts: ['Saati daha hassas yapar', 'CPU boştayken gereksiz periyodik tick kesmelerini durdurur (güç tasarrufu)', 'jiffies\'i devre dışı bırakır'], answer: 'CPU boştayken gereksiz periyodik tick kesmelerini durdurur (güç tasarrufu)',
+        ok: 'Doğru. Dyntick/NO_HZ, boşta veya tek görevli CPU\'da sabit tick yerine yalnızca bir sonraki gerçek iş için tek kesme programlar; bu güç tasarrufu sağlar.', no: 'İpucu: sürekli tick kesmesi CPU boşken ne israf eder?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Linux', title: 'Zamanlayıcı (EEVDF)', desc: 'Timer\'lar zamanı ölçtü; peki CPU\'yu hangi sürece, ne kadar süreyle çekirdek nasıl dağıtır?', href: 'linux-scheduler.html' },
+  sources: [
+    { href: 'https://man7.org/linux/man-pages/man2/clock_gettime.2.html', text: 'man 2 clock_gettime', note: 'CLOCK_* tanımları' },
+    { href: 'https://man7.org/linux/man-pages/man2/nanosleep.2.html', text: 'man 2 nanosleep', note: '"at least" davranışı' },
+    { href: 'https://docs.kernel.org/core-api/timekeeping.html', text: 'kernel.org — timekeeping', note: 'ktime_get erişimcileri' },
+    { href: 'https://0xax.gitbooks.io/linux-insides/content/Timers/', text: 'linux-insides — Timers', note: 'jiffies, clocksource, hrtimer' },
+    { href: 'https://elixir.bootlin.com/linux/latest/source/kernel/time/hrtimer.c', text: 'kernel/time/hrtimer.c', note: 'hrtimer, Elixir' }
+  ],
+  pageTitle: 'Zaman ve Zamanlayıcılar'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

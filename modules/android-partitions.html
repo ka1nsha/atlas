@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Android Bölümleri</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+.slotbar { display: flex; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
+.slot { flex: 1; min-width: 120px; border: 1.5px solid var(--line); border-radius: var(--r); padding: 8px 10px; background: var(--surface); display: grid; gap: 2px; }
+.slot b { font-family: var(--f-mono); font-size: 13px; }
+.slot span { font-size: 12px; color: var(--muted); }
+.slot.active { border-color: var(--track); background: var(--track-soft); }
+.slot.active b { color: var(--track); }
+.slot.writing { border-color: var(--warn); background: var(--warn-soft); border-style: dashed; }
+.slot.writing b { color: var(--warn); }
+.slot.bad { border-color: var(--bad); background: var(--bad-soft); }
+.slot.bad b { color: var(--bad); text-decoration: line-through; }
+.slot .pill { font-family: var(--f-mono); font-size: 10px; font-weight: 700; justify-self: start; padding: 1px 6px; border-radius: 999px; background: var(--sunk); color: var(--muted); }
+.slot.active .pill { background: var(--track); color: #fff; }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'android',
+  crumbs: 'android › bölümler ve dosya sistemleri › modül 2',
+  eyebrow: 'Modül 2 · Android · Depolama',
+  titleHTML: 'Android diski nasıl böler ve güvenle günceller?',
+  lede: 'Bir Android cihazının deposu tek bir dosya sistemi değil, görevlere ayrılmış bölümlerdir (partition). Bu modülde bölüm düzenini, iki slotlu (A/B) kesintisiz güncellemeyi ve dinamik bölümleri adım adım göreceksin.',
+  meta: ['~12 dk', 'ön koşul: dosya sistemi kavramı', 'bağlam: AOSP'],
+  intuition: {
+    paras: [
+      'Masaüstü Linux\'ta genelde tek bir kök dosya sistemi (root filesystem) vardır. Android ise depoyu görevlerine göre ayrı bölümlere ayırır: çekirdek <code>boot</code>\'ta, salt okunur sistem <code>system</code>\'da, üretici kodu <code>vendor</code>\'da, kullanıcı verisi <code>data</code>\'da. Bu ayrım hem güvenlik (sistem bölümü salt okunurdur, değiştirilemez) hem de güncelleme kolaylığı sağlar.',
+      'Modern Android\'in en akıllı tasarımı A/B (seamless) güncellemelerdir: her bölümden <strong>iki</strong> kopya (slot A ve slot B) tutulur. Güncelleme sen cihazı kullanırken pasif slota yazılır; yeniden başlatınca sistem diğer slota geçer. Yeni sürüm açılmazsa otomatik olarak eski, çalışan slota geri döner — bir güncelleme cihazı asla tuğlalaştırmaz (brick).'
+    ],
+    ideas: [
+      { b: 'Göreve göre bölüm', span: 'boot, system, vendor, data, recovery: her biri ayrı bir bölüm, ayrı yetkilerle (salt okunur / okunur-yazılır).' },
+      { b: 'İki slot (A/B)', span: 'Her bölümün iki kopyası. Biri aktif çalışırken diğerine güncelleme yazılır; yeniden başlatmada takas.' },
+      { b: 'Dinamik bölümler', span: 'system/vendor artık tek bir <code>super</code> bölümü içinde yeniden boyutlandırılabilir mantıksal bölümlerdir; APEX ise çekirdek bileşenleri ayrı günceller.' }
+    ]
+  },
+  lab: {
+    intro: 'Önce bölüm düzenini gör, sonra bir OTA güncellemenin A/B slotlar arasında nasıl kesintisiz ve geri alınabilir (rollback) biçimde uygulandığını izle. Sağda bölüm haritası ve aktif slot göstergesi.',
+    codeLabel: 'depolama düzeni', cmd: 'OTA güncelleme (A/B)',
+    foot: 'Bölüm adları ve slot durumları temsilîdir; cihaza göre değişir.',
+    code: [
+      { t: '<span class="cm">// Tipik A/B bölüm düzeni</span>' },
+      { t: 'boot_a    boot_b       <span class="cm">// çekirdek + ramdisk</span>' },
+      { t: 'system_a  system_b     <span class="cm">// salt okunur sistem</span>' },
+      { t: 'vendor_a  vendor_b     <span class="cm">// üretici kodu</span>' },
+      { t: 'super                  <span class="cm">// dinamik: system/vendor/product</span>' },
+      { t: 'userdata               <span class="cm">// tek, paylaşılan (slotsuz)</span>' },
+      { t: 'metadata               <span class="cm">// şifreleme anahtarları vb.</span>' }
+    ],
+    steps: [
+      { pc: 1, title: 'Bölüm düzeni', slotA: 'active', slotB: 'idle', term: ['slot_suffix = _a'],
+        text: 'Depo göreve göre bölünmüştür. <code>boot</code> çekirdeği ve ramdisk\'i, <code>system</code> salt okunur (read-only) Android\'i, <code>vendor</code> üretici kodunu, <code>userdata</code> ise senin verini tutar. Şu an <strong>slot A</strong> aktif: sistem oradan açılıyor.',
+        parts: [
+          { n: 'boot', c: 'çekirdek + ramdisk', w: false },
+          { n: 'system', c: 'Android çerçevesi (salt okunur)', w: false },
+          { n: 'vendor', c: 'üretici / HAL kodu', w: false },
+          { n: 'userdata', c: 'kullanıcı verisi', w: true }
+        ] },
+      { pc: 2, title: 'İki slot (A/B)', slotA: 'active', slotB: 'idle', term: ['slot_suffix = _a', 'A: açılışlar başarılı'],
+        text: 'Kritik bölümlerin (boot, system, vendor) <strong>iki</strong> kopyası vardır: _a ve _b. Yalnızca biri aktiftir; diğeri boşta bekler. <code>userdata</code> ve <code>metadata</code> tektir, iki slot tarafından paylaşılır — bu yüzden güncelleme verini silmez.',
+        parts: [
+          { n: 'boot_a / boot_b', c: 'çift kopya', w: false },
+          { n: 'system_a / system_b', c: 'çift kopya', w: false },
+          { n: 'vendor_a / vendor_b', c: 'çift kopya', w: false },
+          { n: 'userdata', c: 'tek, paylaşılan', w: true }
+        ] },
+      { pc: 2, title: 'OTA pasif slota yazılır', slotA: 'active', slotB: 'writing', term: ['update_engine: slot _b yazılıyor…', 'sen cihazı kullanmaya devam ediyorsun'],
+        text: 'Bir OTA (over-the-air) güncelleme gelir. <code>update_engine</code> yeni sürümü <strong>pasif slot B</strong>\'ye arka planda yazar. Sen bu sırada cihazı normal kullanırsın; aktif slot A hiç durmaz. "Seamless" (kesintisiz) adı buradan gelir.',
+        parts: [
+          { n: 'boot_b', c: 'yeni sürüm yazılıyor', w: true, warn: true },
+          { n: 'system_b', c: 'yeni sürüm yazılıyor', w: true, warn: true },
+          { n: 'vendor_b', c: 'yeni sürüm yazılıyor', w: true, warn: true },
+          { n: 'userdata', c: 'dokunulmadı', w: true }
+        ] },
+      { pc: 0, title: 'Yeniden başlat: slot takası', slotA: 'idle', slotB: 'active', term: ['bootloader: aktif slot = _b', 'yeni sürümle açılıyor'],
+        text: 'Yeniden başlatmada bootloader aktif slotu B yapar. Cihaz yeni sürümle açılır — indirme zaten bittiği için yeniden başlatma hızlıdır. Slot A dokunulmadan, bir önceki çalışan sürüm olarak durur.',
+        parts: [
+          { n: 'boot_b', c: 'artık aktif', w: false, good: true },
+          { n: 'system_b', c: 'yeni sürüm çalışıyor', w: false, good: true },
+          { n: 'vendor_b', c: 'yeni sürüm çalışıyor', w: false, good: true },
+          { n: 'userdata', c: 'aynı veri', w: true }
+        ] },
+      { pc: 0, title: 'Başarısızlıkta geri dönüş (rollback)', slotA: 'active', slotB: 'bad', term: ['slot _b: açılış doğrulaması başarısız', 'bootloader: _a\'ya geri dönüldü'],
+        text: 'Ya yeni sürüm açılmazsa? Bootloader her slota bir deneme sayacı ve "başarılı" bayrağı tutar. Slot B birkaç denemede doğrulanmış açılış (verified boot) yapamazsa, bootloader otomatik olarak sağlam <strong>slot A</strong>\'ya döner. Bir güncelleme cihazı asla kullanılamaz (brick) hale getirmez.',
+        parts: [
+          { n: 'boot_a', c: 'güvenli, geri dönüldü', w: false, good: true },
+          { n: 'boot_b', c: 'açılamadı, işaretlendi', w: false, bad: true },
+          { n: 'userdata', c: 'korundu', w: true }
+        ] },
+      { pc: 4, title: 'Dinamik bölümler ve APEX', slotA: 'active', slotB: 'idle', term: ['lpdump: super içinde system, vendor, product', 'APEX: com.android.* modülleri'],
+        text: 'Yeni cihazlarda system/vendor artık sabit boyutlu değil: hepsi tek bir <code>super</code> bölümü içinde yeniden boyutlandırılabilir <strong>dinamik bölümlerdir</strong> (dynamic partitions). Böylece üretici boyutları önceden sabitlemek zorunda kalmaz. <strong>APEX</strong> ise ART, zaman dilimi verisi gibi çekirdek bileşenleri tam OTA beklemeden ayrı ayrı güncellemeyi sağlar.',
+        parts: [
+          { n: 'super', c: 'system + vendor + product (dinamik)', w: false },
+          { n: 'APEX modülleri', c: 'com.android.art, tzdata…', w: false },
+          { n: 'userdata', c: 'kullanıcı verisi', w: true }
+        ] }
+    ],
+    render: function (s, stateEl, u) {
+      var parts = s.parts.map(function (p) {
+        var cls = 'box' + (p.warn ? ' warn' : p.good ? ' good' : '');
+        var tag = p.w ? '<span class="mono" style="color:var(--ok)">okunur-yazılır (rw)</span>' : '<span class="mono" style="color:var(--muted)">salt okunur (ro)</span>';
+        if (p.bad) tag = '<span class="mono" style="color:var(--bad)">reddedildi</span>';
+        return '<div class="' + cls + '" style="grid-template-columns:1fr;gap:3px"><b>' + u.esc(p.n) + '</b><span>' + u.esc(p.c) + '</span>' + tag + '</div>';
+      }).join('');
+      function slot(which, state) {
+        var map = { active: ['slot active', 'AKTİF'], idle: ['slot', 'boşta'], writing: ['slot writing', 'YAZILIYOR'], bad: ['slot bad', 'BAŞARISIZ'] };
+        var m = map[state];
+        return '<div class="' + m[0] + '"><b>Slot ' + which + '</b><span class="pill">' + m[1] + '</span></div>';
+      }
+      stateEl.innerHTML =
+        '<p class="lab-label">Aktif slot</p>' +
+        '<div class="slotbar">' + slot('A', s.slotA) + slot('B', s.slotB) + '</div>' +
+        '<p class="lab-label" style="margin-top:14px">Bölüm haritası</p>' +
+        '<div class="boxgrid">' + parts + '</div>';
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: bölümler, slot'lar ve modüler güncelleme",
+    html: `<p class="lead">Bir Android cihazının depolaması, her biri belirli bir işe sahip partition'lara bölünür. Ama modern Android, bu statik düzeni A/B slot'lar, dynamic partitions ve APEX ile esnek, güvenli güncellenebilir bir sisteme dönüştürdü. Bu bölüm, bir OTA'nın cihazı neden bozmadan güncelleyebildiğini anlatır.</p>
+
+<h3>1. Klasik partition düzeni</h3>
+<p>Depolama, her biri ham blok aralığı olan partition'lara ayrılır. Framework bunları isimle görür (by-name). Temel partition'lar ve işleri:</p>
+<div class="deflist">
+<div><dt>boot</dt><dd>Kernel + ramdisk (generic ramdisk ve vendor_boot modern cihazlarda ayrışır). Cihazın ilk çalışan yazılımının taşıyıcısı.</dd></div>
+<div><dt>system / vendor</dt><dd>Android OS ve vendor (SoC/OEM) katmanı. Read-only mount edilir; çalışırken değiştirilemez, bu bütünlüğün temelidir.</dd></div>
+<div><dt>userdata</dt><dd>/data — kullanıcının her şeyi. Tek read-write partition; factory reset bunu siler. File-based encryption burada uygulanır.</dd></div>
+<div><dt>vbmeta</dt><dd>Verified Boot metadata: diğer partition'ların imza/hash bilgisi. Güven zincirinin kökü buraya bağlanır.</dd></div>
+<div><dt>metadata / misc</dt><dd>Şifreleme anahtar sarmalayıcıları, bootloader mesaj alanı (bootloader ile OS arasında küçük durum).</dd></div>
+</div>
+
+<h3>2. A/B (seamless) updates</h3>
+<p>Eski cihazlar güncellemeyi ayrı bir recovery partition'da, cihaz kapalıyken uygulardı — uzun ve riskliydi. A/B bunu değiştirir: system/vendor/boot gibi kritik partition'lardan iki kopya (slot A ve slot B) tutulur. Biri aktif çalışırken, update_engine güncellemeyi pasif slot'a arka planda yazar. Yeniden başlatmada bootloader aktif slot'u değiştirir; yeni sistem açılmazsa eskisine geri döner (rollback). Kullanıcı neredeyse hiç beklemez.</p>
+<div class="manpage src-aosp"><div class="ref">A/B · slots</div><p class="orig">A/B system updates use two sets of partitions referred to as slots (normally slot A and slot B).</p><p>Kritik partition'ların iki kopyası (slot) tutulur; sistem her zaman "current slot"tan çalışır, güncelleme diğerine yazılır.</p></div>
+<div class="manpage src-aosp"><div class="ref">A/B · arka plan yazımı</div><p class="orig">update_engine will update the raw blocks on the currently unused partition as it streams the update package.</p><p>Cihaz normal çalışırken update_engine, kullanılmayan slot'un ham bloklarını güncelleme paketini akıtarak yazar — kullanıcı bu sırada cihazı kullanmaya devam eder.</p></div>
+<div class="manpage src-aosp"><div class="ref">A/B · rollback</div><p class="orig">The bootloader will fallback to the old OS if the new OS fails to boot, so no work is required from the client.</p><p>Yeni slot açılmazsa bootloader eski slot'a döner; bu yüzden başarısız bir güncelleme cihazı tuğlalaştırmaz (brick). Maliyeti: system/vendor iki kez yer kaplar.</p></div>
+
+<h3>3. Dynamic partitions ve super</h3>
+<p>Statik partition düzeninin sorunu: her partition'a, gelecekteki güncellemeler büyüyebilir diye boş alan ayrılması gerekirdi — bu alan israfıydı. Dynamic partitions bunu çözer: fiziksel partition'lar yerine, tek bir büyük super partition içinde userspace'te boyutlandırılan sub-partition'lar (system, vendor, product…) tutulur. OTA sırasında bunlar yeniden boyutlandırılabilir; alan slot'lar arasında paylaşılır.</p>
+<div class="manpage src-aosp"><div class="ref">dynamic · tanım</div><p class="orig">Dynamic partitions are a userspace partitioning system for Android.</p><p>Partition tablosu kernel/bootloader yerine userspace'te (dm-linear ile) kurulur; bu, cihazı yeniden flash'lamadan partition oluşturup boyutlandırmayı mümkün kılar.</p></div>
+<div class="manpage src-aosp"><div class="ref">dynamic · super</div><p class="orig">Instead, the device allocates a super partition, and sub-partitions can be sized dynamically within it.</p><p>Tek bir super partition içinde sub-partition'lar dinamik boyutlanır. Böylece bir image, gelecekteki büyüme için boş yer rezerve etmek zorunda kalmaz.</p></div>
+
+<h3>4. APEX: modüler sistem bileşenleri</h3>
+<p>Tüm bir OTA indirmeden tek bir sistem bileşenini (örn. bir kripto kütüphanesi, bir runtime modülü) güncellemek için APEX vardır (Project Mainline). APEX bir APK gibi paketlenir ve imzalanır ama sistem bileşenleri içindir; açılışta erken, mount edilerek devreye girer. Böylece Google, OEM OTA'sını beklemeden güvenlik düzeltmelerini Play üzerinden dağıtabilir.</p>
+
+<h3>5. Dosya sistemleri ve bütünlük</h3>
+<p>Partition'ların üstüne farklı dosya sistemleri oturur, her biri amacına göre seçilir:</p>
+<div class="deflist">
+<div><dt>ext4</dt><dd>Genel amaçlı, olgun. Uzun süre /system ve /data için varsayılandı.</dd></div>
+<div><dt>f2fs</dt><dd>Flash-friendly: NAND flash'ın yazma davranışına göre tasarlanmış. Birçok cihazda /data için tercih edilir.</dd></div>
+<div><dt>EROFS</dt><dd>Read-only, sıkıştırmalı. /system gibi değişmeyen partition'larda yer kazandırır; A/B'nin iki-kopya maliyetini hafifletir.</dd></div>
+<div><dt>dm-verity</dt><dd>Read-only partition'ları blok blok bir hash tree (Merkle tree) ile doğrular; değiştirilmiş bir blok okunduğunda yakalanır.</dd></div>
+<div><dt>dm-linear</dt><dd>Dynamic partition'ların mantıksal sub-partition'larını super partition içindeki fiziksel aralıklara eşler.</dd></div>
+</div>
+<p>Bu katmanlar birlikte çalışır: bir OTA super içindeki sub-partition'ı pasif slot'a dynamic olarak yazar, dm-verity hash'lerini günceller, vbmeta imzalar — ve bir sonraki açılışta Verified Boot tüm zinciri doğrular (bkz. Bütünlük ve attestation modülü).</p>`
+  },
+
+  underHood: {
+    heading: 'Bölüm bölüm: ne nerede durur',
+    html: '<p class="prose">Başlıca bölümler, içerikleri ve yazılabilirlikleri:</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Bölüm</th><th>İçerik</th><th>Yazılabilir mi</th></tr></thead><tbody>' +
+      '<tr><td><b>boot</b></td><td>Çekirdek (kernel) + ramdisk</td><td>Hayır (A/B, OTA ile)</td></tr>' +
+      '<tr><td><b>system</b></td><td>Android çerçevesi, sistem uygulamaları</td><td>Hayır (salt okunur)</td></tr>' +
+      '<tr><td><b>vendor</b></td><td>Üretici HAL\'leri, sürücü yapıları</td><td>Hayır (salt okunur)</td></tr>' +
+      '<tr><td><b>super</b></td><td>system/vendor/product (dinamik bölümler)</td><td>Yalnızca OTA</td></tr>' +
+      '<tr><td><b>userdata</b></td><td>Uygulamalar, ayarlar, kullanıcı dosyaları</td><td>Evet (okunur-yazılır)</td></tr>' +
+      '<tr><td><b>metadata</b></td><td>Şifreleme anahtarları, A/B durumu</td><td>Evet (sistemce)</td></tr>' +
+      '<tr><td><b>recovery</b></td><td>Kurtarma ortamı (A/B\'de boot\'a gömülü)</td><td>Hayır</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px">Depolama yığını: fiziksel blok aygıtı (çoğunlukla UFS/eMMC) → GPT bölümleri → üstünde dosya sistemleri. <code>system</code>/<code>vendor</code> genellikle EROFS veya ext4 (salt okunur, dm-verity ile bütünlük doğrulamalı), <code>userdata</code> ise ext4 veya F2FS (okunur-yazılır, dosya-bazlı şifreleme ile). Dinamik bölümler <code>super</code> içinde <strong>dm-linear</strong> ile mantıksal olarak oluşturulur.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Aktif slotu öğren', p: 'A/B cihazlarda hangi slotun aktif olduğunu bir property söyler (temsilî çıktı).',
+        shells: [{ label: 'adb (temsilî)', copy: 'adb shell getprop ro.boot.slot_suffix', pre: '<span class="c">$</span> adb shell getprop ro.boot.slot_suffix\n_a\n<span class="c"># aktif slot A; güncelleme _b\'ye yazılır</span>' }] },
+      { h3: '2. Bölümleri ve dinamik bölümleri listele', p: 'Bölüm aygıtlarını ve super içindeki mantıksal bölümleri gör (temsilî).',
+        shells: [{ label: 'adb (temsilî)', copy: 'adb shell ls -l /dev/block/by-name; adb shell lpdump', pre: '<span class="c">$</span> adb shell ls /dev/block/by-name\nboot_a boot_b system_a system_b vendor_a vendor_b super userdata metadata\n<span class="c">$</span> adb shell lpdump\n<span class="c"># super içinde: system_a, vendor_a, product_a (dinamik)</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'A/B (seamless) güncellemede yeni sürüm nereye yazılır?', opts: ['Aktif slota', 'Pasif (boştaki) slota', 'userdata\'ya'], answer: 'Pasif (boştaki) slota',
+        ok: 'Doğru. Güncelleme sen cihazı kullanırken pasif slota yazılır; yeniden başlatmada aktif slot ona geçer. Kesintisizlik buradan gelir.', no: 'İpucu: sistem çalışırken aktif slot duramaz; güncelleme hangi slota yazılmalı?' },
+      { q: 'Yeni sürüm açılmazsa ne olur?', opts: ['Cihaz tuğlalaşır (brick)', 'Bootloader eski slota geri döner', 'userdata silinir'], answer: 'Bootloader eski slota geri döner',
+        ok: 'Doğru. Bootloader deneme sayacı ve başarı bayrağı tutar; yeni slot doğrulanmış açılış yapamazsa otomatik olarak eski, çalışan slota döner (rollback).', no: 'İpucu: A/B tasarımının amacı tam da cihazı güncelleme yüzünden kaybetmemektir.' },
+      { q: 'Dinamik bölümler (dynamic partitions) hangi bölümün içinde yer alır?', opts: ['boot', 'super', 'metadata'], answer: 'super',
+        ok: 'Doğru. system, vendor, product gibi bölümler tek bir super bölümü içinde yeniden boyutlandırılabilir mantıksal bölümlere dönüştü.', no: 'İpucu: üreticinin boyutları önceden sabitlemesini engelleyen, hepsini kapsayan bölüm hangisi?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Android Modül 3', title: 'Açılış süreci', desc: 'Boot ROM\'dan init ve Zygote\'a: Android nasıl açılır?' },
+  sources: [
+    { href: 'https://newandroidbook.com/TOC.html', text: 'Levin — Android Internals', note: 'Cilt I, Bölüm 3–5' },
+    { href: 'https://source.android.com/docs/core/ota/ab', text: 'AOSP — A/B (seamless) güncellemeler' },
+    { href: 'https://source.android.com/docs/core/ota/dynamic_partitions', text: 'AOSP — Dinamik bölümler' },
+    { href: 'https://source.android.com/docs/core/ota/apex', text: 'AOSP — APEX' }
+  ],
+  pageTitle: 'Android Bölümleri'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

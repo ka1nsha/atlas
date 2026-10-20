@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Android Mimarisi</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'android',
+  crumbs: 'android › mimari › modül 1',
+  eyebrow: 'Modül 1 · Android · Mimari',
+  titleHTML: 'Android\'in katmanları: çekirdekten uygulamaya',
+  lede: 'Android, Linux çekirdeğinin üstüne kurulu altı katmanlı bir yığındır. Bu modülde her katmanı aşağıdan yukarıya gezecek, ne iş yaptığını görecek ve Android\'i saf bir Linux\'tan ayıran parçaları (Binder, Zygote, Bionic) tanıyacaksın.',
+  meta: ['~12 dk', 'ön koşul: temel Linux', 'bağlam: AOSP'],
+  intuition: {
+    paras: [
+      'Bir Android cihazı özünde bir Linux sistemidir: altta değiştirilmiş bir Linux çekirdeği (kernel) çalışır. Ama bir uygulama geliştiricisinin gördüğü dünya — Activity\'ler, servisler, izinler — çok daha yukarıdaki Java framework katmanındadır. Arada birkaç katman daha vardır ve her biri belirli bir işi üstlenir.',
+      'Bu katmanları bilmek neden önemli? Çünkü bir sorun hangi katmandaysa çözümü de oradadır: bir çökme (crash) native kütüphanede mi, ART\'ta mı, framework\'te mi? Güvenlik sınırı hangi katmanda çizilir? Android\'in saf Linux\'tan farkları da (Binder, Zygote, Bionic, zorunlu SELinux) tam olarak bu katmanlara serpiştirilmiştir.'
+    ],
+    ideas: [
+      { b: 'Katmanlı yığın', span: 'Çekirdek → HAL → native + Bionic → ART → framework → uygulama. Her katman bir alttakine dayanır, bir üsttekine hizmet verir.' },
+      { b: 'Linux ama değil', span: 'Çekirdek Linux\'tur, ama Binder (IPC), Zygote (süreç doğuşu), Bionic (libc), lmkd ve zorunlu SELinux Android\'e özgüdür.' },
+      { b: 'Sınırlar katmanlarda', span: 'Treble ile vendor/sistem ayrımı, uygulama sandbox\'ı (UID başına), SELinux bağlamları hep belirli katmanlarda zorlanır.' }
+    ]
+  },
+  lab: {
+    intro: 'Aşağıdan yukarıya katman katman çık. Her adımda vurgulanan katmanın ne yaptığını ve örnek bileşenlerini gör. En altta donanıma en yakın çekirdek, en üstte senin uygulaman var.',
+    codeLabel: 'katman yığını', cmd: 'android yığını (aşağıdan yukarıya)',
+    foot: 'Bileşen örnekleri temsilîdir; sürüme göre değişir. Çekirdek satırı bu konteynerdeki gerçek Linux çekirdeğidir.',
+    code: [
+      { t: '<span class="cm">// Android yazılım yığını (software stack)</span>' },
+      { t: '6) Uygulamalar        <span class="cm">// APK\'lar, sen</span>' },
+      { t: '5) Java framework     <span class="cm">// Activity, servisler, API</span>' },
+      { t: '4) ART (runtime)      <span class="cm">// DEX çalıştırma, GC</span>' },
+      { t: '3) Native + Bionic    <span class="cm">// libc, .so kütüphaneleri</span>' },
+      { t: '2) HAL                <span class="cm">// donanım soyutlama</span>' },
+      { t: '1) Linux çekirdeği    <span class="cm">// sürücüler, Binder, zamanlayıcı</span>' }
+    ],
+    steps: [
+      { pc: 7, title: 'Linux çekirdeği (kernel)', hi: 'kernel', term: ['$ uname -r', '6.18.44-fc-v139'],
+        text: 'En altta değiştirilmiş bir Linux çekirdeği var: süreç zamanlama, bellek yönetimi ve aygıt sürücüleri (driver). Android burada saf Linux\'a eklemeler yapar — en ünlüsü <code>Binder</code> IPC sürücüsü, ayrıca lmkd (düşük bellek öldürücü) ve ashmem/ion gibi bellek paylaşım mekanizmaları.' },
+      { pc: 6, title: 'HAL — donanım soyutlama', hi: 'hal', term: [],
+        text: 'Donanım Soyutlama Katmanı (Hardware Abstraction Layer), framework ile sürücüler arasında standart bir arayüz koyar: kamera, ses, sensörler, GPS. Treble ile bu katman "binderized" hale geldi; vendor (üretici) kodu sistem güncellemelerinden bağımsızlaştı.' },
+      { pc: 5, title: 'Native kütüphaneler + Bionic', hi: 'native', term: [],
+        text: 'C/C++ ile yazılmış native kütüphaneler burada: SurfaceFlinger, media codec\'leri, SQLite, OpenGL. Hepsi <strong>Bionic</strong> üzerine kuruludur — Android\'in kendi C kütüphanesi (libc). Bionic glibc değildir: daha küçük, mobil için optimize, BSD lisanslı.' },
+      { pc: 4, title: 'ART — çalışma zamanı (runtime)', hi: 'art', term: [],
+        text: 'Android Runtime (ART), uygulamanın DEX bytecode\'unu çalıştırır. Yükleme anında AOT (ahead-of-time) derleme, çalışırken JIT ve profil güdümlü optimizasyon, çöp toplama (garbage collection) burada yapılır. Her uygulama kendi ART örneğini Zygote\'tan devralır.' },
+      { pc: 3, title: 'Java framework', hi: 'framework', term: [],
+        text: 'Geliştiricinin gördüğü API katmanı: Activity, Service, ContentProvider, View, PackageManager. Çoğu, system_server içindeki sistem servislerine <code>Binder</code> üzerinden çağrı yapan ince istemcilerdir (örn. getSystemService).' },
+      { pc: 2, title: 'Uygulamalar — ve Android neden saf Linux değil', hi: 'app', term: [],
+        text: 'En üstte uygulamalar. Her uygulama kendi Linux kullanıcısı (UID) altında, kendi sandbox\'ında çalışır. Buraya kadar gördüğün üç parça Android\'i saf Linux\'tan ayırır: <strong>Binder</strong> (süreçler arası iletişimin omurgası), <strong>Zygote</strong> (her uygulamanın fork ile doğduğu ana süreç) ve <strong>Bionic</strong> (libc). Bunlar standart bir masaüstü Linux\'ta yoktur.' }
+    ],
+    render: function (s, stateEl, u) {
+      var layers = [
+        { id: 'app', name: 'Uygulamalar', ex: 'APK\'lar · her biri kendi UID sandbox\'ında' },
+        { id: 'framework', name: 'Java framework', ex: 'Activity, Service, PackageManager, View' },
+        { id: 'art', name: 'ART — çalışma zamanı (runtime)', ex: 'DEX çalıştırma, AOT/JIT, çöp toplama (GC)' },
+        { id: 'native', name: 'Native kütüphaneler + Bionic', ex: 'SurfaceFlinger, media, SQLite, libc (Bionic)' },
+        { id: 'hal', name: 'HAL — donanım soyutlama (HAL)', ex: 'kamera, ses, sensör, GPS arayüzleri' },
+        { id: 'kernel', name: 'Linux çekirdeği (kernel)', ex: 'sürücüler, Binder, lmkd, zamanlayıcı' }
+      ];
+      var rows = layers.map(function (L) {
+        var on = L.id === s.hi;
+        return '<div class="box' + (on ? ' hi' : '') + '" style="grid-template-columns:1fr;gap:2px">' +
+          '<b>' + u.esc(L.name) + '</b><span>' + u.esc(L.ex) + '</span></div>';
+      }).join('');
+      stateEl.innerHTML =
+        '<p class="lab-label">Yazılım yığını (software stack) — yukarıdan aşağıya</p>' +
+        '<div class="boxgrid">' + rows + '</div>' +
+        '<p class="note" style="margin-top:10px">Vurgulanan katman, soldaki adımda anlatılan katmandır. Donanım en altta, sen en üsttesin.</p>';
+    }
+  },
+  deepDive: {
+    heading: 'Derinlemesine: yığın neden böyle kuruldu?',
+    html: `<p class="lead">Android'in katmanlı yığını rastgele değil, iki baskı altında şekillendi: mobil donanımın kısıtları (bellek, pil, çeşitlilik) ve yüz milyonlarca cihazı güncelleyebilme ihtiyacı. Her katman bir soyutlama sınırıdır; bu sınırlar hem mühendislik hem güvenlik açısından nerede durduğunu belirler. Bu bölüm AOSP belgelerine dayanır.</p>
+
+<h3>1. Framework kodu nerede çalışır?</h3>
+<p>Yaygın bir yanılgı, framework'ün ayrı bir "sunucu" olduğudur. Aslında framework kodunun büyük kısmı <strong>her uygulamanın kendi process'inde</strong> çalışır; uygulama yalnızca gerçekten ayrıcalık gereken işler için system service'lere Binder üzerinden çağrı yapar. Yani <code>TextView</code> senin process'inde çizilir, ama "bu bildirimi göster" isteği system_server'a gider.</p>
+<div class="manpage src-aosp"><div class="ref">AOSP · ARCHITECTURE</div><p class="orig">Framework code runs inside each app's process.</p><p>Framework sınıfları ayrı bir process'te değil, uygulamanın kendi adres alanında koşar. Bu yüzden bir uygulamanın çökmesi (crash) framework'ü değil yalnızca o process'i düşürür; sistem servisleri ayrı process'te (system_server) korunur.</p></div>
+
+<h3>2. HAL: donanım çeşitliliğini soğurmak</h3>
+<p>Binlerce farklı yonga, kamera, modem var. Android bu çeşitliliği üst katmanlardan gizlemek için standart bir arayüz tanımlar; vendor bu arayüzü doldurur. Böylece framework "fotoğraf çek" der, altındaki sürücünün kim olduğunu bilmez.</p>
+<div class="manpage src-aosp"><div class="ref">AOSP · HAL</div><p class="orig">A HAL is an abstraction layer with a standard interface for hardware vendors to implement.</p><p>HAL, framework ile donanım sürücüsü arasındaki sözleşmedir. Treble (Android 8.0) ile bu arayüzler "binderized" edildi ve vendor kodu ayrı bir bölüme (partition) taşındı — sonuç: sistem güncellemesi gelirken vendor kodu aynı kalabiliyor, bu da güncelleme hızını artırdı.</p></div>
+
+<h3>3. Çekirdek: Linux, ama Android'e göre eğilmiş</h3>
+<p>Altta gerçek bir Linux kernel çalışır, ama Android onu mobil ihtiyaçlar için genişletir. Bu eklentilerin çoğu yıllarca mainline dışındaydı; GKI (Generic Kernel Image) ile çekirdek, donanımdan bağımsız çekirdek ile vendor modülleri olarak ikiye ayrıldı.</p>
+<div class="manpage src-aosp"><div class="ref">AOSP · KERNEL</div><p class="orig">The kernel is the central part of any operating system and talks to the underlying hardware on a device.</p><p>AOSP çekirdeği, mümkün olduğunca donanımdan bağımsız (hardware-agnostic) çekirdek ile vendor'a özel modüllere ayrılır. Android'e özgü başlıca eklentiler:</p></div>
+<div class="deflist">
+<div><dt>binder</dt><dd>Android'in temel IPC mekanizması; bir kernel sürücüsü (<code>/dev/binder</code>) olarak çalışır. system service mimarisinin tamamı bunun üstündedir.</dd></div>
+<div><dt>ashmem / memfd</dt><dd>Anonymous shared memory — process'ler arası büyük veri (ör. ekran tamponu) kopyalamadan paylaşılır.</dd></div>
+<div><dt>lmkd</dt><dd>Low Memory Killer daemon; bellek azalınca, oom skoruna göre en az gereken uygulamayı sonlandırır. Masaüstü Linux'un OOM killer'ının mobil uyarlaması.</dd></div>
+<div><dt>wakelocks</dt><dd>Suspend'e geçişi engelleyen güç yönetimi mekanizması; pil ömrü için kritik.</dd></div>
+</div>
+
+<h3>4. Bionic neden glibc değil?</h3>
+<p>Android masaüstü Linux'un libc'si glibc'yi kullanmaz; kendi libc'si olan <strong>Bionic</strong>'i kullanır. Üç neden: lisans (glibc LGPL'dir, Bionic BSD lisanslı — statik bağlamada daha rahat), boyut (Bionic çok daha küçük, her uygulama process'i onu yükler) ve mobil optimizasyon (daha hafif thread/locale desteği). Dönüşü de var: Bionic tam POSIX/glibc uyumlu değildir, bu yüzden bazı masaüstü C kodu doğrudan derlenmez.</p>
+
+<h3>5. Sürüm evrimi yığında okunur</h3>
+<p>Android'in tarihi bu katmanların değişimidir: Dalvik → ART (5.0, AOT derleme), runtime permissions (6.0, izin modeli framework'te değişti), Project Treble (8.0, HAL/vendor ayrımı), Project Mainline / APEX (10+, çekirdek dışı sistem bileşenleri Play üzerinden güncellenebilir hale geldi), GKI (çekirdek modülerleşmesi). Her biri yığının belirli bir katmanına dokunur.</p>
+<p>Uygulama geliştirici tarafında bu, <strong>API level</strong> ile görünür: her sürüm yeni API'ler ekler, eskileri "deprecated" yapar. <code>targetSdkVersion</code> uygulamanın hangi davranış kurallarına uyduğunu belirler.</p>`
+  },
+  underHood: {
+    heading: 'Katman katman: kim ne yapar',
+    html: '<p class="prose">Her katmanın tek cümlelik görevi ve örnek bir bileşeni:</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Katman</th><th>Örnek bileşen</th><th>Görevi</th></tr></thead><tbody>' +
+      '<tr><td><b>Uygulama</b></td><td>APK, Activity</td><td>Kullanıcının etkileşime girdiği program</td></tr>' +
+      '<tr><td><b>Java framework</b></td><td>ActivityManager, View</td><td>Geliştirici API\'si; sistem servislerine Binder köprüsü</td></tr>' +
+      '<tr><td><b>ART</b></td><td>dex2oat, GC</td><td>DEX bytecode\'u çalıştırır, derler, belleği yönetir</td></tr>' +
+      '<tr><td><b>Native + Bionic</b></td><td>libc.so, SurfaceFlinger</td><td>C/C++ kütüphaneleri ve Android\'in kendi libc\'si</td></tr>' +
+      '<tr><td><b>HAL</b></td><td>camera HAL, audio HAL</td><td>Framework ile sürücü arasında standart arayüz</td></tr>' +
+      '<tr><td><b>Çekirdek (kernel)</b></td><td>Binder sürücüsü, lmkd</td><td>Süreç, bellek, sürücüler; Android eklentileri</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px">Sürüm evrimi de bu yığının içinde okunur: Dalvik\'in yerini ART\'a bırakması (5.0), çalışma anı izinleri (runtime permissions, 6.0), Project Treble ile HAL/vendor ayrımı (8.0), APEX modülleri ve zorunlu/güncellenebilir bileşenler sonraki sürümlerde geldi.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Çekirdek katmanını gör', p: 'Android cihazda da, bu konteynerde de en alttaki katman bir Linux çekirdeğidir. Sürümünü uname ile öğren.',
+        shells: [{ label: 'terminal (gerçek çıktı)', copy: 'uname -a', pre: '<span class="c">$</span> uname -a\nLinux vm <span class="y">6.18.44-fc-v139</span> #1 SMP PREEMPT_DYNAMIC x86_64 GNU/Linux\n<span class="c"># Android\'de: adb shell uname -r → cihazın çekirdek sürümü</span>' }] },
+      { h3: '2. Yığının üst katmanlarını yokla', p: 'Android cihazda her katmanın izini bir komutla sürebilirsin (temsilî çıktılar).',
+        shells: [{ label: 'adb (temsilî)', copy: 'adb shell getprop ro.build.version.release; adb shell getprop ro.build.version.sdk', pre: '<span class="c">$</span> adb shell getprop ro.build.version.release\n14\n<span class="c">$</span> adb shell getprop ro.build.version.sdk\n34\n<span class="c"># framework sürümü (release) ve API seviyesi (sdk)</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Android\'in C kütüphanesi (libc) hangisidir?', opts: ['glibc', 'Bionic', 'musl'], answer: 'Bionic',
+        ok: 'Doğru. Android, glibc yerine kendi libc\'si olan Bionic\'i kullanır: daha küçük, mobil için optimize, BSD lisanslı.', no: 'İpucu: Android masaüstü Linux\'un glibc\'sini kullanmaz; kendi libc\'si vardır.' },
+      { q: 'Aşağıdakilerden hangisi Android\'i saf Linux\'tan ayıran, çekirdeğe eklenmiş bir parçadır?', opts: ['Binder IPC sürücüsü', 'ext4', 'TCP/IP yığını'], answer: 'Binder IPC sürücüsü',
+        ok: 'Doğru. Binder, Android\'in süreçler arası iletişim omurgasıdır ve çekirdeğe eklenmiş bir sürücüdür; saf Linux\'ta yoktur.', no: 'İpucu: ext4 ve TCP/IP zaten Linux\'ta var. Android\'e özgü IPC mekanizması hangisi?' },
+      { q: 'Project Treble hangi katmanı sistemden ayırarak güncellemeyi kolaylaştırdı?', opts: ['ART\'ı', 'HAL / vendor katmanını', 'Çekirdeği'], answer: 'HAL / vendor katmanını',
+        ok: 'Doğru. Treble, HAL/vendor katmanını "binderized" arayüzlerle sistemden ayırdı; böylece sistem güncellemeleri vendor kodundan bağımsızlaştı.', no: 'İpucu: üreticiye (vendor) özgü donanım kodu hangi katmanda?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Android Modül 2', title: 'Bölümler ve dosya sistemleri', desc: 'A/B slot, dynamic partition ve APEX: Android diski nasıl böler ve günceller?' },
+  sources: [
+    { href: 'https://newandroidbook.com/TOC.html', text: 'Levin — Android Internals', note: 'Cilt I, Bölüm 1' },
+    { href: 'https://source.android.com/docs/core/architecture', text: 'AOSP — Android mimarisi' },
+    { href: 'https://source.android.com/docs/core/architecture/hal', text: 'AOSP — HAL ve Treble' }
+  ],
+  pageTitle: 'Android Mimarisi'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

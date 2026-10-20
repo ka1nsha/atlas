@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Binder</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: istemci — sürücü — servis düzeni */
+.binder { display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: stretch; }
+@media (max-width: 620px) { .binder { grid-template-columns: 1fr; } }
+.bnode { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 10px; display: grid; gap: 6px; align-content: start; min-width: 0; }
+.bnode.client { border-color: var(--accent); } .bnode.service { border-color: var(--track); }
+.bnode.driver { border-color: var(--warn); background: var(--warn-soft); }
+.bnode b { font-family: var(--f-display); font-size: 14px; }
+.bnode.client b { color: var(--accent); } .bnode.service b { color: var(--track); } .bnode.driver b { color: var(--warn); }
+.bnode .mono { font-family: var(--f-mono); font-size: 11.5px; color: var(--muted); }
+.bnode .st { font-family: var(--f-mono); font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--sunk); color: var(--muted); justify-self: start; }
+.bnode .st.busy { background: var(--accent-soft); color: var(--accent); }
+.bnode .st.work { background: var(--track-soft); color: var(--track); }
+.bnode .st.wait { background: var(--sunk); color: var(--muted); }
+.parcel { border: 1px dashed var(--accent); border-radius: 6px; background: var(--surface); padding: 5px 8px; font-family: var(--f-mono); font-size: 11px; color: var(--accent); }
+.mmap { border: 1px solid var(--track); border-radius: 6px; background: var(--track-soft); padding: 5px 8px; font-family: var(--f-mono); font-size: 11px; color: var(--track); overflow-wrap: anywhere; }
+.mmap.empty { border-style: dashed; color: var(--muted); background: var(--surface); }
+.copymeter { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 13px; }
+.copymeter .big { font-family: var(--f-mono); font-weight: 700; font-size: 20px; }
+.copymeter .one { color: var(--track); } .copymeter .two { color: var(--muted); text-decoration: line-through; }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'android',
+  crumbs: 'android › binder › modül 14',
+  eyebrow: 'Modül 14 · Android · IPC',
+  titleHTML: '<code>Binder</code>: Android\'in sinir sistemi',
+  lede: 'Bir uygulama saat, konum veya bildirim isteğinde bulunduğunda, bu çağrı Binder üzerinden başka bir sürece gider. Binder, Android\'in süreçler arası iletişim (IPC) omurgasıdır; tek kopyalı (one-copy) tasarımıyla klasik Unix IPC\'sinden ayrılır.',
+  meta: ['~20 dk', 'ön koşul: Linux IPC, süreçler', 'bağlam: AOSP'],
+  intuition: {
+    paras: [
+      'Android\'de uygulamalar birbirinden ve sistemden süreç sınırıyla (process boundary) ayrılmıştır. Bir uygulamanın <code>system_server</code> içindeki bir servise çağrı yapması için verinin bir süreçten diğerine geçmesi gerekir. Bunu yapan mekanizma <strong>Binder</strong>\'dır: bir çekirdek sürücüsü (<code>/dev/binder</code>) ve onun üstündeki kütüphaneler.',
+      'Binder\'ı özel kılan, uzak çağrıyı (RPC — remote procedure call) yerel bir metot çağrısı gibi göstermesidir: istemci tarafında bir vekil (proxy), servis tarafında bir iskelet (stub) vardır. Arada veri bir <strong>Parcel</strong>\'e sıralanır (marshalling) ve çekirdek bunu <strong>tek kopya (one-copy)</strong> ile taşır — klasik boru (pipe) veya soketteki iki kopya yerine.'
+    ],
+    ideas: [
+      { b: 'Sürücü aracılık eder', span: '/dev/binder çekirdek sürücüsü her transferi görür; gönderenin kimliğini (UID/PID) güvenilir biçimde ekler. İzin kontrolünün temeli budur.' },
+      { b: 'Tek kopya (one-copy)', span: 'Çekirdek veriyi doğrudan alıcının önceden mmap\'lediği tampona kopyalar. Klasik IPC iki kopya yapar; Binder bir.' },
+      { b: 'Nesne referansları taşınır', span: 'Bir Binder nesnesi (handle) başka sürece geçebilir; çekirdek referansları (node/ref) izler. Mach port haklarının Android karşılığı.' }
+    ]
+  },
+  lab: {
+    intro: 'İstemci bir servise <code>transact()</code> çağırır. Sağda istemci, <code>/dev/binder</code> sürücüsü ve servis üçlüsünü; verinin nerede olduğunu ve kaç kez kopyalandığını izle.',
+    codeLabel: 'binder (temsilî)', cmd: 'app → system_server',
+    foot: 'Değerler ve çıktılar temsilîdir. Gerçek akış: IPCThreadState, /dev/binder ioctl.',
+    code: [
+      { t: '<span class="cm">// --- servis tarafı ---</span>' },
+      { t: 'ServiceManager.<span class="f">addService</span>(<span class="s">"ornek"</span>, <span class="k">new</span> OrnekService());' },
+      { t: '' },
+      { t: '<span class="cm">// --- istemci tarafı ---</span>' },
+      { t: 'IBinder b = ServiceManager.<span class="f">getService</span>(<span class="s">"ornek"</span>);' },
+      { t: 'Parcel data = Parcel.<span class="f">obtain</span>();' },
+      { t: 'data.<span class="f">writeInt</span>(<span class="n">42</span>);' },
+      { t: 'b.<span class="f">transact</span>(CODE, data, reply, <span class="n">0</span>);  <span class="cm">// → ioctl(BINDER_WRITE_READ)</span>' },
+      { t: '' },
+      { t: '<span class="cm">// --- servis tarafı ---</span>' },
+      { t: '<span class="f">onTransact</span>(CODE, data, reply, <span class="n">0</span>);' }
+    ],
+    steps: [
+      { pc: 2, title: 'Servis kaydolur', term: ['servis: addService("ornek") → node 17'],
+        text: 'Servis kendini Service Manager\'a bir isimle kaydeder (<code>addService</code>). Binder sürücüsü bu servis için bir düğüm (node) oluşturur. Service Manager, Android\'in isim defteridir — kendisi de 0 numaralı bilinen bir Binder nesnesidir.',
+        client: { st: 'wait', txt: 'henüz başlamadı' }, service: { st: 'wait', txt: 'kaydoldu, dinliyor', mmap: 'alıcı tamponu (boş)', mmapEmpty: true },
+        data: null, copies: 0, note: 'Servis, alıcı tamponunu (receive buffer) önceden mmap ile çekirdeğe eşledi.' },
+      { pc: 4, title: 'İstemci handle alır', term: ['istemci: getService("ornek") → handle 3'],
+        text: 'İstemci servisi adıyla sorar (<code>getService</code>) ve bir handle (referans) alır. Bu handle, istemci sürecindeki yerel bir sayıdır ama çekirdekteki servis düğümünü gösterir — tıpkı Mach port adı gibi.',
+        client: { st: 'wait', txt: 'handle 3 alındı' }, service: { st: 'wait', txt: 'dinliyor', mmap: 'alıcı tamponu (boş)', mmapEmpty: true },
+        data: null, copies: 0, note: 'Handle yereldir; çekirdek handle → node eşlemesini tutar.' },
+      { pc: 6, title: 'Parcel hazırlanır', term: ['istemci: data.writeInt(42)'],
+        text: 'İstemci argümanları bir <code>Parcel</code>\'e sıralar (marshalling). Parcel, süreçler arası taşınabilen düz bir bayt tamponudur: temel türler, string\'ler ve Binder nesne referansları içerebilir.',
+        client: { st: 'busy', txt: 'Parcel hazırlıyor', parcel: 'Parcel { int: 42 }' }, service: { st: 'wait', txt: 'dinliyor', mmap: 'alıcı tamponu (boş)', mmapEmpty: true },
+        data: null, copies: 0, note: 'Veri şu an yalnızca istemci sürecinde.' },
+      { pc: 7, title: 'ioctl: tek kopya', term: ['istemci: ioctl(BINDER_WRITE_READ) → bloke'],
+        text: '<code>transact()</code> aslında <code>/dev/binder</code>\'a bir <code>ioctl(BINDER_WRITE_READ)</code>\'dir. Çekirdek Parcel\'i istemci adres uzayından okur ve doğrudan servisin önceden mmap\'lediği alıcı tamponuna yazar — <strong>tek kopya</strong>. Klasik boru/soket iki kopya yapardı (gönderen→çekirdek, çekirdek→alıcı).',
+        client: { st: 'busy', txt: 'bloke (yanıt bekliyor)' }, service: { st: 'wait', txt: 'uyandırılıyor', mmap: 'Parcel { int: 42 } + sender UID/PID', mmapEmpty: false },
+        data: 'service', copies: 1, flash: true, note: 'Çekirdek gönderenin UID/PID\'sini güvenilir biçimde ekler; servis buna göre yetki kontrolü yapar.' },
+      { pc: 10, title: 'onTransact ve yanıt', term: ['istemci: ioctl(BINDER_WRITE_READ) → bloke', 'servis: onTransact(CODE) → reply yazıldı'],
+        text: 'Servisin bir Binder iş parçacığı (thread pool\'dan) uyanır ve <code>onTransact</code>\'i çağırır. Sonucu bir reply Parcel\'ine koyar; çekirdek bunu aynı tek-kopya yoluyla istemciye döndürür ve istemciyi blokajdan çıkarır.',
+        client: { st: 'busy', txt: 'yanıt alındı, devam', parcel: 'reply { result: ok }' }, service: { st: 'work', txt: 'onTransact işliyor', mmap: 'işlendi → reply', mmapEmpty: false },
+        data: 'client', copies: 1, note: 'Çift yönlü RPC tamamlandı. Tüm akışı Binder sürücüsü düzenledi.' }
+    ],
+    render: function (s, stateEl, u) {
+      function node(cls, title, handle, st) {
+        var html = '<div class="bnode ' + cls + '"><b>' + title + '</b><span class="mono">' + handle + '</span>' +
+          '<span class="st ' + st.st + '">' + u.esc(st.txt) + '</span>';
+        if (st.parcel) html += '<div class="parcel">' + u.esc(st.parcel) + '</div>';
+        if (st.mmap) html += '<div class="mmap' + (st.mmapEmpty ? ' empty' : '') + '">' + u.esc(st.mmap) + '</div>';
+        return html + '</div>';
+      }
+      var driverTxt = s.data === 'service' ? 'veri → servis tamponuna yazılıyor'
+                    : s.data === 'client' ? 'yanıt → istemciye dönüyor'
+                    : 'boşta (transaksiyon yok)';
+      stateEl.innerHTML =
+        '<p class="lab-label">İstemci · sürücü · servis</p>' +
+        '<div class="binder">' +
+          node('client', 'İstemci (app)', 'handle 3', s.client) +
+          '<div class="bnode driver" id="drv"><b>/dev/binder</b><span class="mono">çekirdek sürücüsü</span><span class="st work">' + u.esc(driverTxt) + '</span></div>' +
+          node('service', 'Servis (system_server)', 'node 17', s.service) +
+        '</div>' +
+        '<div class="copymeter"><span class="big ' + (s.copies === 1 ? 'one' : '') + '">' + s.copies + '</span>' +
+          '<span>kopya · <span class="two">klasik IPC: 2</span> → <span class="one">Binder: 1</span></span></div>' +
+        (s.note ? '<p class="note" style="margin-top:12px">' + u.esc(s.note) + '</p>' : '');
+      if (s.flash) ATLAS.flash(document.getElementById('drv'), false);
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: Binder nasıl tek kopyayla çalışır?",
+    html: `<p class="lead">Binder, Android'in merkezi sinir sistemidir: uygulamalar ile system_server, servisler ve HAL'ler arasındaki neredeyse tüm iletişim onun üzerinden akar. Yüzeyde basit bir uzak çağrı (RPC) gibi görünür, ama altında bir character device, tek-kopya (one-copy) bir bellek hilesi, bir reference counting sistemi ve kernel tarafından zorlanan bir güvenlik modeli vardır.</p>
+
+<h3>1. Binder sürücüsü ve tek-kopya (one-copy) transfer</h3>
+<p>Binder, çekirdekte bir character device'tır: <code>/dev/binder</code>. Her process bu aygıtı açar, bir bölge <code>mmap</code> eder ve tüm iletişimi tek bir <code>ioctl(BINDER_WRITE_READ)</code> çağrısıyla yürütür — tek ioctl hem yazar hem okur. Asıl ustalık veri kopyalama sayısındadır. Klasik IPC (pipe, socket) bir transfer için en az iki kopya yapar: gönderenin buffer'ından kernel buffer'ına, oradan da alıcının buffer'ına. Binder <strong>tek kopya</strong> yapar: binder driver, veriyi doğrudan alıcı process'in önceden <code>mmap</code> ettiği buffer'a yazar. Gönderen ile alıcı o belleği paylaştığı için ikinci kopya hiç olmaz.</p>
+<div class="manpage src-aosp"><div class="ref">binder · scatter-gather</div><p class="orig">Android 8 uses scatter-gather optimization to reduce the number of copies from 3 to 1.</p><p>Modern Binder, scatter-gather optimizasyonuyla veriyi orijinal bellek düzeninde bırakıp kopya sayısını daha da düşürür — veri Parcel'a tek tek serialize edilmek yerine olduğu yerden alıcının buffer'ına taşınır.</p></div>
+<div class="manpage src-aosp"><div class="ref">binder · copies</div><p class="orig">In previous releases of Android, every piece of data in a binder call was copied three times:</p><p>Eski sürümlerde bir binder çağrısındaki her veri parçası üç kez kopyalanırdı; tek-kopya mimarisi bunu bire indirerek IPC'yi mobil cihaz için yeterince ucuz hale getirdi. Bu, Android'in "her şey bir servis çağrısı" modelini mümkün kılan şeydir.</p></div>
+
+<h3>2. Transaction ve Parcel (marshalling)</h3>
+<p>Bir Binder çağrısının temel birimi bir <strong>transaction</strong>'dır. Çağıran taraf argümanları bir <strong>Parcel</strong>'a yazar; bu işleme marshalling denir. Parcel genel amaçlı bir serialization mekanizması değildir — yalnızca IPC için, hız ve binder nesnelerini taşıyabilmek için optimize edilmiş bir container'dır. Bir Parcel ham verinin yanı sıra binder reference'ları (başka process'lerdeki nesnelere işaretçiler) ve hatta file descriptor'ları taşıyabilir; kernel bunları transfer sırasında çevirir.</p>
+<div class="deflist">
+<div><dt>transaction</dt><dd>Tek bir çağrı birimi: hedef, metot kodu ve Parcel'lanmış argümanlar. Senkron (yanıt beklenir) veya oneway (ateşle-unut) olabilir.</dd></div>
+<div><dt>Parcel</dt><dd>Argümanların düz bir byte dizisine yazıldığı container. Yalnızca IPC için; diske yazmak veya kalıcı saklama için uygun değildir.</dd></div>
+<div><dt>marshalling</dt><dd>Yapılandırılmış nesneleri Parcel'a yazıp (writeInt, writeString, writeStrongBinder…) karşı tarafta geri okuma (unmarshalling). AIDL bu kodu otomatik üretir.</dd></div>
+</div>
+
+<h3>3. Reference (handle) ve nesne ömrü</h3>
+<p>Bir process, başka bir process'teki bir binder nesnesini doğrudan tutamaz; onun yerine bir <strong>handle</strong> (sürücünün verdiği bir tamsayı) tutar. Sürücü, hangi process'in hangi nesneye kaç referansı olduğunu reference counting ile izler. Nesne hiç referansı kalmayınca serbest bırakılır. Çağıran taraf, sahibi process çökerse haberdar olmak için bir <strong>death notification</strong> (link-to-death) kaydedebilir — dağıtık sistemlerde "karşı taraf öldü" durumunu ele almanın temel yoludur.</p>
+<div class="deflist">
+<div><dt>handle</dt><dd>Bir process'in uzak binder nesnesine yerel referansı (tamsayı). Process'e özgüdür; aynı nesne iki process'te farklı handle'lara sahip olabilir (file descriptor gibi).</dd></div>
+<div><dt>strong / weak ref</dt><dd>Strong reference nesneyi canlı tutar; weak reference tutmaz ama nesne hâlâ yaşıyor mu diye sorar. Sürücü ikisini de sayar.</dd></div>
+<div><dt>death notification</dt><dd>Sahibi process ölünce kaydedilen callback tetiklenir. Örn. bir servis çökerse, ona bağlı uygulamalar bunu öğrenir.</dd></div>
+</div>
+
+<h3>4. Thread pool</h3>
+<p>Her process, gelen transaction'ları işlemek için bir <strong>binder thread pool</strong> açar (varsayılan üst sınır genelde 15 thread). Gelen bir çağrı bu havuzdaki boş bir thread'de çalışır; böylece bir servis aynı anda birden çok istemciye hizmet verebilir ve uzun süren bir çağrı diğerlerini bloklamaz. İç içe çağrılarda (A → B → A) sürücü, yanıtı mümkünse aynı thread'e yönlendirerek gereksiz thread tüketimini önler.</p>
+
+<h3>5. Service Manager (context manager, handle 0)</h3>
+<p>Servisler isimle bir yere kaydolmalı ki istemciler onları bulabilsin. Bu yer <strong>Service Manager</strong>'dır ve Binder dünyasında özel bir yeri vardır: o, context manager'dır ve her zaman <code>handle 0</code> ile erişilir. Bu, bootstrap problemini çözer — bir istemci henüz hiçbir handle'ı yokken bile handle 0'a mesaj yollayıp "bana com.ornek.servis'in handle'ını ver" diyebilir.</p>
+<div class="manpage src-aosp"><div class="ref">binder · context manager</div><p class="orig">Each binder context has its own device node and its own context (service) manager.</p><p>Her binder context'inin kendi device node'u ve kendi context (service) manager'ı vardır. Framework ve vendor süreçleri bu yüzden ayrı binder aygıtları (<code>/dev/binder</code>, <code>/dev/vndbinder</code>, <code>/dev/hwbinder</code>) kullanır — izolasyon ve güvenlik için.</p></div>
+
+<h3>6. Güvenlik: caller identity</h3>
+<p>Binder'ın en güçlü güvenlik özelliği şudur: her transaction'a gönderenin <strong>UID ve PID</strong>'sini <em>kernel</em> ekler, çağıran taraf değil. Bu yüzden bir servis, <code>getCallingUid()</code> / <code>getCallingPid()</code> ile isteği kimin yaptığını güvenilir biçimde öğrenir; istemci bu bilgiyi taklit edemez (spoofing imkansız), çünkü onu uygulama değil sürücü koyar. Android'in izin modeli ve çoğu yetki kontrolü bu garantinin üstüne kuruludur. (Ofansif tarafta <em>confused deputy</em> saldırıları tam da bu caller identity'nin yanlış kullanıldığı yerleri hedefler — bkz. sandbox kaçışı modülü.)</p>`
+  },
+  underHood: {
+    html: '<p class="prose">Senin yazdığın <code>transact()</code>, AOSP\'ta bir dizi katmandan geçip <code>/dev/binder</code> sürücüsüne iner. Çekirdek tarafı <code>drivers/android/binder.c</code>\'dedir; kaynak cs.android.com üzerinden okunabilir.</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">Proxy.transact()</span><span class="where">AIDL stub</span><p>AIDL\'den üretilen vekil; argümanları Parcel\'e sıralar (marshalling) ve transact çağırır.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://cs.android.com/android/platform/superproject/main/+/main:frameworks/native/libs/binder/IPCThreadState.cpp" target="_blank" rel="noopener">IPCThreadState::transact</a><span class="where">libbinder</span><p>Komutu (BC_TRANSACTION) yazar ve ioctl ile sürücüye verir; yanıtı bekler.</p></div></li>' +
+      '<li class="boundary"><div>ioctl sınırı · kullanıcı → çekirdek</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://cs.android.com/android/kernel/superproject/+/common-android-mainline:common/drivers/android/binder.c" target="_blank" rel="noopener">binder_thread_write / _read</a><span class="where">drivers/android/binder.c</span><p>ioctl(BINDER_WRITE_READ) buraya düşer; komutları ayrıştırır.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">binder_transaction()</span><span class="where">drivers/android/binder.c</span><p>Asıl iş: hedef düğümü bulur, gönderenin UID/PID\'sini ekler, veriyi alıcının mmap tamponuna <strong>tek kopya</strong> taşır (binder_alloc), hedef thread\'i uyandırır.</p></div></li>' +
+      '</ol>' +
+      '<p class="prose" style="margin-top:14px">Mach port modülüyle karşılaştır: Binder\'daki handle/node, Mach\'taki port adı/hakkına; Service Manager, bootstrap/launchd\'a; tek-kopya tampon ise Mach mesaj kuyruğuna denk gelir. İki sistem aynı sorunu (güvenli, yetki-taşıyan IPC) farklı çözer.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Kayıtlı servisleri listele', p: 'Service Manager\'daki tüm Binder servislerini gör. Her satır bir isim → Binder nesnesi eşlemesidir.',
+        shells: [{ label: 'adb (temsilî çıktı)', copy: 'adb shell service list', pre: '<span class="c">$</span> adb shell service list\nFound 180 services:\n  0  <span class="g">activity</span>: [android.app.IActivityManager]\n  1  <span class="g">package</span>: [android.content.pm.IPackageManager]\n  2  <span class="g">power</span>: [android.os.IPowerManager]\n  <span class="c"># ... her biri bir Binder node</span>' }] },
+      { h3: '2. Binder istatistiklerini oku', p: 'Çekirdek, Binder transaksiyonlarını debugfs üzerinden sergiler: hangi süreç kaç çağrı yapmış, thread havuzu durumu.',
+        shells: [{ label: 'adb', copy: 'adb shell cat /sys/kernel/debug/binder/stats', pre: '<span class="c">$</span> adb shell cat /sys/kernel/debug/binder/stats\n<span class="c"># BC_TRANSACTION, BR_REPLY sayaçları; node/ref sayıları</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Binder\'ın klasik Unix boru/soketine göre temel performans avantajı nedir?', opts: ['Şifreleme', 'Tek kopya (one-copy) transfer', 'Daha büyük tampon'], answer: 'Tek kopya (one-copy) transfer',
+        ok: 'Doğru. Çekirdek veriyi doğrudan alıcının mmap\'lediği tampona yazar; klasik IPC\'deki iki kopya yerine bir kopya yapılır.', no: 'İpucu: veri kaç kez kopyalanıyor? Klasik IPC iki, Binder...' },
+      { q: 'Bir servis, çağrıyı yapanın gerçek kimliğini (UID/PID) nereden güvenilir biçimde öğrenir?', opts: ['Parcel\'in içinden', 'Binder sürücüsünün eklediği bilgiden', 'getuid() ile'], answer: 'Binder sürücüsünün eklediği bilgiden',
+        ok: 'Doğru. Kimlik sürücü tarafından eklenir, sahtelenemez. Android izin modelinin temeli budur (Binder.getCallingUid()).', no: 'İpucu: istemci kendi UID\'sini yazsaydı yalan söyleyebilirdi. Kim güvenilir biçimde ekler?' },
+      { q: 'Service Manager\'ın Mach dünyasındaki en yakın karşılığı nedir?', opts: ['launchd/bootstrap', 'dyld', 'kext'], answer: 'launchd/bootstrap',
+        ok: 'Doğru. Her ikisi de isimli servis çözümlemesi yapar: isim → IPC nesnesi (Binder node / Mach port).', no: 'İpucu: isimle servis bulma işini macOS\'ta kim yapıyordu?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Android Modül 15', title: 'Yazılım güvenliği: SELinux ve izinler', desc: 'Binder\'ın taşıdığı UID kimliğinin üstüne Android izin modeli, SELinux ve seccomp nasıl oturur?' },
+  sources: [
+    { href: 'https://newandroidbook.com/TOC.html', text: 'Levin — Android Internals', note: 'Cilt II, Bölüm 8' },
+    { href: 'https://cs.android.com/android/kernel/superproject/+/common-android-mainline:common/drivers/android/binder.c', text: 'drivers/android/binder.c', note: 'AOSP çekirdek kaynağı' },
+    { href: 'https://developer.android.com/develop/background-work/services/aidl', text: 'developer.android.com — AIDL' },
+    { href: 'https://source.android.com/docs/core/architecture/hidl/binder-ipc', text: 'AOSP — Binder IPC' }
+  ],
+  pageTitle: 'Binder'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

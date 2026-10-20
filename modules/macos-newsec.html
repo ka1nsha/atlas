@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Yeni Güvenlik Bileşenleri</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: güven alanı bölmeleri */
+.trust { display: grid; gap: 10px; margin-top: 4px; }
+.realm { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 10px 12px; display: grid; gap: 3px; min-width: 0; }
+.realm .rh { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.realm .rh b { font-family: var(--f-display); font-size: 15px; }
+.realm .rh .mono { font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.realm span.desc { font-size: 12.5px; color: var(--muted); }
+.realm.kernel { border-color: var(--track); }
+.realm.kernel.pwned { border-color: var(--bad); background: var(--bad-soft); }
+.realm.kernel.pwned .rh b { color: var(--bad); }
+.realm.guard { border-color: var(--ok); background: var(--ok-soft); }
+.realm.guard .rh b { color: var(--ok); }
+.realm.guard.safe { border-style: solid; }
+.realm .pill { font-family: var(--f-mono); font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 999px; }
+.realm.kernel .pill { background: var(--track-soft); color: var(--track); }
+.realm.kernel.pwned .pill { background: var(--bad); color: #fff; }
+.realm.guard .pill { background: var(--ok); color: #fff; }
+.realm.dim { opacity: .5; }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'macos',
+  crumbs: 'macos › yeni güvenlik bileşenleri › modül 22',
+  eyebrow: 'Modül 22 · macOS / iOS · İleri çekirdek güvenliği',
+  titleHTML: 'Çekirdeğin ötesi: <code>SPTM</code>, TXM ve Exclaves',
+  lede: 'Apple\'ın yeni güvenlik mimarisi radikal bir fikre dayanır: çekirdek tümüyle ele geçirilse bile saldırgan her şeyi kazanmasın. Bu modülde ayrıcalığın çekirdekten alınıp ayrı güven alanlarına (SPTM, TXM, Exclaves) nasıl dağıtıldığına yüksek seviyeden bakacaksın. Antid0te çekirdek izleğinin en yeni halkası.',
+  meta: ['~15 dk', 'ön koşul: PAC/PPL, çekirdek mimarisi', 'bağlam: Apple Silicon, yüksek seviye'],
+  intuition: {
+    paras: [
+      'Klasik modelde çekirdek her şeye yetkilidir (omnipotent): belleği eşler, kod imzasını doğrular, tüm kararları verir. Sorun şu: saldırgan çekirdekte bir kez keyfi okuma/yazma (arbitrary read/write) elde ederse, tüm bu yetkiler onun olur. Oyun biter.',
+      'Apple\'ın yanıtı, PPL (Page Protection Layer) ile başlayıp onun ötesine geçer: en kritik yetkileri çekirdekten <strong>çıkarıp</strong> çekirdeğin bile dokunamadığı ayrı, daha ayrıcalıklı alanlara koymak. Sayfa tablolarını yalnızca <strong>SPTM</strong> değiştirebilir; kod imzalama/yetki kararlarını <strong>TXM</strong> verir; hassas hizmetler <strong>Exclaves</strong> içinde çekirdekten izole çalışır. Böylece çekirdek düşse de bu alanlar ayakta kalır.'
+    ],
+    ideas: [
+      { b: 'Ayrıcalık dağıtıldı', span: 'Tek bir her şeye yetkili çekirdek yerine, kritik kararlar birkaç ayrı güven alanına bölündü (least privilege, en az ayrıcalık).' },
+      { b: 'Çekirdek bile dokunamaz', span: 'SPTM ve TXM çekirdekten daha ayrıcalıklı bir seviyede çalışır; çekirdek onların belleğini değiştiremez.' },
+      { b: 'İzole hizmetler', span: 'Exclaves, hassas işleri (örn. mikrofon/kamera durumu) çekirdekten ayrı bölmelerde tutar; çekirdek ele geçse de bunlar korunur.' }
+    ]
+  },
+  lab: {
+    intro: 'Aynı saldırıyı (çekirdekte keyfi yazma) iki mimaride izle: eski modelde çekirdek düşünce her şey gider; yeni modelde ayrıcalık dağıtıldığı için saldırganın kazanımı sınırlı kalır. (Bu bileşenler yeni; kamuya açık detay sınırlı, görünüm yüksek seviyede/temsilîdir.)',
+    codeLabel: 'mimari (genel bakış · temsilî)', cmd: 'tehdit senaryosu',
+    foot: 'SPTM/TXM/SK/Exclaves Apple\'ın son nesil güvenlik mimarisidir; ayrıntılar kısıtlı olduğundan bu modül kavramsal ve yüksek seviyededir.',
+    code: [
+      { t: '<span class="cm">// Tehdit: saldırgan çekirdekte</span>' },
+      { t: '<span class="cm">// keyfi okuma/yazma (R/W) elde etti.</span>' },
+      { t: '' },
+      { t: '<span class="cm">// Soru: şimdi neyi değiştirebilir?</span>' },
+      { t: 'kernel.<span class="f">write</span>(page_table, ...);  <span class="cm">// eski: olur / yeni: olmaz</span>', danger: true },
+      { t: 'kernel.<span class="f">write</span>(code_sign, ...);   <span class="cm">// eski: olur / yeni: olmaz</span>', danger: true }
+    ],
+    steps: [
+      { title: 'Eski model: her şeye yetkili çekirdek', mode: 'old',
+        realms: [
+          { cls: 'kernel', name: 'Çekirdek (XNU)', tag: 'tüm yetki', pill: 'EL1', desc: 'Sayfa tablolarını eşler, kod imzasını doğrular, tüm kararları verir.' }
+        ],
+        term: ['model: tek yetki merkezi', 'çekirdek = sayfa tabloları + imza + her şey'],
+        text: 'Geleneksel XNU\'da çekirdek (EL1) her şeyden sorumludur: sanal belleği eşler, kod imzalarını doğrular, sürücüleri yönetir. Güçlü ama kırılgan: tek bir çekirdek hatası tüm bu yetkileri açığa çıkarır.' },
+      { title: 'Çekirdek ele geçirildi', mode: 'old',
+        realms: [
+          { cls: 'kernel pwned', name: 'Çekirdek (XNU)', tag: 'ele geçirildi', pill: 'R/W', desc: 'Saldırgan keyfi okuma/yazma elde etti. Sayfa tabloları da, imza kararları da artık onun.' }
+        ],
+        term: ['saldırgan: kernel R/W', 'sayfa tablosu yazılabilir → kod enjekte', 'imza kontrolü atlanabilir', 'sonuç: tam ele geçirme'],
+        text: 'Saldırgan çekirdekte keyfi yazma elde edince, aynı çekirdek sayfa tablolarını da imza kararlarını da tuttuğu için her şeyi değiştirebilir: imzasız kod çalıştırır, korumaları kapatır. Tek alanın düşmesi oyunu bitirir.' },
+      { title: 'Yeni model: SPTM', mode: 'new',
+        realms: [
+          { cls: 'guard', name: 'SPTM', tag: 'sayfa tabloları', pill: 'üst ayrıcalık', desc: 'Güvenli sayfa tablosu monitörü (Secure Page Table Monitor): sayfa tablolarını DEĞİŞTİREBİLEN tek bileşen. PPL\'in halefi.' },
+          { cls: 'kernel', name: 'Çekirdek (XNU)', tag: 'sayfa tablosu yetkisi YOK', pill: 'EL1', desc: 'Artık sayfa tablolarını doğrudan yazamaz; değişiklik için SPTM\'ye başvurmak zorunda.' }
+        ],
+        term: ['sayfa tablosu yazma → yalnızca SPTM', 'çekirdek SPTM\'den talep eder, doğrudan yazamaz'],
+        text: 'İlk adım: sayfa tablosu yazma yetkisini çekirdekten almak. <strong>SPTM</strong> (güvenli sayfa tablosu monitörü / Secure Page Table Monitor) çekirdekten daha ayrıcalıklı çalışır ve sayfa tablolarını değiştirebilen tek bileşendir. Çekirdek bir eşleme isterse SPTM\'den talep eder; SPTM kuralları uygular.' },
+      { title: 'TXM: imza kararları ayrıldı', mode: 'new',
+        realms: [
+          { cls: 'guard', name: 'SPTM', tag: 'sayfa tabloları', pill: 'üst ayrıcalık', desc: 'Belleğin yazma izinlerini yönetir.' },
+          { cls: 'guard', name: 'TXM', tag: 'kod imzası / yetki', pill: 'üst ayrıcalık', desc: 'Güvenilir yürütme monitörü (Trusted Execution Monitor): kod imzalama ve yetki (entitlement) kararlarını çekirdeğin dışında verir.' },
+          { cls: 'kernel', name: 'Çekirdek (XNU)', tag: 'karar yetkisi YOK', pill: 'EL1', desc: 'İmza/yetki kararlarını kendi vermez; TXM\'ye sorar.' }
+        ],
+        term: ['kod imzası kararı → TXM', 'çekirdek imza mantığını barındırmaz'],
+        text: 'İkinci adım: kod imzalama ve yetki kararlarını da çekirdekten çıkarmak. <strong>TXM</strong> (güvenilir yürütme monitörü / Trusted Execution Monitor) bu kararları ayrı bir güven alanında verir. Önceden AMFI çekirdekte zorlardı; artık asıl karar mantığı çekirdeğin ulaşamayacağı yerde.' },
+      { title: 'Exclaves: izole hizmetler', mode: 'new',
+        realms: [
+          { cls: 'guard', name: 'SPTM', tag: 'sayfa tabloları', pill: 'üst ayrıcalık', desc: 'Bellek izinleri.' },
+          { cls: 'guard', name: 'TXM', tag: 'imza / yetki', pill: 'üst ayrıcalık', desc: 'Kod imzalama kararları.' },
+          { cls: 'guard', name: 'Exclaves', tag: 'izole hizmetler', pill: 'bölme', desc: 'Hassas hizmetler (ör. sensör durumu) çekirdekten yalıtılmış bölmelerde (exclave) çalışır.' },
+          { cls: 'kernel', name: 'Çekirdek (XNU)', tag: 'aracı', pill: 'EL1', desc: 'Artık çok sayıda kritik işin yalnızca aracısı; sahibi değil.' }
+        ],
+        term: ['hassas hizmetler → Exclaves (izole)', 'çekirdek bunların belleğine erişemez'],
+        text: 'Son adım: hassas hizmetleri de ayırmak. <strong>Exclaves</strong>, çekirdekten yalıtılmış bölmelerde çalışan güvenli hizmetlerdir (örneğin mikrofon/kamera gibi gizlilik göstergelerinin durumu). Çekirdek bunların belleğine giremez; yalnızca tanımlı arayüzlerle konuşur. SK (Secure Kernel) bu bölmelerin altındaki güvenli çekirdektir.' },
+      { title: 'Saldırı yeni modelde', mode: 'new',
+        realms: [
+          { cls: 'guard safe', name: 'SPTM', tag: 'sağlam', pill: 'korundu', desc: 'Çekirdek R/W ile bile dokunulamaz: sayfa tabloları hâlâ güvende.' },
+          { cls: 'guard safe', name: 'TXM', tag: 'sağlam', pill: 'korundu', desc: 'İmza kararları hâlâ dışarıda; imzasız kod çalıştırılamaz.' },
+          { cls: 'guard safe', name: 'Exclaves', tag: 'sağlam', pill: 'korundu', desc: 'İzole hizmetler erişilemez durumda.' },
+          { cls: 'kernel pwned', name: 'Çekirdek (XNU)', tag: 'ele geçirildi', pill: 'R/W', desc: 'Saldırgan çekirdeği aldı ama kazanımı bununla sınırlı.' }
+        ],
+        term: ['saldırgan: kernel R/W', 'sayfa tablosu yazma → SPTM reddeder', 'imzasız kod → TXM reddeder', 'sonuç: kazanım SINIRLI'],
+        text: 'Aynı saldırı, aynı çekirdek R/W: ama bu kez saldırgan sayfa tablolarını yazamaz (SPTM engeller), imzasız kod çalıştıramaz (TXM reddeder), izole hizmetlere giremez (Exclaves). Çekirdeğin düşmesi artık "oyun bitti" demek değil. Ayrıcalığın dağıtılması, tek bir hatanın bedelini düşürür.' }
+    ],
+    render: function (s, stateEl, u) {
+      var head = s.mode === 'old'
+        ? '<p class="lab-label">Eski model · tek yetki merkezi</p>'
+        : '<p class="lab-label">Yeni model · dağıtılmış güven alanları</p>';
+      var realms = s.realms.map(function (r) {
+        return '<div class="realm ' + r.cls + '"><div class="rh"><b>' + u.esc(r.name) + '</b><span class="pill">' + u.esc(r.pill) + '</span></div>' +
+          '<span class="mono">' + u.esc(r.tag) + '</span><span class="desc">' + u.esc(r.desc) + '</span></div>';
+      }).join('');
+      stateEl.innerHTML = head + '<div class="trust" id="trust">' + realms + '</div>';
+      var pwned = document.querySelector('#trust .realm.kernel.pwned');
+      if (pwned) ATLAS.flash(pwned, true);
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: ayrıcalığın çekirdekten ayrılması",
+    html: `<p class="lead">Apple'ın bu mimarisi tek bir cümlede özetlenebilir: en kritik yetkileri çekirdekten alıp çekirdeğin <em>daha ayrıcalıklı</em> ve ondan yalıtılmış bileşenlere vermek. Böylece bir kernel R/W primitifi artık "her şey" anlamına gelmez. Bu bölüm Apple'ın <em>Operating system integrity</em> belgesine ve kamuya açık analizlere (Antid0te) dayanan yüksek seviyeli bir genel bakıştır — bu bileşenler yenidir ve uygulama ayrıntısı sınırlıdır.</p>
+
+<h3>1. Önce gelen katmanlar: KIP ve PPL</h3>
+<p>Bu mimari sıfırdan doğmadı; daha eski kernel integrity korumalarının devamıdır. <strong>KIP (Kernel Integrity Protection)</strong>, çekirdek ve sürücü kodunun boot'tan sonra değiştirilmesini engeller; yapılandırması donanım tarafından kilitlenir. <strong>PPL (Page Protection Layer)</strong> ise bir adım öteye geçip, code signature doğrulaması bittikten sonra user space kodunun değiştirilmesini önler — ama yalnızca iOS/iPadOS/watchOS/visionOS gibi "yalnızca imzalı kod" platformlarında; macOS keyfi kod çalıştırabildiği için PPL kullanmaz.</p>
+<div class="manpage src-apple"><div class="ref">Apple Platform Security · OS integrity</div><p class="orig">Kernel Integrity Protection (KIP) is enabled to help prevent modifications of kernel and driver code.</p><p>KIP, çekirdek ve sürücü kodunun boot sonrası değiştirilmesini engellemek için vardır; yapılandırması kilitlendiğinden saldırgan onu yeniden ayarlayamaz.</p></div>
+<div class="manpage src-apple"><div class="ref">Apple Platform Security · PPL</div><p class="orig">designed to prevent user space code from being modified after code signature verification is complete</p><p>PPL, imza doğrulaması tamamlandıktan sonra user space kodunun değiştirilmesini önlemek üzere tasarlanmıştır. SPTM, bu fikrin halefi ve genellemesidir.</p></div>
+
+<h3>2. SPTM: sayfa tablolarının tek yetkili sahibi</h3>
+<p>Klasik modelde page table'ları çekirdek yönetir; bu da kernel write'ı olan saldırganın bir sayfayı yazılabilir+çalıştırılabilir yapıp kod enjekte etmesine kapı açar. <strong>SPTM (Secure Page Table Monitor)</strong> bu yetkiyi çekirdekten alır: sayfa tablolarını değiştirebilen tek bileşendir ve bunu çekirdekten <em>daha yüksek bir privilege level</em>'da çalışarak yapar. Çekirdek bir eşleme isterse SPTM'ye başvurur; SPTM kuralları uygular. Saldırgan kernel R/W'ye sahip olsa bile page table'lara doğrudan dokunamaz — PPL'in halefidir.</p>
+<div class="manpage src-apple"><div class="ref">Apple Platform Security · SPTM</div><p class="orig">does this by utilizing a higher privilege level than the kernel</p><p>SPTM, bunu çekirdekten daha yüksek bir ayrıcalık seviyesi (privilege level) kullanarak yapar. Bu yüzden ele geçirilmiş bir çekirdek bile SPTM'nin yönettiği sayfa tablolarını değiştiremez.</p></div>
+
+<h3>3. TXM: kod yürütme politikasını zorlar</h3>
+<p>SPTM belleğin yazma/çalıştırma izinlerini tutar; peki hangi kodun çalışmasına izin verileceğine kim karar verir? Burada <strong>TXM (Trusted Execution Monitor)</strong> devreye girer. SPTM, kod yürütmeyi yöneten politikaları fiilen uygulamak için daha düşük ayrıcalıklı TXM'yi kullanır. Yani code signing / entitlement kararlarının mantığı çekirdekten çıkıp TXM'ye taşınmıştır (eskiden bunu AMFI çekirdekte zorlardı). İkili yapı bilinçlidir: SPTM güçlü ama küçük tutulur, politika mantığı gibi daha büyük yüzey TXM'ye bırakılır.</p>
+<div class="manpage src-apple"><div class="ref">Apple Platform Security · TXM</div><p class="orig">the lower privileged TXM to actually enforce the policies that govern code execution</p><p>SPTM, kod yürütmeyi yöneten politikaları fiilen uygulamak için daha düşük ayrıcalıklı TXM'yi kullanır. Böylece en ayrıcalıklı bileşen (SPTM) küçük ve denetlenebilir kalır.</p></div>
+
+<h3>4. Güven alanları birbirinden de yalıtık</h3>
+<p>Kritik tasarım kararı: bu bileşenler yalnızca çekirdekten değil, <em>birbirinden</em> de ayrılmıştır. Apple'a göre mimari, bir TXM ihlalinin otomatik olarak bir SPTM bypass'ına dönüşmemesi için tasarlanmıştır. Yani daha büyük yüzeyli TXM düşse bile, sayfa tablolarının gerçek bekçisi olan SPTM ayakta kalır. Bu, "defense in depth" ilkesinin bileşenler arası uygulanışıdır.</p>
+<div class="manpage src-apple"><div class="ref">Apple Platform Security · SPTM/TXM</div><p class="orig">designed so that a TXM compromise doesn't automatically translate to an SPTM bypass</p><p>Mimari, bir TXM ihlalinin kendiliğinden bir SPTM bypass'ına dönüşmemesi için tasarlanmıştır — tek bir bileşenin düşmesi zinciri bitirmez.</p></div>
+
+<h3>5. SK ve Exclaves: izole hizmet dünyası</h3>
+<p>Son halka, hassas hizmetleri de çekirdekten çıkarmaktır. <strong>Secure Kernel (SK)</strong>, çekirdekten ayrı bir güvenli dünyada çalışan küçük bir çekirdektir; onun üzerinde <strong>Exclaves</strong> adı verilen yalıtılmış bölmeler koşar. Her exclave, kendi dar görevine sahip bir mikroservis gibidir ve XNU çekirdeği bunların belleğine giremez — yalnızca tanımlı arayüzlerle konuşur. Örnek: mikrofon/kamera gibi gizlilik göstergelerinin (privacy indicators) durumu. Çekirdek ele geçse bile bir exclave'in tuttuğu "kamera açık" sinyali kapatılamaz.</p>
+<div class="deflist">
+<div><dt>SPTM</dt><dd>Secure Page Table Monitor — sayfa tablolarını değiştirebilen tek bileşen; çekirdekten yüksek privilege level. PPL'in halefi.</dd></div>
+<div><dt>TXM</dt><dd>Trusted Execution Monitor — kod yürütme / code signing politikalarını zorlar; SPTM'nin altında, çekirdeğin dışında.</dd></div>
+<div><dt>SK</dt><dd>Secure Kernel — Exclaves'in üzerinde koştuğu, çekirdekten yalıtık güvenli çekirdek.</dd></div>
+<div><dt>Exclaves</dt><dd>Çekirdekten izole, dar görevli güvenli hizmet bölmeleri (ör. privacy indicator durumu).</dd></div>
+</div>
+
+<h3>6. Savunmacı için anlamı</h3>
+<p>Bu mimarinin asıl dersi exploit geliştirme değil, <em>hata bedelinin düşürülmesidir</em>. Çekirdek hâlâ büyük ve karmaşıktır, yani bug barındıracaktır; ama bir kernel R/W primitifi artık page table yazmaya, imzasız kod çalıştırmaya veya izole hizmetlere erişmeye yetmez. Aynı felsefe PAC/PAN/MTE (Modül 19) ve kalloc_type (Modül 20) ile paraleldir: tek bir savunmaya güvenmek yerine saldırının her aşamasına ayrı bir engel koymak ve en kritik yetkiyi en iyi korunan yere taşımak. "Çekirdeği aldı" artık "her şeyi aldı" demek değildir.</p>`
+  },
+  underHood: {
+    heading: 'Ayrıcalık nereye dağıtıldı?',
+    html: '<p class="prose">Ortak fikir: tek bir her şeye yetkili çekirdek yerine, kritik yetkileri çekirdekten daha ayrıcalıklı ve ondan yalıtılmış alanlara bölmek. Çekirdek hâlâ büyük ve karmaşıktır (yani hata barındırır), ama bir hatanın <em>bedeli</em> düşer.</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Bileşen</th><th>Ne yönetir</th><th>Çekirdekten ayrı mı?</th></tr></thead><tbody>' +
+      '<tr><td><b>SPTM</b><br><span class="mono">Secure Page Table Monitor</span></td><td>Sayfa tablosu değişiklikleri, bellek yazma izinleri</td><td>Evet — çekirdekten daha ayrıcalıklı; PPL\'in halefi</td></tr>' +
+      '<tr><td><b>TXM</b><br><span class="mono">Trusted Execution Monitor</span></td><td>Kod imzalama ve yetki (entitlement) kararları</td><td>Evet — karar mantığı çekirdeğin dışında</td></tr>' +
+      '<tr><td><b>SK</b><br><span class="mono">Secure Kernel</span></td><td>Exclaves\'in altındaki güvenli çekirdek</td><td>Evet — ayrı güvenli dünya</td></tr>' +
+      '<tr><td><b>Exclaves</b></td><td>Hassas hizmetler (ör. gizlilik göstergeleri, sensör durumu)</td><td>Evet — çekirdekten yalıtılmış bölmeler</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px">Bu, PAC/PAN/MTE (Modül 19) ve kalloc_type (Modül 20) ile aynı felsefenin devamıdır: tek bir savunmaya güvenmek yerine, saldırının her aşamasına ayrı bir engel koymak ve en kritik yetkileri en iyi korunan yere taşımak. Savunmacı açıdan ders: "çekirdeği ele geçirdi" artık otomatik olarak "her şeyi aldı" anlamına gelmiyor.</p>' +
+      '<p class="prose" style="font-size:13px;color:var(--muted)">Not: Bu bileşenler yeni ve Apple\'ın kamuya açık belgeleri sınırlı; buradaki anlatım kamuya açık analizlere dayanan yüksek seviyeli bir genel bakıştır, uygulama ayrıntısı değil.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Mimarinin izlerini ara', p: 'Yeni güvenlik bileşenleri boot zincirinde ve sistem günlüklerinde iz bırakır. (Bu konteynerde Apple araçları yok; çıktı temsilîdir.)',
+        shells: [{ label: 'terminal (macOS) · temsilî', copy: 'log show --predicate "subsystem == \'com.apple.sptm\'" --last 5m', pre: '<span class="c">$</span> log show --predicate \'sender == "SPTM"\' --last 5m\n<span class="c"># temsilî — SPTM/TXM başlatma kayıtları</span>' }] },
+      { h3: '2. Katmanları kavramsal sırala', p: 'En ayrıcalıklıdan en azına: donanım kök → SPTM/TXM → çekirdek → kullanıcı. Saldırgan aşağıdan yukarı tırmanmaya çalışır; her katman bir engeldir.',
+        shells: [{ label: 'kavram', copy: 'SPTM/TXM > çekirdek(XNU) > kullanıcı', pre: '<span class="c"># ayrıcalık sırası (yüksekten düşüğe)</span>\ndonanım kök güveni\n  └─ SPTM / TXM / SK      <span class="c"># çekirdek buraya dokunamaz</span>\n       └─ XNU çekirdeği    <span class="c"># ele geçse de yukarısı güvende</span>\n            └─ kullanıcı uygulamaları' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Yeni mimarinin temel fikri nedir?', opts: ['Çekirdeği küçültmek', 'Kritik yetkileri çekirdekten ayrı alanlara dağıtmak', 'Tüm kodu kullanıcı alanına taşımak'], answer: 'Kritik yetkileri çekirdekten ayrı alanlara dağıtmak',
+        ok: 'Doğru. Çekirdek düşse bile sayfa tabloları (SPTM), imza kararları (TXM) ve izole hizmetler (Exclaves) ayrı ve korunmuş kalır.', no: 'İpucu: amaç çekirdek ele geçse bile saldırganın kazanımını sınırlamak. Bu nasıl yapılır?' },
+      { q: 'Çekirdekte keyfi yazma elde eden saldırgan yeni modelde sayfa tablolarını neden değiştiremez?', opts: ['Sayfa tabloları şifrelidir', 'Yalnızca SPTM onları değiştirebilir, çekirdek edemez', 'Sayfa tabloları diskte tutulur'], answer: 'Yalnızca SPTM onları değiştirebilir, çekirdek edemez',
+        ok: 'Doğru. Sayfa tablosu yazma yetkisi çekirdekten alınıp daha ayrıcalıklı SPTM\'ye verildi; çekirdek R/W\'si buna yetmez.', no: 'İpucu: bu yetki çekirdekten alınıp hangi bileşene verildi?' },
+      { q: 'Exclaves ne işe yarar?', opts: ['Çekirdeği hızlandırır', 'Hassas hizmetleri çekirdekten yalıtılmış bölmelerde çalıştırır', 'Sayfa tablolarını yönetir'], answer: 'Hassas hizmetleri çekirdekten yalıtılmış bölmelerde çalıştırır',
+        ok: 'Doğru. Exclaves, ele geçirilmiş bir çekirdeğin bile dokunamayacağı izole bölmelerde hassas hizmetleri tutar.', no: 'İpucu: "bölme (exclave)" — çekirdekten ne yapılmış hizmetler?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · macOS Modül 23', title: 'Kernel debugging ve triage', desc: 'Panic log\'ları nasıl okunur, Virtualization.framework GDB stub ile çekirdek nasıl ayıklanır?' },
+  sources: [
+    { href: 'https://www.antid0te.com/training/kernel-internals.html', text: 'Antid0te — Kernel Internals', note: 'SPTM, TXM, SK, Exclaves' },
+    { href: 'https://support.apple.com/guide/security/welcome/web', text: 'Apple Platform Security' },
+    { href: 'https://newosxbook.com/', text: 'newosxbook.com', note: 'XNU iç yapısı' }
+  ],
+  pageTitle: 'Yeni Güvenlik Bileşenleri'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

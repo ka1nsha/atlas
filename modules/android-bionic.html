@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Bionic</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'android',
+  crumbs: 'android › bionic › modül 9',
+  eyebrow: 'Modül 9 · Android · Bionic',
+  titleHTML: 'Android\'in kendi libc\'si: <code>Bionic</code>',
+  lede: 'Android, masaüstü Linux\'un glibc\'sini kullanmaz; Bionic adlı kendi C kütüphanesini (libc) taşır. Bu modülde Bionic\'in neden ayrı olduğunu, kendi bağlayıcısını (linker) ve bir native çökmenin (crash) nasıl bir mezar taşına (tombstone) dönüştüğünü izleyeceksin.',
+  meta: ['~15 dk', 'ön koşul: C, ELF, sinyaller', 'bağlam: AOSP'],
+  intuition: {
+    paras: [
+      'Her C programı bir C kütüphanesine (libc) dayanır: <code>malloc</code>, <code>printf</code>, <code>open</code> gibi işlevler ve program başlangıç kodu oradan gelir. Masaüstü Linux\'ta bu genelde glibc\'dir. Android ise kendi libc\'sini yazdı: <strong>Bionic</strong>.',
+      'Neden? glibc büyüktür ve LGPL lisanslıdır (statik bağlamada zorlayıcı); Android ise küçük, hızlı açılan, BSD/Apache lisanslı ve mobil için uygun bir libc istedi. Bionic ayrıca kendi dinamik bağlayıcısını (dynamic linker, <code>linker64</code>) ve bellek ayırıcısını (önce jemalloc, sonra güvenlik için Scudo) içerir.',
+      'Bionic\'in en görünür parçası ise çökme anında ortaya çıkar: bir native kütüphane çökünce Bionic, insanın okuyabileceği bir <strong>tombstone</strong> (mezar taşı) dosyası üretir — kayıtlar, geri iz (backtrace) ve bellek haritasıyla.'
+    ],
+    ideas: [
+      { b: 'glibc değil', span: 'Bionic daha küçük, mobil için optimize ve BSD/Apache lisanslı. Statik bağlama ve hızlı açılış gözetilerek tasarlandı.' },
+      { b: 'Kendi bağlayıcısı', span: 'linker64, .so kütüphanelerini yükleyen kendi ELF dinamik bağlayıcısıdır; glibc\'nin ld.so\'sundan ayrıdır.' },
+      { b: 'Mezar taşı üretir', span: 'Native çökmede debuggerd devreye girip kayıt + geri iz + bellek haritası içeren bir tombstone yazar.' }
+    ]
+  },
+  lab: {
+    intro: 'Bir native kütüphane geçersiz bir adrese erişip çöküyor. Bionic\'in sinyal işleyicisinden tombstone dosyasına kadar olan yolu adım adım izle. Sağda süreç, sinyal ve toplanan kanıtları gör.',
+    codeLabel: 'crash.c (native)', cmd: './crash  (SIGSEGV)',
+    foot: 'Tombstone içeriği temsilîdir; adresler cihaza göre değişir. Linux benzetmesi aşağıdaki "Kendin dene" bölümünde gerçektir.',
+    code: [
+      { t: '<span class="t">void</span> <span class="f">crash</span>(<span class="t">void</span>) {' },
+      { t: '    <span class="t">int</span> *p = <span class="k">NULL</span>;' },
+      { t: '    *p = <span class="n">42</span>;        <span class="cm">// geçersiz yazma</span>', danger: true },
+      { t: '}' },
+      { t: '' },
+      { t: '<span class="t">int</span> <span class="f">main</span>(<span class="t">void</span>) {' },
+      { t: '    <span class="f">crash</span>();' },
+      { t: '    <span class="k">return</span> <span class="n">0</span>;' },
+      { t: '}' }
+    ],
+    steps: [
+      { pc: 3, title: 'Geçersiz erişim', hi: 'fault', term: ['(uygulama çalışıyor...)'],
+        text: 'Native kod NULL işaretçiye (pointer) yazmaya çalışır. Donanımın bellek yönetim birimi (MMU) bunu geçersiz bulur ve CPU bir hata üretir. Çekirdek süreç için bir <code>SIGSEGV</code> (segmentation fault) sinyali hazırlar.',
+        boxes: [{ id: 'proc', cls: '', name: 'Uygulama süreci', ex: 'native .so içinde *NULL = 42' }] },
+      { pc: 3, title: 'Bionic sinyal işleyicisi', hi: 'handler', term: [],
+        text: 'Çekirdek SIGSEGV\'i teslim eder. Bionic, açılışta bu sinyaller için kendi işleyicisini (signal handler) kurmuştur: <code>debuggerd_signal_handler</code>. Normalde süreç sessizce ölürdü; Bionic araya girip çökmeyi kaydetmeyi sağlar.',
+        boxes: [
+          { id: 'proc', cls: 'warn', name: 'Uygulama süreci', ex: 'SIGSEGV alındı (addr 0x0)' },
+          { id: 'handler', cls: 'hi', name: 'Bionic sinyal işleyicisi', ex: 'debuggerd_signal_handler devrede' }
+        ] },
+      { pc: 3, title: 'debuggerd\'ye bağlan', hi: 'debuggerd', term: [],
+        text: 'İşleyici, ayrı bir yardımcıya (<code>debuggerd</code> / tombstoned) bağlanır. Çöken süreci kendi içinden ayıklamak güvenilmez olduğu için, kanıtı toplama işi bu dış süreçte yapılır. Çöken thread durdurulur.',
+        boxes: [
+          { id: 'proc', cls: 'warn', name: 'Çöken süreç', ex: 'thread durduruldu' },
+          { id: 'debuggerd', cls: 'hi', name: 'debuggerd / tombstoned', ex: 'ptrace ile süreci inceliyor' }
+        ] },
+      { pc: 3, title: 'Kanıt topla', hi: 'collect', term: [],
+        text: 'debuggerd çöken süreçten kanıtları toplar: CPU kayıtları (register), çağrı yığınının geri izi (backtrace), bellek haritası (/proc/pid/maps) ve hata adresi. İşte tombstone\'u değerli kılan bilgi budur.',
+        boxes: [
+          { id: 'regs', cls: '', name: 'Kayıtlar (registers)', ex: 'pc, lr, sp, x0–x30' },
+          { id: 'bt', cls: '', name: 'Geri iz (backtrace)', ex: '#00 crash  #01 main' },
+          { id: 'maps', cls: '', name: 'Bellek haritası', ex: 'yüklü .so\'lar + adresleri' }
+        ] },
+      { pc: 3, title: 'Tombstone yazılır', hi: 'tomb', term: ['F DEBUG : *** *** *** *** *** *** ***', 'F DEBUG : signal 11 (SIGSEGV), code 1, fault addr 0x0', 'F DEBUG : #00 pc crash+8   (libcrash.so)', 'F DEBUG : #01 pc main+16   (crash)'],
+        text: 'Toplanan her şey <code>/data/tombstones/tombstone_NN</code> dosyasına yazılır ve özeti logcat\'e (crash tamponu) düşer. Geliştirici bu dosyayla çökmenin tam olarak hangi fonksiyonun hangi satırında olduğunu kök nedene (root cause) bağlar.',
+        boxes: [
+          { id: 'tomb', cls: 'warn', name: 'tombstone_07', ex: 'sinyal + kayıtlar + geri iz + harita' },
+          { id: 'log', cls: '', name: 'logcat (crash)', ex: 'özet satırlar' }
+        ] },
+      { pc: 1, title: 'Ayrıca: Bionic bağlayıcısı', hi: 'linker', term: [],
+        text: 'Çökme yolu dışında, Bionic her uygulamada daha baştan iş görür: <code>linker64</code> programın bağımlı <code>.so</code> kütüphanelerini yükler, sembolleri çözer (symbol resolution) ve ilk kodu çalıştırır. Bu, glibc\'nin <code>ld.so</code>\'sunun Android karşılığıdır; ikisi uyumlu değildir, bu yüzden glibc binary\'leri Android\'de doğrudan çalışmaz.',
+        boxes: [
+          { id: 'linker', cls: 'hi', name: 'linker64 (Bionic)', ex: '.so yükle → sembol çöz → başlat' },
+          { id: 'libc', cls: '', name: 'libc.so (Bionic)', ex: 'malloc (Scudo), printf, open...' }
+        ] }
+    ],
+    render: function (s, stateEl, u) {
+      var rows = s.boxes.map(function (b) {
+        return '<div class="box' + (b.cls ? ' ' + b.cls : '') + '" style="grid-template-columns:1fr;gap:2px">' +
+          '<b>' + u.esc(b.name) + '</b><span>' + u.esc(b.ex) + '</span></div>';
+      }).join('');
+      stateEl.innerHTML =
+        '<p class="lab-label">Çökme (crash) → mezar taşı (tombstone) akışı</p>' +
+        '<div class="boxgrid">' + rows + '</div>' +
+        '<p class="note" style="margin-top:10px">Her adımda o anki aktif bileşenler görünür. Amaç: sessiz bir çökmeyi, kök nedene bağlanabilen bir kanıta çevirmek.</p>';
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: Bionic'in iç yapısı",
+    html: `<p class="lead">Bionic yalnızca "küçük bir libc" değildir: Android'in C library'si, math library'si ve dynamic linker'ı tek bir bütün olarak buradadır. Bir uygulamanın doğumundan (linker'ın .so'ları yüklemesi) ölümüne (crash'in tombstone'a dönüşmesi) kadar her aşama Bionic'ten geçer. Bu bölüm AOSP belgelerine dayanır.</p>
+
+<h3>1. Bionic tam olarak nedir?</h3>
+<p>Bionic üç parçayı tek repoda birleştirir: standart C library (<code>libc.so</code>), math library (<code>libm.so</code>) ve dynamic linker (<code>linker64</code>). glibc'de bu işler ayrı projelerdir; Android hepsini birlikte, mobil için optimize ederek yazdı.</p>
+<div class="manpage src-aosp"><div class="ref">bionic · readme</div><p class="orig">bionic is Android's C library, math library, and dynamic linker.</p><p>Yani linker ayrı bir araç değil, Bionic'in bir parçasıdır. Bu bütünlük, Android'in libc + linker davranışını tek elden kontrol etmesini sağlar (güvenlik sertleştirmeleri, namespace izolasyonu, property erişimi gibi Android'e özgü eklentiler buraya girer).</p></div>
+
+<h3>2. Dynamic linker: linker64 ve namespace'ler</h3>
+<p>Bir uygulama başladığında ilk çalışan Bionic değil, <code>linker64</code>'tür: bağımlı <code>.so</code> kütüphanelerini (ELF'in <code>DT_NEEDED</code> girdileri) bulur, belleğe yükler, sembolleri çözer (symbol resolution) ve sonra uygulamanın <code>main</code>'ine geçer. glibc'nin <code>ld.so</code>'suyla uyumlu değildir; glibc binary'leri bu yüzden Android'de doğrudan çalışmaz.</p>
+<div class="manpage src-aosp"><div class="ref">bionic · dynamic linker</div><p class="orig">It's responsible for loading the ELF executable into memory and resolving references to symbols.</p><p>Linker, çalıştırılabilir dosyayı ve bağımlı kütüphaneleri belleğe eşler, sonra sembol referanslarını gerçek adreslere bağlar. Android'in ayırt edici parçası ise <strong>linker namespace</strong>'leridir: system, vendor ve uygulama kütüphaneleri ayrı namespace'lerde tutulur, böylece bir uygulama sistem iç kütüphanelerine (private libraries) doğrudan link olamaz — bu hem kararlılık hem güvenlik sınırıdır.</p></div>
+<div class="deflist">
+<div><dt>DT_NEEDED</dt><dd>ELF'in dynamic section'ındaki "bu binary şu .so'lara ihtiyaç duyar" girdileri; linker bunları takip ederek bağımlılık ağacını yükler.</dd></div>
+<div><dt>symbol resolution</dt><dd>Bir fonksiyon/değişken adının hangi kütüphanedeki hangi adrese karşılık geldiğinin bulunması. Lazy (ilk çağrıda) veya immediate olabilir.</dd></div>
+<div><dt>linker namespace</dt><dd>Kütüphanelerin görünürlük sınırı. Uygulamalar yalnızca public NDK kütüphanelerini görür; sistem private library'leri ayrı namespace'tedir.</dd></div>
+</div>
+
+<h3>3. Allocator: jemalloc'tan Scudo'ya</h3>
+<p>Bionic'in <code>malloc</code>/<code>free</code> uygulaması zamanla değişti: önce <strong>jemalloc</strong>, sonra güvenlik için <strong>Scudo</strong> varsayılan oldu. Scudo bir <em>hardened allocator</em>'dır: heap metadata'sını ve chunk yerleşimini, yaygın bellek güvenliği ihlallerini sömürmeyi zorlaştıracak şekilde tasarlar.</p>
+<div class="manpage src-aosp"><div class="ref">scudo · security</div><p class="orig">designed to be resilient against heap-related vulnerabilities</p><p>Scudo; heap overflow, use-after-free ve double-free gibi hatalara karşı dirençli olacak şekilde tasarlanmıştır. Bu hataları tamamen önlemez ama sömürülmelerini pahalı/güvenilmez kılar — yani bir bug'ı doğrudan exploit'e çevirmeyi zorlaştırır. (Ofansif izlekteki UAF modülüyle doğrudan ilişkilidir.)</p></div>
+
+<h3>4. Native crash: debuggerd ve tombstone</h3>
+<p>Bir native süreç <code>SIGSEGV</code>/<code>SIGABRT</code> gibi ölümcül bir signal aldığında, Bionic'in kurduğu handler devreye girer ve çökmeyi <strong>debuggerd</strong>'ye devreder. Çöken süreci kendi içinden ayıklamak güvenilmez olduğu için kanıt toplama ayrı bir süreçte yapılır; sonuç bir <strong>tombstone</strong> dosyasıdır.</p>
+<div class="manpage src-aosp"><div class="ref">debuggerd · tombstone</div><p class="orig">The register dump shows the content of the CPU registers at the time the signal was received.</p><p>Tombstone, çökme anının fotoğrafıdır: signal numarası ve fault address, tüm CPU register'ları, çöken thread'in backtrace'i ve bellek haritası. Geliştirici bu dosyayla çökmeyi tam olarak hangi fonksiyonun hangi satırında olduğuna, yani kök nedene bağlar.</p></div>
+<div class="manpage src-aosp"><div class="ref">debuggerd · tombstone</div><p class="orig">The tombstone contains the same information as the crash dump, plus a few extras.</p><p>Tombstone, logcat'e düşen kısa crash dump'ın genişletilmiş halidir — daha fazla bağlam (bellek içerikleri, tüm thread'ler, açık dosyalar) içerir ve <code>/data/tombstones/</code> altında saklanır.</p></div>
+
+<h3>5. Android'e özgü sertleştirmeler</h3>
+<p>Bionic, glibc'de olmayan bellek/kaynak güvenliği araçları taşır. Bunlar üretimde düşük maliyetle çalışıp hataları erkenden yakalamayı hedefler.</p>
+<div class="deflist">
+<div><dt>fdsan</dt><dd>File descriptor sahipliğini izler; bir fd yanlış sahibi tarafından kapatılırsa (double-close / use-after-close) süreci anında durdurur.</dd></div>
+<div><dt>GWP-ASan</dt><dd>Düşük örnekleme oranıyla çalışan hafif bir sampling allocator; heap overflow ve use-after-free'yi üretimde, az maliyetle yakalamaya çalışır.</dd></div>
+<div><dt>MTE (destekli cihazlarda)</dt><dd>ARM Memory Tagging ile her allocation'a bir tag verilir; yanlış tag'li erişim donanımca yakalanır. Bionic bunu allocator düzeyinde kullanır.</dd></div>
+</div>`
+  },
+  underHood: {
+    heading: 'Bionic ile glibc: neden farklı',
+    html: '<p class="prose">İkisi de aynı POSIX API\'sini sunar ama tasarım hedefleri ayrıdır. Bu yüzden bir glibc binary\'si Android\'de, bir Bionic binary\'si masaüstü Linux\'ta doğrudan çalışmaz.</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Konu</th><th>Bionic (Android)</th><th>glibc (masaüstü)</th></tr></thead><tbody>' +
+      '<tr><td><b>Lisans</b></td><td>BSD / Apache 2.0</td><td>LGPL</td></tr>' +
+      '<tr><td><b>Boyut / açılış</b></td><td>Küçük, hızlı açılış (mobil)</td><td>Büyük, zengin özellik</td></tr>' +
+      '<tr><td><b>Bağlayıcı (linker)</b></td><td>linker64 (kendi ELF yükleyicisi)</td><td>ld.so</td></tr>' +
+      '<tr><td><b>Bellek ayırıcı</b></td><td>Scudo (güvenlik sertleştirmeli)</td><td>ptmalloc (glibc malloc)</td></tr>' +
+      '<tr><td><b>Çökme ayıklama</b></td><td>debuggerd → tombstone</td><td>core dump + gdb</td></tr>' +
+      '<tr><td><b>Thread yerel depo</b></td><td>Basitleştirilmiş, mobil odaklı</td><td>Tam POSIX TLS</td></tr>' +
+      '</tbody></table></div>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Linux\'ta aynı çökmeyi üret (gerçek)', p: 'Android\'de tombstone üreten çökme, Linux\'ta bir core dump + sinyal üretir. NULL yazmanın SIGSEGV verdiğini kendin gör.',
+        shells: [{ label: 'terminal (gerçek çıktı)', copy: 'printf \'int main(){int*p=0;*p=42;}\' > c.c && gcc -g -o c c.c && ./c; echo "exit: $?"', pre: '<span class="c">$</span> gcc -g -o c c.c &amp;&amp; ./c; echo "exit: $?"\nSegmentation fault (core dumped)\nexit: <span class="hi">139</span>   <span class="c"># 128 + 11 (SIGSEGV)</span>' }] },
+      { h3: '2. Geri izi (backtrace) gdb ile al', p: 'tombstone\'un Android\'de otomatik yaptığını, Linux\'ta gdb elle yapar: çökme fonksiyonunu ve satırını gösterir.',
+        shells: [{ label: 'terminal (gerçek çıktı)', copy: 'gdb -q -batch -ex run -ex bt ./c', pre: '<span class="c">$</span> gdb -q -batch -ex run -ex bt ./c\nProgram received signal <span class="hi">SIGSEGV</span>, Segmentation fault.\n0x... in main () at c.c:1\n<span class="g">#0  main () at c.c:1</span>   <span class="c"># Android\'de bu, tombstone\'daki backtrace\'tir</span>' }] },
+      { h3: '3. Android tarafı (temsilî)', p: 'Gerçek cihazda tombstone dosyalarını ve logcat crash tamponunu böyle incelersin.',
+        shells: [{ label: 'adb (temsilî)', copy: 'adb shell ls /data/tombstones; adb logcat -b crash', pre: '<span class="c">$</span> adb shell ls /data/tombstones\ntombstone_00  tombstone_01\n<span class="c">$</span> adb logcat -b crash\nF DEBUG: signal 11 (SIGSEGV), fault addr 0x0 ...' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Bionic neden glibc yerine yazıldı? (en iyi tek sebep)', opts: ['Daha fazla özellik için', 'Küçüklük, mobil uygunluk ve lisans için', 'C++ desteği için'], answer: 'Küçüklük, mobil uygunluk ve lisans için',
+        ok: 'Doğru. Bionic küçük, hızlı açılan ve BSD/Apache lisanslıdır; glibc\'nin boyutu ve LGPL lisansı mobil için uygun değildi.', no: 'İpucu: glibc zaten özellik açısından zengin. Android neyi önemsedi — boyut, hız, lisans?' },
+      { q: 'Bir native çökmede insanın okuyabileceği kanıtı (kayıt + geri iz + harita) kim üretir?', opts: ['Çekirdek doğrudan', 'debuggerd (tombstone)', 'logcat'], answer: 'debuggerd (tombstone)',
+        ok: 'Doğru. Bionic sinyal işleyicisi debuggerd\'ye bağlanır; o da süreci ayıklayıp tombstone dosyasını yazar.', no: 'İpucu: çöken süreci kendi içinden ayıklamak güvenilmez; iş ayrı bir yardımcıya verilir.' },
+      { q: 'Bir masaüstü Linux (glibc) binary\'si Android\'de neden doğrudan çalışmaz?', opts: ['CPU farkı yüzünden', 'Farklı libc ve bağlayıcı (linker) yüzünden', 'Dosya izinleri yüzünden'], answer: 'Farklı libc ve bağlayıcı (linker) yüzünden',
+        ok: 'Doğru. Android Bionic ve linker64 kullanır; glibc/ld.so ile uyumlu değildir, bu yüzden binary\'ler taşınamaz.', no: 'İpucu: aynı CPU mimarisinde bile çalışmaz. Fark libc ve bağlayıcı katmanındadır.' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Android Modül 10', title: 'Paket yönetimi', desc: 'APK, installd ve PackageManagerService: bir uygulama nasıl kurulur ve güncellenir?' },
+  sources: [
+    { href: 'https://newandroidbook.com/TOC.html', text: 'Levin — Android Internals', note: 'Cilt II, Bölüm 2' },
+    { href: 'https://android.googlesource.com/platform/bionic/+/master/README.md', text: 'AOSP — Bionic README' },
+    { href: 'https://source.android.com/docs/core/tests/debug/native-crash', text: 'AOSP — Native çökme ve tombstone' }
+  ],
+  pageTitle: 'Bionic'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

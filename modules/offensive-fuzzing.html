@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Fuzzing</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: fuzzing döngüsü */
+.cov { margin-top: 10px; }
+.cov-bar { height: 10px; border-radius: 999px; background: var(--sunk); overflow: hidden; }
+.cov-bar i { display: block; height: 100%; background: var(--track); transition: width .3s; }
+.cov-lbl { font-family: var(--f-mono); font-size: 11.5px; color: var(--muted); margin-top: 4px; display: flex; justify-content: space-between; }
+.corpus { display: grid; gap: 4px; margin-top: 6px; }
+.seed { font-family: var(--f-mono); font-size: 12px; border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; background: var(--surface); display: flex; justify-content: space-between; gap: 8px; min-width: 0; }
+.seed.new { border-color: var(--ok); background: var(--ok-soft); }
+.seed.crash { border-color: var(--bad); background: var(--bad-soft); color: var(--bad); font-weight: 700; }
+.seed .tag { font-size: 10px; color: var(--muted); }
+.cur-in { font-family: var(--f-mono); font-size: 13px; border: 1.5px solid var(--track); border-radius: var(--r); background: var(--track-soft); padding: 8px 10px; margin-top: 8px; overflow-wrap: anywhere; }
+.cur-in .mut { color: var(--bad); font-weight: 700; }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'offensive',
+  crumbs: 'ofansif › fuzzing › modül 11',
+  eyebrow: 'Ofansif izlek · Modül 11 · Zafiyet keşfi',
+  titleHTML: 'Bug’ı makineye buldurmak: <code>fuzzing</code>',
+  lede: 'Bir zafiyeti elle aramak yerine programa milyonlarca bozuk girdi fırlatıp çökeni yakalamak — fuzzing. Modern fuzzer’lar bunu körlemesine değil, kapsam geri bildirimiyle (coverage-guided) yapar: hangi girdinin yeni kod yolu açtığını ölçer ve onu daha da mutasyona uğratır. Bu, hem saldırganın hem de kendi kodunu sağlamlaştıran savunmacının birincil aracıdır.',
+  meta: ['~20 dk', 'ön koşul: bellek güvenliği modülü', 'araç: libFuzzer / AFL++ / ASan'],
+  ethic: '<b>İlke.</b> Fuzzing meşru ve savunmacı bir tekniktir: amaç, bug’ı kötü niyetli biri bulmadan <b>kendi kodunda</b> bulmaktır. Bu modüldeki tüm deneyler kendi makinende, kasıtlı zafiyetli bir eğitim hedefinde yapılır; gerçek çökme çıktısı bu kaptaki bir ASan hedefinden alınmıştır.',
+  intuition: {
+    paras: [
+      'Fuzzing’in fikri basittir: bir programa çok sayıda rastgele ya da bozulmuş girdi ver, çökeni (crash) kaydet. Ama saf rastgelelik verimsizdir; girdilerin çoğu daha ilk kontrolde elenir. Çözüm <strong>kapsam güdümlü (coverage-guided)</strong> fuzzing’dir: fuzzer, bir girdinin programda <em>yeni bir kod yolu</em> çalıştırıp çalıştırmadığını ölçer. Yeni yol açan girdiyi saklar (korpusa ekler) ve onu temel alarak mutasyona (mutation) devam eder.',
+      'İkinci kritik parça bir <strong>sanitizer</strong>’dır (genelde AddressSanitizer). Fuzzer bir çökme beklemez; ASan, taşma veya use-after-free gibi bir ihlali program görünürde çökmeden <em>tam oluştuğu anda</em> yakalar. Üçlü birlikte çalışır: rastgelelik girdiyi üretir, kapsam onu yönlendirir, sanitizer hatayı görünür kılar.'
+    ],
+    ideas: [
+      { b: 'Kapsam yol gösterir', span: 'Yeni kod yolu açan girdi değerlidir; korpusa (corpus) eklenir ve daha çok mutasyona uğratılır. Körlemesine değil, geri bildirimle.' },
+      { b: 'Sanitizer gözdür', span: 'ASan belleği izler; bir taşmayı çökme olmadan, satır numarasıyla yakalar. Sessiz bug’lar görünür olur.' },
+      { b: 'Kendi kodunu fuzz’la', span: 'Aynı araç saldırmak için de savunmak için de kullanılır. Bug’ı önce sen bulursan, düzeltirsin.' }
+    ]
+  },
+  lab: {
+    intro: 'Aşağıdaki fuzz hedefi (fuzz target) bir girdi alır ve "BOOM" ile başlayan uzun girdilerde sabit bir tamponu taşırır. Fuzzer’ın döngüsünü izle: tohumdan mutasyona, kapsam ölçümünden korpus büyümesine ve nihayet ASan’ın çökmeyi yakalamasına.',
+    codeLabel: 'target.c (fuzz hedefi)', cmd: 'clang -fsanitize=fuzzer,address target.c -o fuzz',
+    foot: 'Hedef kasıtlı zafiyetlidir. Aşağıdaki "Kendin dene" bölümündeki ASan çıktısı bu kaptaki gerçek bir derlemeden alınmıştır.',
+    code: [
+      { t: '<span class="pp">#include</span> <span class="s">&lt;stdint.h&gt;</span>' },
+      { t: '<span class="pp">#include</span> <span class="s">&lt;string.h&gt;</span>' },
+      { t: '' },
+      { t: '<span class="cm">// libFuzzer her girdiyi bu fonksiyona verir</span>' },
+      { t: '<span class="t">int</span> <span class="f">LLVMFuzzerTestOneInput</span>(<span class="k">const</span> <span class="t">uint8_t</span> *data, <span class="t">size_t</span> size) {' },
+      { t: '    <span class="t">char</span> buf[<span class="n">8</span>];' },
+      { t: '    <span class="k">if</span> (size &gt;= <span class="n">4</span> &amp;&amp; <span class="f">memcmp</span>(data, <span class="s">"BOOM"</span>, <span class="n">4</span>) == <span class="n">0</span>)' },
+      { t: '        <span class="f">memcpy</span>(buf, data, size);   <span class="cm">// size &gt; 8 -&gt; taşma</span>', danger: true },
+      { t: '    <span class="k">return</span> <span class="n">0</span>;' },
+      { t: '}' }
+    ],
+    steps: [
+      { pc: null, title: 'Tohum korpusu', cov: 18,
+        corpus: [{ v: '"hello"' }, { v: '"test"' }, { v: '"BOOM"' }],
+        cur: null, store: null, term: ['INFO: seed corpus: 3 dosya', '#0  READ cov: 18'],
+        text: 'Fuzzer bir tohum korpusuyla (seed corpus) başlar: birkaç geçerli örnek girdi. Bunlar programda bazı kod yollarını çalıştırır; başlangıç kapsamı (coverage) buradan ölçülür.' },
+      { pc: 7, title: 'Mutasyon', cov: 18,
+        corpus: [{ v: '"hello"' }, { v: '"test"' }, { v: '"BOOM"' }],
+        cur: { pre: '"BO', mut: 'X', post: 'OM"' }, store: null, term: ['#412  mutasyon: bit çevir, bayt ekle'],
+        text: 'Fuzzer korpustan bir girdi seçer ve onu mutasyona (mutation) uğratır: bir baytı çevirir, rastgele bayt ekler/siler. Üretilen çoğu girdi ilk <code>memcmp</code> kontrolünde elenir — henüz "BOOM" ön ekini tutturamadı.' },
+      { pc: 6, title: 'Kapsam geri bildirimi', cov: 42,
+        corpus: [{ v: '"hello"' }, { v: '"test"' }, { v: '"BOOM"' }, { v: '"BOOMz"', neu: true }],
+        cur: { pre: '"BOOM', mut: 'z', post: '"' }, store: null, term: ['#5304  NEW    cov: 42 (yeni kod yolu!)', '       korpusa eklendi'],
+        text: 'Bir mutasyon "BOOM" ön ekini tutturur ve <code>if</code>’in içine girer — daha önce hiç çalışmamış bir kod yolu. Kapsam artar. Fuzzer bunu <strong>değerli</strong> sayar ve korpusa ekler; bundan sonraki mutasyonlar bu girdiyi temel alır.' },
+      { pc: 7, title: 'Çökmeye yaklaşma', cov: 42,
+        corpus: [{ v: '"hello"' }, { v: '"test"' }, { v: '"BOOM"' }, { v: '"BOOMz"' }, { v: '"BOOMzzz..."', neu: true }],
+        cur: { pre: '"BOOM', mut: 'AAAAAAAAAAAAAAAA', post: '"' }, store: null, term: ['#9170  girdi uzunluğu 24 bayt', '       memcpy(buf[8], data, 24)...'],
+        text: 'Korpustaki "BOOM"’lu girdiyi temel alan fuzzer, onu uzatmaya devam eder. Girdi 8 baytı aşınca <code>memcpy</code> sabit <code>buf[8]</code>’i taşırmak üzeredir. Kapsam onu buraya kadar getirdi; gerisini sanitizer görecek.' },
+      { pc: 7, title: 'ASan çökmeyi yakalar', cov: 42,
+        corpus: [{ v: '"hello"' }, { v: '"test"' }, { v: '"BOOM"' }, { v: '"BOOMz"' }, { v: '"BOOMzzz..."' }],
+        cur: { pre: '"BOOM', mut: 'AAAAAAAAAAAAAAAA', post: '"' }, store: 'crash-a1b2c3',
+        term: ['==ERROR: AddressSanitizer: stack-buffer-overflow', 'WRITE of size 24 ... in memcpy', 'Test unit written to ./crash-a1b2c3'],
+        text: 'Girdi tamponu taşırır. AddressSanitizer, yazma sınırı aştığı anda — program çökmeden önce — hatayı yakalar ve durdurur. Fuzzer çökmeye yol açan tam girdiyi bir dosyaya (crash-...) kaydeder; artık yeniden üretilebilir bir bug var.' },
+      { pc: null, title: 'Döngü ve büyüme', cov: 42,
+        corpus: [{ v: '"hello"' }, { v: '"test"' }, { v: '"BOOM"' }, { v: '"BOOMz"' }, { v: '"BOOMzzz..."' }],
+        cur: null, store: 'crash-a1b2c3', term: ['toplam: ~9000 deneme', 'korpus: 5 girdi · 1 çökme'],
+        text: 'Bütün süreç bir döngüdür: mutasyon → çalıştır → kapsamı ölç → değerliyse sakla → tekrarla. Kapsam büyüdükçe fuzzer programın daha derinlerine iner ve daha önce ulaşılamayan bug’ları açar. Körlemesine rastgelelik haftalarca bulamayacağını, kapsam geri bildirimi dakikalar içinde bulur.' }
+    ],
+    render: function (s, stateEl, u) {
+      var corpus = s.corpus.map(function (c) {
+        var cls = 'seed' + (c.neu ? ' new' : '');
+        return '<div class="' + cls + '"><span>' + u.esc(c.v) + '</span>' + (c.neu ? '<span class="tag">YENİ</span>' : '') + '</div>';
+      }).join('');
+      var cur = s.cur
+        ? '<p class="lab-label" style="margin-top:12px">Şu anki girdi (mutasyonlu)</p><div class="cur-in">' +
+            u.esc(s.cur.pre) + '<span class="mut">' + u.esc(s.cur.mut) + '</span>' + u.esc(s.cur.post) + '</div>'
+        : '';
+      var store = s.store
+        ? '<div class="read-out"><div class="verdict breach"><span class="dot"></span><span>çökme kaydedildi: ' + u.esc(s.store) + '</span></div></div>'
+        : '';
+      stateEl.innerHTML =
+        '<p class="lab-label">Kapsam (coverage)</p>' +
+        '<div class="cov"><div class="cov-bar"><i style="width:' + s.cov + '%"></i></div>' +
+        '<div class="cov-lbl"><span>çalışan kod yolları</span><span>' + s.cov + ' / 42 blok</span></div></div>' +
+        '<p class="lab-label" style="margin-top:14px">Korpus (corpus)</p><div class="corpus">' + corpus + '</div>' +
+        cur + store;
+      if (s.store) ATLAS.flash(stateEl.querySelector('.verdict'), true);
+    }
+  },
+  deepDive: {
+    heading: 'Derinlemesine: fuzzing bir arama stratejisidir',
+    html: `<p class="lead">Fuzzing, bir programa çok sayıda hatalı/beklenmedik girdi verip çökme (crash) ya da bellek ihlali tetiklemeye çalışan otomatik bir test yöntemidir. Modern fuzzer’ı değerli kılan şey rastgelelik değil, <strong>geri bildirim</strong>dir: hangi girdinin yeni kod yolu açtığını ölçer (coverage-guided) ve aramayı oraya yöneltir. Bu bölüm libFuzzer, AFL++, syzkaller ve AddressSanitizer’ın kamuya açık belgelerine dayanır. Amaç kavramsaldır — hazır bir saldırı reçetesi değil, bug’ı kötü niyetli biri bulmadan kendi kodunda bulma disiplini.</p>
+
+<h3>1. Neden rastgelelik tek başına yetmez</h3>
+<p>Saf (dumb) fuzzing bir programa tamamen rastgele baytlar verir. Sorun şudur: girdilerin ezici çoğunluğu daha ilk ayrıştırma (parsing) adımında elenir, bu yüzden çökmeye götüren derin kod yollarına neredeyse hiç ulaşılamaz. Çözüm, girdinin programda <em>ne kadar ilerlediğini</em> ölçüp bunu bir arama sinyali olarak kullanmaktır. libFuzzer belgeleri aracı tam da bu çerçevede tanımlar.</p>
+<div class="manpage src-docs"><div class="ref">LLVM · libFuzzer</div><p class="orig">LibFuzzer is an in-process, coverage-guided, evolutionary fuzzing engine.</p><p>libFuzzer; süreç-içi (in-process), kapsam güdümlü (coverage-guided) ve evrimsel (evolutionary) bir fuzzing motorudur. "In-process" girdiyi ayrı süreç başlatmadan aynı süreçte test fonksiyonuna vermesi (çok hızlı); "coverage-guided" kapsamı sinyal olarak kullanması; "evolutionary" ise değerli girdileri saklayıp onların üzerine mutasyon yaparak nesilden nesile "geliştirmesi" demektir.</p></div>
+
+<h3>2. Fuzzer türleri</h3>
+<p>Fuzzer’lar iki eksende ayrışır: girdiyi <em>nasıl</em> ürettikleri ve kapsam geri bildirimi kullanıp kullanmadıkları.</p>
+<div class="deflist">
+<div><dt>mutation-based</dt><dd>Var olan geçerli girdileri (tohum/seed) bit çevirme, bayt ekleme/silme, birleştirme ile bozar. Formatı bilmeye gerek yoktur; iyi bir tohum korpusu şarttır. libFuzzer ve AFL++ temelde böyle çalışır.</dd></div>
+<div><dt>generation-based</dt><dd>Girdiyi bir dilbilgisine/modele göre sıfırdan üretir (ör. bir dosya formatı veya protokol grammar’ı). Format farkındalığı derin yollara daha hızlı ulaştırır ama grammar yazmak emek ister.</dd></div>
+<div><dt>dumb (kör)</dt><dd>Kapsam geri bildirimi yoktur; ürettiğini körlemesine dener. Kurulumu kolay, verimi düşük.</dd></div>
+<div><dt>coverage-guided</dt><dd>Her girdinin açtığı kod yollarını ölçer; yeni yol açanı korpusa ekleyip temel alır. Bugün standart olan yaklaşım budur.</dd></div>
+</div>
+
+<h3>3. Kapsam güdümlü döngü: enstrümantasyon + evrim</h3>
+<p>Coverage-guided bir fuzzer derleme anında koda sayaçlar yerleştirir (SanitizerCoverage / AFL instrumentation) ve her çalıştırmada hangi dalların çalıştığını görür. Yeni kapsam açan girdi "değerli" sayılır, korpusa eklenir ve sonraki mutasyonlara tohum olur — klasik AFL bunu bir genetik algoritma olarak tanımlar.</p>
+<div class="manpage src-docs"><div class="ref">AFL · genel bakış</div><p class="orig">american fuzzy lop is a security-oriented fuzzer that employs a novel type of compile-time instrumentation and genetic algorithms to automatically discover clean, interesting test cases that trigger new internal states in the target binary.</p><p>AFL, derleme-zamanı enstrümantasyonu ve genetik algoritmalar kullanarak hedef ikilide yeni iç durumları tetikleyen "ilginç" test durumlarını otomatik keşfeden güvenlik odaklı bir fuzzer’dır. Anahtar fikir: "yeni iç durum" (new internal state) = yeni kod yolu; fuzzer bunları ödül sayar ve çoğaltır. AFL++ bu yaklaşımın bakımı sürdürülen, daha hızlı modern halefidir.</p></div>
+<p>Pratikte döngü şudur: korpustan girdi seç → mutasyona uğrat → çalıştır → kapsamı ölç → yeni yol açtıysa sakla → tekrarla. Bu yüzden kapsam zamanla "tırmanır" ve fuzzer, elle haftalarca aranacak derin yolları saatler içinde bulabilir.</p>
+
+<h3>4. Sanitizer: sessiz hatayı görünür kılan göz</h3>
+<p>Bir fuzzer yalnızca gözlemleyebildiği hatayı bulur. Bir buffer overflow ya da use-after-free çoğu zaman programı anında çökertmez — bellek bozulur ama çalışma sürer. Sanitizer bu boşluğu kapatır: ihlali tam oluştuğu anda, satır bilgisiyle yakalar ve süreci durdurur.</p>
+<div class="manpage src-docs"><div class="ref">AddressSanitizer</div><p class="orig">AddressSanitizer is a fast memory error detector.</p><p>AddressSanitizer (ASan) hızlı bir bellek hatası dedektörüdür; out-of-bounds erişim, use-after-free, use-after-return gibi ihlalleri derleme anında eklenen kontrollerle anında yakalar. Fuzzing’de ASan olmadan bir girdi bug’ı tetiklese bile fuzzer bunu "çökme yok" sanıp geçebilir — bu yüzden fuzzing ve sanitizer neredeyse her zaman birlikte kullanılır. İlgili dedektörler: UBSan (undefined behavior), MSan (başlatılmamış okuma).</p></div>
+
+<h3>5. Çekirdek fuzzing ve sürekli fuzzing</h3>
+<p>Aynı üçlü (üret → çalıştır → ölç) kullanıcı alanının ötesine taşınır. Çekirdeğin saldırı yüzeyi syscall arayüzüdür; syzkaller syscall dizileri üretip bir VM’de çalıştırır, kapsamı KCOV ile ölçer ve çökmeleri KASAN ile yakalar.</p>
+<div class="manpage src-docs"><div class="ref">google/syzkaller</div><p class="orig">syzkaller is an unsupervised coverage-guided kernel fuzzer.</p><p>syzkaller, denetimsiz (unsupervised) ve kapsam güdümlü bir çekirdek fuzzer’ıdır. "Unsupervised" insan müdahalesi olmadan kendi başına syscall dizileri üretip çökmeleri toplaması, kök nedene doğru küçültmesi (minimization) ve raporlaması demektir. Linux, bu yöntemle bulunup düzeltilen binlerce çekirdek hatasına ev sahipliği yapmıştır.</p></div>
+<p>Son parça ölçektir: bir bug’ı bir kez bulmak değil, kod her değiştiğinde yeniden aramaktır. Google’ın OSS-Fuzz hizmeti açık kaynak projeleri sürekli (continuous) fuzz’lar; her commit’te fuzzer’ları yeniden koşarak regresyonları saldırgandan önce yakalamayı hedefler. Savunmacı için fuzzing’in asıl değeri buradadır: <strong>bulma işini otomatikleştirip saldırganın önüne geçmek.</strong></p>`
+  },
+  underHood: {
+    heading: 'Kaputun altında: üç parça birlikte',
+    html: '<p class="prose">Coverage-guided bir fuzzer üç bileşenin kesişimidir. Birini çıkarırsan verim çöker: kapsam olmadan körlemesine rastgelelik, sanitizer olmadan sessiz bug’lar, korpus olmadan ilerleme kaybolur.</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Bileşen</th><th>Görevi</th></tr></thead><tbody>' +
+      '<tr><td><b>Mutasyon motoru (mutation engine)</b></td><td>Var olan girdileri bit çevirme, bayt ekleme/silme, birleştirme ile değiştirir</td></tr>' +
+      '<tr><td><b>Kapsam izleme (coverage instrumentation)</b></td><td>Derleme anında eklenen sayaçlarla hangi kod yollarının çalıştığını ölçer (SanitizerCoverage)</td></tr>' +
+      '<tr><td><b>Korpus (corpus)</b></td><td>Yeni kapsam açan girdileri saklar; bir sonraki mutasyonların tohumu olur</td></tr>' +
+      '<tr><td><b>Sanitizer (ASan/UBSan/MSan)</b></td><td>Belleği izler; taşma, UAF, başlatılmamış okuma gibi ihlalleri anında yakalar</td></tr>' +
+      '<tr><td><b>Çökme deposu (crash artifacts)</b></td><td>Hataya yol açan tam girdiyi dosyaya yazar; bug yeniden üretilebilir olur</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px">Hedef türüne göre araç değişir: kaynak kodu olan kütüphaneler için <strong>libFuzzer</strong> (fuzz target yazılır) veya <strong>AFL++</strong> (ikili besleme); Linux çekirdeğinin syscall arayüzü için <strong>syzkaller</strong>. Hepsi aynı döngüyü paylaşır: üret → çalıştır → ölç → sakla.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Bir fuzz hedefi yaz ve çalıştır (libFuzzer)', p: 'Kaynak kodu olan bir kütüphaneyi fuzz’lamanın standart yolu küçük bir fuzz target yazmaktır. Clang tek bayrakla hem kapsam izlemeyi hem ASan’ı ekler ve fuzzer’ı çalıştırır.',
+        shells: [{ label: 'terminal', copy: 'clang -g -O1 -fsanitize=fuzzer,address target.c -o fuzz && ./fuzz -max_len=32', pre: '<span class="c">$</span> clang -fsanitize=fuzzer,address target.c -o fuzz\n<span class="c">$</span> ./fuzz -max_len=32\n<span class="c">#0   READ   cov: 18 ...</span>\n<span class="g">#5304 NEW    cov: 42</span>   <span class="c"># yeni kod yolu, korpusa eklendi</span>\n<span class="hi">==ERROR: AddressSanitizer: stack-buffer-overflow</span>' }] },
+      { h3: '2. Gerçek çökme çıktısı (bu kaptan)', p: 'Aynı zafiyetli hedefi gcc + ASan ile derleyip taşıran bir girdi verdiğimizde ASan tam yeri gösterir. Aşağısı bu ortamda üretilmiş gerçek çıktıdır.',
+        shells: [{ label: 'terminal · gerçek çıktı', copy: 'printf \'BOOMAAAAAAAAAAAAAAAAAAAA\' | ./vuln', pre: '<span class="c">$</span> printf \'BOOMAAAAAAAAAAAAAAAAAAAA\' | ./vuln\n<span class="hi">==17979==ERROR: AddressSanitizer: stack-buffer-overflow</span> on address 0x...28\n<span class="hi">WRITE of size 24</span> at 0x...28 thread T0\nAddress ... is located in stack of thread T0 at offset 40 in frame\n<span class="hi">SUMMARY: AddressSanitizer: stack-buffer-overflow ... in memcpy</span>' }] },
+      { h3: '3. Çekirdek fuzzing (syzkaller)', p: 'Çekirdeğin saldırı yüzeyi syscall’lardır. syzkaller, syscall dizilerini üretip bir VM’de çalıştırır ve çekirdek sanitizer’ı (KASAN) ile çökmeleri yakalar. Üçlü aynı: üret, çalıştır, ölç.',
+        shells: [{ label: 'kavram', copy: 'git clone https://github.com/google/syzkaller', pre: '<span class="c"># syzkaller: syscall dizisi üretir -> VM -> KASAN çökmeyi yakalar</span>\n<span class="c"># kapsam: KCOV ile ölçülür</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Coverage-guided fuzzing’i saf rastgele fuzzing’den ayıran nedir?', opts: ['Daha hızlı CPU', 'Yeni kod yolu açan girdiyi saklayıp temel alması', 'Daha büyük girdiler'], answer: 'Yeni kod yolu açan girdiyi saklayıp temel alması',
+        ok: 'Doğru. Kapsam geri bildirimi, ilerleme sağlayan girdileri korpusa ekler ve onları mutasyona uğratır; böylece fuzzer programın derinlerine yönlendirilir.', no: 'İpucu: "coverage" = kapsam. Fuzzer hangi girdiyi değerli sayıp saklar?' },
+      { q: 'Fuzzing’de AddressSanitizer’ın rolü nedir?', opts: ['Girdi üretmek', 'Belleği izleyip ihlali çökme olmadan yakalamak', 'Kapsamı ölçmek'], answer: 'Belleği izleyip ihlali çökme olmadan yakalamak',
+        ok: 'Doğru. ASan sessiz bir taşmayı bile tam oluştuğu anda, satır numarasıyla yakalar; fuzzer’ın bir çökmeyi beklemesine gerek kalmaz.', no: 'İpucu: sanitizer girdi üretmez; belleğe ne yapar?' },
+      { q: 'Linux çekirdeğinin syscall arayüzünü fuzz’lamak için tipik araç hangisidir?', opts: ['libFuzzer', 'syzkaller', 'checksec'], answer: 'syzkaller',
+        ok: 'Doğru. syzkaller syscall dizileri üretir, bir VM’de çalıştırır ve KASAN/KCOV ile çökmeleri ve kapsamı izler.', no: 'İpucu: çekirdek + syscall dizileri + KASAN.' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Ofansif Modül 12', title: 'Tersine mühendislik', desc: 'Kaynağı olmayan bir ikiliyi statik ve dinamik analizle nasıl çözersin?' },
+  sources: [
+    { href: 'https://llvm.org/docs/LibFuzzer.html', text: 'LLVM libFuzzer belgeleri' },
+    { href: 'https://github.com/AFLplusplus/AFLplusplus', text: 'AFL++' },
+    { href: 'https://github.com/google/syzkaller', text: 'google/syzkaller', note: 'çekirdek fuzzing' },
+    { href: 'https://github.com/google/sanitizers/wiki/AddressSanitizer', text: 'AddressSanitizer' },
+    { href: 'https://pwn.college/', text: 'pwn.college', note: 'uygulamalı' }
+  ],
+  pageTitle: 'Fuzzing'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>GCD ve Dispatch</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: kuyruk + thread havuzu düzeni */
+.gcd { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: start; }
+@media (max-width: 560px) { .gcd { grid-template-columns: 1fr; } }
+.qbox { border: 1.5px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 10px; display: grid; gap: 8px; align-content: start; min-width: 0; }
+.qbox.serial { border-color: var(--track); }
+.qbox.conc { border-color: var(--accent); }
+.qbox.main { border-color: var(--ok); }
+.qh { font-family: var(--f-mono); font-size: 11.5px; font-weight: 700; display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.qh .kind { color: var(--muted); font-weight: 400; }
+.blk { border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; font-family: var(--f-mono); font-size: 11.5px; background: var(--sunk); display: flex; justify-content: space-between; gap: 6px; }
+.blk.qos-hi { border-color: var(--bad); } .blk.qos-hi .q { color: var(--bad); }
+.blk.qos-lo { border-color: var(--muted); } .blk.qos-lo .q { color: var(--muted); }
+.blk .q { font-size: 10px; }
+.qempty { font-size: 12px; color: var(--muted); }
+.pool { display: flex; flex-wrap: wrap; gap: 8px; }
+.th { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; min-width: 96px; display: grid; gap: 1px; background: var(--surface); }
+.th .tn { font-family: var(--f-mono); font-size: 11px; color: var(--muted); }
+.th .tj { font-family: var(--f-mono); font-size: 11.5px; font-weight: 700; }
+.th.busy { border-color: var(--ok); background: var(--ok-soft); } .th.busy .tj { color: var(--ok); }
+.th.idle .tj { color: var(--muted); font-weight: 400; }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'macos',
+  crumbs: 'macos › gcd › modül 5',
+  eyebrow: 'Modül 5 · macOS / iOS · Eşzamanlılık',
+  titleHTML: '<code>GCD</code>: iş parçacığı yönetmeden eşzamanlılık',
+  lede: 'Grand Central Dispatch (GCD), thread\'leri elle açıp kapatmak yerine işi "blok" olarak kuyruklara verme fikrine dayanır. Sen ne yapılacağını söylersin; sistem hangi iş parçacığında (thread), ne zaman çalışacağına karar verir. Bu modülde bir bloğun kuyruktan iş parçacığı havuzuna yolculuğunu izleyeceksin.',
+  meta: ['~16 dk', 'ön koşul: thread kavramı', 'bağlam: libdispatch'],
+  intuition: {
+    paras: [
+      'Klasik eşzamanlılıkta her iş için bir iş parçacığı (thread) açarsın; bu hem pahalıdır hem de yüzlerce thread sistemi boğar. GCD bunu tersine çevirir: işi küçük <strong>blok</strong>\'lar (block, yani closure) hâlinde bir <strong>kuyruğa (queue)</strong> verirsin, sistem de sınırlı bir <strong>iş parçacığı havuzundan (thread pool)</strong> uygun thread\'i seçip bloğu orada çalıştırır.',
+      'İki temel kuyruk türü vardır. <strong>Seri (serial)</strong> kuyruk blokları teker teker, sırayla çalıştırır — veriyi kilit (lock) kullanmadan korumanın temiz bir yoludur. <strong>Eşzamanlı (concurrent)</strong> kuyruk blokları havuzdaki birden çok thread\'de paralel çalıştırır. Ayrıca her uygulamanın bir <strong>ana kuyruğu (main queue)</strong> vardır: UI işi hep orada, ana thread\'de yapılır.'
+    ],
+    ideas: [
+      { b: 'İş = blok', span: 'Thread değil, iş tanımlarsın. Blok (block/closure) kuyruğa girer; thread atamasını sistem yapar.' },
+      { b: 'Seri vs eşzamanlı', span: 'Seri kuyruk sırayı korur (kilitsiz senkronizasyon); eşzamanlı kuyruk paralel çalışır.' },
+      { b: 'QoS önceliklendirir', span: 'Her bloğun bir hizmet kalitesi (Quality of Service) sınıfı vardır; sistem yüksek QoS\'u önce çalıştırır.' }
+    ]
+  },
+  lab: {
+    intro: 'Uygulama birkaç bloğu farklı kuyruklara gönderir (dispatch_async). GCD blokları kuyruklarda tutar ve iş parçacığı havuzundan thread\'lere dağıtır. Sağda kuyrukları ve havuzdaki thread\'leri izle.',
+    codeLabel: 'gcd.c (temsilî)', cmd: './gcd_demo',
+    foot: 'Thread numaraları ve çıktı temsilîdir; gerçek sıralama çalışma anında değişir. GCD macOS/iOS\'ta çalışır.',
+    code: [
+      { t: '<span class="t">dispatch_queue_t</span> s = <span class="f">dispatch_queue_create</span>(<span class="s">"seri"</span>, <span class="n">NULL</span>);' },
+      { t: '<span class="t">dispatch_queue_t</span> c = <span class="f">dispatch_get_global_queue</span>(QOS_DEFAULT, <span class="n">0</span>);' },
+      { t: '' },
+      { t: '<span class="f">dispatch_async</span>(s, ^{ <span class="f">isle</span>(<span class="s">"A"</span>); });   <span class="cm">// seri</span>' },
+      { t: '<span class="f">dispatch_async</span>(s, ^{ <span class="f">isle</span>(<span class="s">"B"</span>); });   <span class="cm">// A bitince</span>' },
+      { t: '<span class="f">dispatch_async</span>(c, ^{ <span class="f">indir</span>(); });     <span class="cm">// eşzamanlı</span>' },
+      { t: '<span class="f">dispatch_async</span>(c, ^{ <span class="f">hesapla</span>(); });   <span class="cm">// paralel</span>' },
+      { t: '' },
+      { t: '<span class="f">dispatch_async</span>(<span class="f">dispatch_get_main_queue</span>(), ^{' },
+      { t: '    <span class="f">arayuzuGuncelle</span>();   <span class="cm">// ana thread\'de</span>' },
+      { t: '});' }
+    ],
+    steps: [
+      { pc: 4, title: 'Bloğu kuyruğa ver', term: ['dispatch_async(seri, A) → kuyruğa kondu'],
+        text: 'Uygulama <code>dispatch_async</code> ile A bloğunu seri (serial) kuyruğa koyar. <code>async</code> olduğu için çağrı hemen döner; blok sırasını beklemeye başlar. Henüz hiçbir thread meşgul değil.',
+        serial: ['A', 'B'], conc: [], main: [],
+        pool: [{ job: null }, { job: null }, { job: null }], flash: 'serial',
+        note: 'A ve B seri kuyrukta; teker teker çalışacaklar.' },
+      { pc: 4, title: 'Havuzdan thread al', term: ['thread T1 ← blok A çalışıyor'],
+        text: 'GCD, iş parçacığı havuzundan (thread pool) boş bir thread (T1) seçer ve A bloğunu orada çalıştırır. Seri kuyrukta aynı anda yalnızca bir blok çalışır; B, A bitene kadar bekler.',
+        serial: ['B'], conc: [], main: [],
+        pool: [{ job: 'A (seri)' }, { job: null }, { job: null }],
+        note: 'Seri kuyruk: tek thread, sıra korunuyor. Kilit (lock) gerekmez.' },
+      { pc: 6, title: 'Eşzamanlı kuyruk: paralel', term: ['T2 ← indir()', 'T3 ← hesapla()'],
+        text: 'Eşzamanlı (concurrent) kuyruğa verilen iki blok, havuzdan iki ayrı thread (T2, T3) alıp AYNI anda çalışır. Seri kuyruktan farkı budur: sıra beklemez, paralel akar.',
+        serial: ['B'], conc: [], main: [],
+        pool: [{ job: 'A (seri)' }, { job: 'indir (eş)' }, { job: 'hesapla (eş)' }], flash: 'conc',
+        note: 'Eşzamanlı kuyruk: birden çok thread, paralel yürütme.' },
+      { pc: 9, title: 'Ana kuyruk: UI işi', term: ['main queue → arayuzuGuncelle() (ana thread)'],
+        text: 'UI güncellemesi ana kuyruğa (main queue) gönderilir. Bu kuyruk seridir ve HER ZAMAN ana thread\'de çalışır — arayüze yalnızca ana thread\'den dokunulabileceği için bu kuraldır. Arka plan işi bitince sonucu buraya yollarsın.',
+        serial: [], conc: [], main: ['arayuzuGuncelle'],
+        pool: [{ job: 'A (seri)', done: true }, { job: 'UI (ana)' }, { job: null }],
+        note: 'Ana kuyruk = ana thread. UI dokunuşları hep burada.' },
+      { pc: 6, title: 'QoS önceliklendirir', term: ['QoS: userInteractive > utility > background'],
+        text: 'Her bloğun bir hizmet kalitesi (QoS) sınıfı vardır. Sistem, aynı anda birden çok blok beklerken yüksek QoS\'luyu (örneğin kullanıcının beklediği UI işini) düşük QoS\'luya (arka plan indirmesi) göre önce çalıştırır. Bu, enerji ve tepkiselliği dengeler.',
+        serial: [], conc: [{ n: 'UI yanıtı', qos: 'hi' }, { n: 'arka plan senk.', qos: 'lo' }], main: [],
+        pool: [{ job: 'UI yanıtı', qos: 'hi' }, { job: 'arka plan', qos: 'lo' }, { job: null }],
+        note: 'Yüksek QoS önce; düşük QoS bekler. Öncelik tersine çevrilmesi (priority inversion) GCD tarafından yönetilir.' }
+    ],
+    render: function (s, stateEl, u) {
+      function blocks(arr) {
+        if (!arr.length) return '<div class="qempty">boş</div>';
+        return arr.map(function (b) {
+          var name = typeof b === 'string' ? b : b.n;
+          var qos = (typeof b === 'object' && b.qos) ? b.qos : null;
+          var cls = qos ? ' qos-' + qos : '';
+          var lab = qos === 'hi' ? 'yüksek QoS' : (qos === 'lo' ? 'düşük QoS' : '');
+          return '<div class="blk' + cls + '"><span>' + u.esc(name) + '</span>' + (lab ? '<span class="q">' + lab + '</span>' : '') + '</div>';
+        }).join('');
+      }
+      function queue(cls, title, kind, arr, id) {
+        return '<div class="qbox ' + cls + '"' + (id ? ' id="' + id + '"' : '') + '><div class="qh"><span>' + title + '</span><span class="kind">' + kind + '</span></div>' + blocks(arr) + '</div>';
+      }
+      var pool = s.pool.map(function (t, i) {
+        if (!t.job) return '<div class="th idle"><span class="tn">T' + (i + 1) + '</span><span class="tj">boşta</span></div>';
+        var cls = t.qos === 'hi' ? ' style="border-color:var(--bad)"' : '';
+        return '<div class="th busy"' + cls + '><span class="tn">T' + (i + 1) + (t.done ? ' · bitti' : '') + '</span><span class="tj">' + u.esc(t.job) + '</span></div>';
+      }).join('');
+      stateEl.innerHTML =
+        '<p class="lab-label">Dispatch kuyrukları</p>' +
+        '<div class="gcd">' +
+          queue('serial', 'Seri kuyruk', 'serial', s.serial, s.flash === 'serial' ? 'flEl' : '') +
+          queue('conc', 'Eşzamanlı kuyruk', 'concurrent', s.conc, s.flash === 'conc' ? 'flEl' : '') +
+        '</div>' +
+        '<div style="margin-top:10px">' + queue('main', 'Ana kuyruk (main)', 'serial · ana thread', s.main) + '</div>' +
+        '<p class="lab-label" style="margin-top:14px">İş parçacığı havuzu (thread pool)</p><div class="pool">' + pool + '</div>' +
+        (s.note ? '<p class="note" style="margin-top:12px">' + u.esc(s.note) + '</p>' : '');
+      if (s.flash) ATLAS.flash(document.getElementById('flEl'), false);
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: GCD gerçekte nasıl çalışır?",
+    html: `<p class="lead">GCD yüzeyde "işi kuyruğa ver, gerisini sistem halleder" gibi basit görünür. Ama altında farklı dispatch queue türleri, bir öncelik/QoS modeli, klasik deadlock tuzakları ve çekirdekteki pthread workqueue yatar. Bu bölüm Apple dispatch man sayfalarına ve libdispatch'e dayanır.</p>
+
+<h3>1. Kuyruk türleri: serial, concurrent, main</h3>
+<p>Her şey bir <strong>dispatch queue</strong>'dur; blok'lar bu kuyruklara girer ve kuyruğun türü nasıl çalışacaklarını belirler.</p>
+<div class="deflist">
+<div><dt>serial queue</dt><dd>Blokları teker teker, bir öncekini bitirmeden sonrakine geçmeden çalıştırır. Paylaşılan veriyi lock kullanmadan korumanın temiz yolu — tek seferde tek blok dokunur.</dd></div>
+<div><dt>concurrent queue</dt><dd>Birden çok bloğu havuzdaki farklı thread'lerde paralel çalıştırır. Barrier block destekler (aşağıda).</dd></div>
+<div><dt>main queue</dt><dd>Uygulamanın ana thread'inde çalışan özel bir serial queue. UI'ya yalnızca buradan dokunulur. <code>dispatch_get_main_queue()</code> ile alınır.</dd></div>
+<div><dt>global queue</dt><dd>Sistemin sağladığı, önceliğe/QoS'a göre ayrılmış paylaşılan concurrent queue'lar. <code>dispatch_get_global_queue()</code> ile alınır.</dd></div>
+</div>
+<div class="manpage src-apple"><div class="ref">dispatch · QUEUES</div><p class="orig">Dispatch queues are the basic units of organization of blocks. All blocks submitted to dispatch queues are dequeued in FIFO order.</p><p>Bloklar kuyruğa giriş sırasıyla (FIFO) alınır. "Dequeue sırası" ile "bitiş sırası" aynı şey değildir: serial queue'da ikisi de sıralıdır; concurrent queue'da bloklar sırayla başlar ama paralel çalıştığı için farklı sırada bitebilir.</p></div>
+<div class="manpage src-apple"><div class="ref">dispatch_queue_create · SERIAL</div><p class="orig">Serial queues … wait for the previously dequeued block to complete before dequeuing the next block.</p><p>Serial queue bir sonraki bloğu, bir önceki bitmeden başlatmaz. Bu garanti, onu kilitsiz bir senkronizasyon aracına çevirir: bir veriye hep aynı serial queue üzerinden dokunursan, yarış durumu (race condition) oluşmaz.</p></div>
+
+<h3>2. async vs sync ve deadlock tuzağı</h3>
+<p><code>dispatch_async</code> bloğu kuyruğa koyar ve <strong>hemen döner</strong> — çağıran beklemez. <code>dispatch_sync</code> ise bloğu koyar ve <strong>bitene kadar bekler</strong>. Buradaki en klasik hata: hâlihazırda çalıştığın serial queue'ya (özellikle main queue'ya) <code>dispatch_sync</code> yapmak. Kuyruk meşgul olduğun bloğu bitirmeni bekler, sen ise sync'in dönmesini beklersin — ikisi birbirini bekler, bu bir <strong>deadlock</strong>'tır. Kural: UI thread'inde ağır iş için <code>dispatch_async(global, ...)</code>, sonucu geri vermek için <code>dispatch_async(main, ...)</code>.</p>
+
+<h3>3. Global queue'lar, öncelik ve QoS</h3>
+<p>Global concurrent queue'lar FIFO <em>bitiş</em> garantisi vermez ve bir önceliğe bağlıdır. Eski API dört <strong>priority band</strong> kullanırdı; modern API bunların yerine anlamsal <strong>QoS class</strong>'larını koyar.</p>
+<div class="deflist">
+<div><dt>userInteractive</dt><dd>Kullanıcının o an beklediği iş (animasyon, UI olayı). En yüksek öncelik, en kısa gecikme.</dd></div>
+<div><dt>userInitiated</dt><dd>Kullanıcının başlattığı, sonucunu hemen beklediği iş (bir belgeyi açma).</dd></div>
+<div><dt>utility</dt><dd>İlerleme çubuğuyla süren iş (indirme, içe aktarma). Enerji verimliliği gözetilir.</dd></div>
+<div><dt>background</dt><dd>Kullanıcının farkında olmadığı iş (yedekleme, indeksleme). En düşük öncelik.</dd></div>
+</div>
+<div class="manpage src-apple"><div class="ref">dispatch_queue_create · GLOBAL</div><p class="orig">The global concurrent queues schedule blocks as soon as threads become available (non-FIFO completion order). … The priority … controls the scheduling priority of the threads.</p><p>Global queue'lar thread boşaldıkça blok başlatır; öncelik, o blokları çalıştıran thread'lerin zamanlama önceliğini belirler. QoS class bu önceliği anlamsal bir etikete bağlar, böylece sistem enerji ile tepkiselliği birlikte dengeler ve priority inversion'ı (düşük öncelikli bir işin yüksek öncelikliyi bekletmesi) yönetebilir.</p></div>
+
+<h3>4. Thread pool'u kim yönetir: pthread workqueue</h3>
+<p>GCD'nin asıl inceliği şudur: thread sayısını <code>libdispatch</code> kendi tutmaz. "Şu kadar çalıştırılabilir iş var" bilgisini çekirdeğe iletir; çekirdekteki <strong>pthread workqueue</strong> mekanizması CPU çekirdeği sayısına ve yüke bakarak kaç worker thread uyandıracağına karar verir. Bu yüzden her kütüphane kendi thread'lerini açmaz — sistem geneli tek bir havuz vardır. Yanlış kullanım (havuzdaki thread'leri bloklayan senkron/bekleyen işler yığmak) <strong>thread explosion</strong>'a yol açabilir: iş bitmediği için çekirdek sürekli yeni thread uyandırır.</p>
+<div class="manpage src-apple"><div class="ref">dispatch · FRAMEWORK</div><p class="orig">The dispatch framework allows blocks to be scheduled for asynchronous and concurrent execution. … Several queues are created by default, and applications may create additional queues for their own use.</p><p>Çatı, blokların asenkron ve eşzamanlı çalışmasını sağlar; birkaç kuyruk varsayılan olarak hazır gelir, uygulamalar kendi kuyruklarını ekleyebilir. "Kaç thread" sorusunun cevabı uygulamada değil, bu paylaşılan altyapıdadır.</p></div>
+
+<h3>5. Barrier, group, semaphore, source</h3>
+<ul>
+<li><strong>Barrier block</strong>: concurrent queue'da bir yazma bariyeri. Kendisi çalışırken kuyruktaki tüm okuma blokları durur — reader/writer kilidinin GCD karşılığı.</li>
+<li><strong>Dispatch group</strong>: birden çok asenkron işi gruplayıp "hepsi bitince şunu yap" demek.</li>
+<li><strong>Dispatch semaphore</strong>: sayaçlı klasik senkronizasyon; sınırlı bir kaynağa erişimi yönetmek için.</li>
+<li><strong>Dispatch source</strong>: dosya tanımlayıcısı, sinyal, timer, Mach port gibi düşük seviyeli olayları bir kuyruğa bağlayıp olay-güdümlü işlemek.</li>
+</ul>
+
+<h3>6. Linux ile karşılaştırma</h3>
+<p>Linux'ta sistem geneli tek bir GCD yoktur; thread pool'ları kütüphaneler (veya libdispatch'in Linux portu, swift-corelibs-libdispatch) kendi kurar. Fikir aynıdır: bir görev kuyruğu + sınırlı bir worker thread havuzu. macOS'un farkı, bunu dile (block) ve çekirdeğe (workqueue) gömülü, tüm uygulama ve sistem servisleri için ortak tek bir altyapı olarak sunmasıdır.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">GCD\'nin kullanıcı tarafı <code>libdispatch</code> kütüphanesindedir; blokları kuyruklarda tutar ve çalıştırılacakları thread\'leri çekirdekten ister. Thread havuzunu doğrudan GCD değil, çekirdekteki <strong>pthread workqueue</strong> mekanizması yönetir: GCD "şu kadar iş var" der, çekirdek kaç thread uyandıracağına CPU yüküne bakarak karar verir.</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://developer.apple.com/documentation/dispatch/dispatch_async" target="_blank" rel="noopener">dispatch_async()</a><span class="where">libdispatch</span><p>Bloğu kopyalar (heap\'e taşır) ve hedef kuyruğun sonuna ekler; hemen döner.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">dispatch_queue · invoke</span><span class="where">libdispatch</span><p>Kuyruk çalıştırılabilir olduğunda bir worker thread ister.</p></div></li>' +
+      '<li class="boundary"><div>kullanıcı → çekirdek · workqueue</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><span class="fn">pthread_workqueue</span><span class="where">XNU · bsd/pthread</span><p>Çekirdek, CPU çekirdeği sayısı ve yüke göre worker thread uyandırır veya uyutur. GCD\'nin "sihri" buradadır.</p></div></li>' +
+      '</ol>' +
+      '<p class="prose" style="margin-top:14px">Linux\'ta doğrudan karşılığı yoktur ama fikir tanıdıktır: bir <strong>iş parçacığı havuzu (thread pool)</strong> + bir görev kuyruğu. GCD bunu dile ve çekirdeğe gömülü, sistem geneli tek bir havuz olarak sunar; böylece her kütüphane kendi thread\'lerini açıp sistemi boğmaz.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Seri vs eşzamanlı farkı', p: 'Aynı blokları önce seri sonra eşzamanlı kuyruğa ver; çıktı sırasına bak. Seri\'de sıra korunur, eşzamanlıda karışır.',
+        shells: [{ label: 'gcd.c (macOS\'ta derle)', copy: 'clang gcd.c -o gcd && ./gcd', pre: '<span class="c">$</span> clang gcd.c -o gcd &amp;&amp; ./gcd   <span class="c"># temsilî</span>\nseri:  A B C        <span class="c"># her zaman bu sıra</span>\neş:    C A B        <span class="c"># sıra çalışmaya göre değişir</span>' }] },
+      { h3: '2. Hangi thread\'desin?', p: 'Bir blok içinde thread kimliğini yazdır; ana kuyruğun hep ana thread\'de, global kuyruğun farklı thread\'lerde çalıştığını gör.',
+        shells: [{ label: 'terminal (macOS)', copy: 'dispatch_async(dispatch_get_main_queue(), ^{ NSLog(@"%@", [NSThread currentThread]); });', pre: '<span class="c"># main queue → isMainThread = YES</span>\n<span class="c"># global queue → ayri worker thread</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Seri (serial) bir kuyruğa <code>dispatch_async</code> ile verilen bloklar nasıl çalışır?', opts: ['Hepsi paralel', 'Teker teker, sırayla', 'Rastgele'], answer: 'Teker teker, sırayla',
+        ok: 'Doğru. Seri kuyruk aynı anda tek blok çalıştırır; bu yüzden paylaşılan veriyi kilit kullanmadan korumanın temiz bir yoludur.', no: 'İpucu: "seri" kelimesi sırayı ima eder. Paralel olan eşzamanlı kuyruktur.' },
+      { q: 'UI (arayüz) güncellemesi hangi kuyrukta yapılmalıdır?', opts: ['Herhangi bir global kuyruk', 'Ana kuyruk (main queue)', 'Yeni bir seri kuyruk'], answer: 'Ana kuyruk (main queue)',
+        ok: 'Doğru. Arayüze yalnızca ana thread\'den dokunulabilir; ana kuyruk her zaman ana thread\'de çalışır. Arka plan işi bitince sonucu buraya yollarsın.', no: 'İpucu: UI yalnızca ana thread\'de güvenlidir. Hangi kuyruk hep ana thread\'de çalışır?' },
+      { q: 'GCD\'de iş parçacığı havuzunun kaç thread çalıştıracağına asıl kim karar verir?', opts: ['Uygulama', 'libdispatch tek başına', 'Çekirdek (pthread workqueue)'], answer: 'Çekirdek (pthread workqueue)',
+        ok: 'Doğru. GCD çekirdeğe "iş var" der; çekirdek CPU yükü ve çekirdek sayısına göre worker thread uyandırır. Bu yüzden thread\'leri sen yönetmezsin.', no: 'İpucu: GCD iş ister ama thread sayısını yüke göre ayarlayan daha alttaki katman hangisi?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · macOS Modül 6', title: 'Bellek: libmalloc ve sıkıştırma', desc: 'Nano zone, bellek bölgeleri, bellek baskısı (memory pressure) ve Jetsam.' },
+  sources: [
+    { href: 'https://newosxbook.com/toc1.html', text: 'Levin — OS Internals Cilt I', note: 'Bölüm 8' },
+    { href: 'https://developer.apple.com/documentation/dispatch', text: 'Apple — Dispatch (GCD)' },
+    { href: 'https://github.com/apple-oss-distributions/libdispatch', text: 'libdispatch kaynağı', note: 'apple-oss' },
+    { href: 'https://developer.apple.com/documentation/dispatch/dispatchqos', text: 'Apple — Quality of Service', note: 'QoS sınıfları' }
+  ],
+  pageTitle: 'GCD ve Dispatch'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

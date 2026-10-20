@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Sinyaller</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: sinyal kümeleri */
+.sigset { display: grid; gap: 4px; }
+.sigset .sh { font-family: var(--f-mono); font-size: 11px; color: var(--muted); font-weight: 700; letter-spacing: .04em; }
+.sigrow { display: flex; flex-wrap: wrap; gap: 6px; }
+.sig { font-family: var(--f-mono); font-size: 11.5px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); background: var(--surface); }
+.sig.pend { border-color: var(--warn); background: var(--warn-soft); color: var(--warn); font-weight: 700; }
+.sig.blk { border-color: var(--bad); background: var(--bad-soft); color: var(--bad); font-weight: 700; }
+.sig.unc { border-style: dashed; opacity: .75; }
+.hbox { border: 1.5px solid var(--line); border-radius: var(--r); padding: 10px; background: var(--surface); display: grid; gap: 4px; }
+.hbox.on { border-color: var(--track); background: var(--track-soft); }
+.hbox b { font-family: var(--f-display); font-size: 14px; } .hbox span { font-size: 12px; color: var(--muted); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'linux',
+  crumbs: 'linux › sinyaller › modül 7',
+  eyebrow: 'Modül 7 · Linux · Asenkron olaylar',
+  titleHTML: '<code>Sinyaller</code>: çekirdeğin bir sürece dokunma yolu',
+  lede: 'Bir süreç çalışırken ona nasıl "dur", "yeniden yükle" ya da "Ctrl-C yedin" denir? Sinyaller (signals), çekirdeğin ve süreçlerin birbirine gönderdiği asenkron kesintilerdir. Bu modülde bir SIGINT\'in üretiminden handler\'a kadarki yolculuğunu adım adım izleyeceksin.',
+  meta: ['~18 dk', 'ön koşul: fork, syscall', 'çekirdek: Linux 6.x'],
+  intuition: {
+    paras: [
+      'Bir sinyal (signal), bir sürece gönderilen kısa, numaralı bir bildirimdir: Ctrl-C bir SIGINT, bir segfault SIGSEGV, <code>kill</code> komutu SIGTERM yollar. Yazılım kesmesi (software interrupt) gibidir: süreç ne yapıyorsa bırakır ve sinyale yanıt verir.',
+      'Her süreç, her sinyal için bir davranış seçer: varsayılan (default — çoğu zaman öldürür), yok say (ignore) ya da bir <strong>sinyal işleyici (signal handler)</strong> çalıştır. Sinyal hemen teslim edilmeyebilir: süreç onu <strong>maske (mask)</strong> ile geçici olarak bloklayabilir; o zaman sinyal <strong>beklemede (pending)</strong> kalır ve blok kalkınca teslim edilir.'
+    ],
+    ideas: [
+      { b: 'Asenkron', span: 'Sinyal istediğin an gelir; kodun normal akışını keser. Bu yüzden handler içinde yalnızca async-signal-safe işlemler güvenlidir.' },
+      { b: 'Pending + blocked', span: 'Bloklu bir sinyal teslim edilmez, beklemede (pending) birikir. Standart sinyaller kuyruklanmaz: aynısı birden çok gelse bir kez bekler.' },
+      { b: 'İkisi durdurulamaz', span: 'SIGKILL (9) ve SIGSTOP (19) yakalanamaz, bloklanamaz, yok sayılamaz. Çekirdek bunları her zaman uygular.' }
+    ]
+  },
+  lab: {
+    intro: 'Program SIGINT için bir handler kurar ve bekler. Sonra bir sinyal gelir, çekirdek onu önce beklemeye (pending) alır, teslim eder, handler\'a atlar ve <code>sigreturn</code> ile geri döner. Sağda sürecin durumunu, pending ve blocked kümelerini izle.',
+    codeLabel: 'sig.c', cmd: './sig',
+    foot: 'PID örnektir. Sinyal numaraları gerçektir (SIGINT = 2). ← → tuşlarıyla da ilerleyebilirsin.',
+    code: [
+      { t: '<span class="t">void</span> <span class="f">handler</span>(<span class="t">int</span> sig) {   <span class="cm">// sinyal işleyici</span>' },
+      { t: '    geldi = sig;' },
+      { t: '}' },
+      { t: '' },
+      { t: '<span class="t">int</span> <span class="f">main</span>(<span class="t">void</span>) {' },
+      { t: '    <span class="f">sigaction</span>(<span class="n">SIGINT</span>, &amp;sa, <span class="n">0</span>);  <span class="cm">// handler kaydet</span>' },
+      { t: '    <span class="f">pause</span>();                 <span class="cm">// sinyali bekle</span>' },
+      { t: '    <span class="f">printf</span>(<span class="s">"devam...\\n"</span>);    <span class="cm">// handler döndükten sonra</span>' },
+      { t: '}' }
+    ],
+    steps: [
+      { pc: 6, title: 'Handler kurulur', term: ['pid=628, SIGINT icin handler kuruldu'],
+        text: '<code>sigaction(SIGINT, ...)</code> çekirdeğe "bu süreçte SIGINT gelirse varsayılanı (öldürme) yapma, benim handler\'ımı çağır" der. Bu davranış sürecin <code>task_struct</code>\'ındaki sinyal tablosuna yazılır.',
+        state: 'çalışıyor', k: 'run', pending: [], blocked: [], handler: false,
+        note: 'SIGINT davranışı artık: handler çağır.' },
+      { pc: 7, title: 'Süreç bekliyor', term: [],
+        text: '<code>pause()</code> süreci bir sinyal gelene kadar uyutur. Süreç uyku durumunda (sleeping); CPU harcamıyor, çekirdek onu bir sinyal gelene kadar uyandırmayacak.',
+        state: 'uyuyor (pause)', k: 'sleep', pending: [], blocked: [], handler: false,
+        note: 'Pending kümesi boş; beklenen bir sinyal yok.' },
+      { pc: 7, title: 'Bir sinyal gönderilir', term: [],
+        text: 'Başka bir süreç (ya da terminalde Ctrl-C) SIGINT yollar: <code>kill(628, SIGINT)</code>. Bu da aslında bir sistem çağrısıdır (system call). Çekirdek sinyali hemen çalıştırmaz; önce hedef sürecin bekleyen sinyaller kümesine ekler.',
+        state: 'uyuyor (pause)', k: 'sleep', pending: ['SIGINT'], blocked: [], handler: false, flashPend: true,
+        note: 'SIGINT artık pending (beklemede). Teslim, süreç çekirdekten kullanıcıya dönerken olur.' },
+      { pc: 7, title: 'Ya bloklu olsaydı?', term: [],
+        text: 'Eğer süreç SIGINT\'i maskeyle (mask) bloklasaydı, sinyal beklemede kalır ama TESLİM EDİLMEZDİ — blok kalkana kadar. <code>SigPnd</code> ve <code>SigBlk</code> ikisinde de bit 2 yanardı. Bu, kritik bölümleri (critical section) kesintiden korumanın yoludur.',
+        state: 'uyuyor (pause)', k: 'sleep', pending: ['SIGINT'], blocked: ['SIGINT'], handler: false,
+        note: 'Bloklu + pending: sinyal bekliyor ama teslim ertelendi. (SIGKILL/SIGSTOP bloklanamaz.)' },
+      { pc: 1, title: 'Teslim: handler\'a atla', term: ['handler calisti, gelen sinyal=2 (SIGINT=2)'],
+        text: 'Blok yoksa, süreç çekirdekten kullanıcıya dönerken çekirdek pending sinyali görür. Kullanıcı yığınına (user stack) bir sinyal çerçevesi (signal frame) kurar, dönüş adresini <code>sigreturn</code>\'e ayarlar ve akışı handler\'a atlatır. Pending kümesinden SIGINT silinir.',
+        state: 'handler çalışıyor', k: 'kern', pending: [], blocked: [], handler: true, flashHandler: true,
+        note: 'handler(2) çalışıyor. pause() değil, önce handler.' },
+      { pc: 8, title: 'sigreturn ile dönüş', term: ['handler calisti, gelen sinyal=2 (SIGINT=2)', 'devam...'],
+        text: 'Handler bittiğinde dönüş, çekirdeğe konan <code>rt_sigreturn</code> trap\'ine gider. Çekirdek yığına kurduğu çerçeveyi sökerek sürecin eski bağlamını (context) geri yükler; program sanki hiç kesilmemiş gibi <code>pause()</code> sonrasından devam eder.',
+        state: 'çalışıyor', k: 'run', pending: [], blocked: [], handler: false,
+        note: 'Bağlam geri yüklendi; normal akış sürüyor.' }
+    ],
+    render: function (s, stateEl, u) {
+      var ALL = [['SIGINT', 2], ['SIGTERM', 15], ['SIGSEGV', 11], ['SIGCHLD', 17], ['SIGKILL', 9]];
+      function setHTML(title, active, cls) {
+        var chips = ALL.map(function (sg) {
+          var on = active.indexOf(sg[0]) >= 0;
+          var uncatch = (sg[0] === 'SIGKILL');
+          return '<span class="sig' + (on ? ' ' + cls : '') + (uncatch ? ' unc' : '') + '">' + sg[0] + ' (' + sg[1] + ')</span>';
+        }).join('');
+        return '<div class="sigset"><span class="sh">' + title + '</span><div class="sigrow">' + chips + '</div></div>';
+      }
+      stateEl.innerHTML =
+        '<p class="lab-label">Süreç</p>' +
+        '<div class="proc" style="display:grid;gap:8px"><div class="proc-h"><b>hedef süreç</b><span class="mono">PID 628</span></div>' +
+        '<span class="chip ' + s.k + '">' + u.esc(s.state) + '</span></div>' +
+        '<p class="lab-label" style="margin-top:14px">Sinyal kümeleri</p>' +
+        '<div class="boxgrid" id="setBox"><div class="box">' + setHTML('BEKLEMEDE (pending)', s.pending, 'pend') + '</div>' +
+        '<div class="box">' + setHTML('BLOKLU (blocked / mask)', s.blocked, 'blk') + '</div></div>' +
+        '<div class="hbox ' + (s.handler ? 'on' : '') + '" style="margin-top:10px"><b>' + (s.handler ? 'handler(2) çalışıyor' : 'handler bekliyor') + '</b><span>' + u.esc(s.note || '') + '</span></div>';
+      if (s.flashPend || s.flashHandler) ATLAS.flash(document.getElementById('setBox'), false);
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: sinyaller nasıl çalışır?",
+    html: `<p class="lead">Sinyaller yüzeyde basittir — "sürece bir numara yolla" — ama disposition, mask, pending ve async-signal-safety ayrıntıları hem günlük hataların hem de çekirdek tasarımının kalbindedir. Bu bölüm <code>signal(7)</code> ve <code>signal-safety(7)</code> man sayfalarına dayanır.</p>
+
+<h3>1. Standard ve real-time signals</h3>
+<p>İki tür signal vardır. <strong>Standard signals</strong> (1–31) kuyruklanmaz: bir signal blocked iken aynısından birçoğu gelirse, pending kümesinde yalnızca <em>bir</em> tane kalır; gerisi kaybolur. <strong>Real-time signals</strong> (SIGRTMIN–SIGRTMAX) ise kuyruklanabilir ve gönderim sırasına göre teslim edilir.</p>
+<div class="manpage"><div class="ref">7 signal · real-time</div><p class="orig">Multiple instances of real-time signals can be queued.</p><p>1000 bağlantı 1000 standard signal yollarsa çoğu birleşip tek pending'e düşer; bu yüzden olay sayımı için standard signals güvenilir değildir. Real-time signals her örneği korur ve <code>sigqueue(3)</code> ile yanında bir değer bile taşıyabilir.</p></div>
+
+<h3>2. Disposition ve default action</h3>
+<p>Her süreç, her signal için bir <strong>disposition</strong> tutar: ya default action, ya ignore, ya da bir signal handler. Handler kurulmazsa çekirdek o signal'in default action'ını uygular. Default action'lar beş gruptur:</p>
+<div class="deflist">
+<div><dt>Term</dt><dd>Süreç sonlandırılır (SIGINT, SIGTERM, SIGHUP, SIGPIPE).</dd></div>
+<div><dt>Core</dt><dd>Süreç sonlandırılır ve core dump alınır (SIGSEGV, SIGQUIT, SIGABRT).</dd></div>
+<div><dt>Ign</dt><dd>Signal yok sayılır (SIGCHLD default'u).</dd></div>
+<div><dt>Stop</dt><dd>Süreç askıya alınır/durdurulur (SIGSTOP, SIGTSTP, Ctrl-Z).</dd></div>
+<div><dt>Cont</dt><dd>Durmuş süreç devam ettirilir (SIGCONT).</dd></div>
+</div>
+
+<h3>3. Pending signals ve signal mask</h3>
+<p>Bir signal, üretildiği andan teslim edildiği ana kadar <strong>pending</strong> sayılır. Süreç bir <strong>signal mask</strong> ile belirli signalleri <strong>blocked</strong> yapabilir; blocked bir signal üretilse bile teslim edilmez, mask kalkana dek pending kalır. Bu, critical section'ları kesintiden korumanın yoludur.</p>
+<div class="manpage"><div class="ref">7 signal · mask</div><p class="orig">A signal may be blocked, which means that it will not be delivered until it is later unblocked.</p><p>Mask thread başınadır: her thread kendi blocked kümesine sahiptir (<code>pthread_sigmask</code>, tek-thread'de <code>sigprocmask</code>). fork() ile doğan çocuk <strong>boş bir pending kümesiyle</strong> başlar; mask ise miras alınır ve execve() boyunca korunur.</p></div>
+<p><code>/proc/PID/status</code> içindeki <code>SigPnd</code> (pending) ve <code>SigBlk</code> (blocked) satırları bu kümeleri bitmask olarak gösterir; bit 2 (değer 0x2) SIGINT demektir.</p>
+
+<h3>4. SIGKILL ve SIGSTOP: durdurulamayanlar</h3>
+<div class="manpage"><div class="ref">7 signal · SIGKILL / SIGSTOP</div><p class="orig">The signals SIGKILL and SIGSTOP cannot be caught, blocked, or ignored.</p><p>Bu iki signal için ne handler kurulabilir, ne mask'lenebilir, ne ignore edilebilir — çekirdek onları her zaman uygular. <code>kill -9</code> (SIGKILL) takılan bir süreci bu yüzden kesin öldürür; süreç kendini koruyamaz. SIGSTOP da süreci koşulsuz durdurur.</p></div>
+
+<h3>5. async-signal-safe: handler içinde ne çağrılabilir?</h3>
+<p>Signal asenkron gelir: handler, programı herhangi bir noktada — ör. <code>malloc</code> bir iç kilidi tutarken — kesebilir. Handler o anda aynı <code>malloc</code>'u çağırırsa kilit zaten tutulduğundan deadlock ya da heap bozulması olur. Bu yüzden handler yalnızca <strong>async-signal-safe</strong> fonksiyonlar çağırmalıdır.</p>
+<div class="manpage"><div class="ref">7 signal-safety · definition</div><p class="orig">An async-signal-safe function is one that can be safely called from within a signal handler.</p><p>Bir fonksiyon async-signal-safe'tir, çünkü ya <strong>reentrant</strong>'tır ya da signal'lere karşı atomiktir. POSIX güvenli olanların listesini verir: örneğin <code>write(2)</code>, <code>read(2)</code>, <code>_exit(2)</code>, <code>kill(2)</code>, <code>sigprocmask(2)</code> güvenlidir. <code>printf</code> ve <code>malloc</code> güvenli DEĞİLDİR.</p></div>
+<p>Pratikte handler en aza indirilir: çoğu zaman yalnızca bir <code>volatile sig_atomic_t</code> bayrağı yazılır, asıl iş ana döngüde yapılır.</p>
+
+<h3>6. sigaction vs signal: neden sigaction?</h3>
+<p>Eski <code>signal()</code> çağrısının davranışı sistemler arasında tutarsızdır (bazılarında handler bir kez çalışıp default'a döner). <code>sigaction()</code> taşınabilir ve daha fazla kontrol sunar: <code>SA_RESTART</code> bayrağı, bir handler yüzünden yarıda kesilen yavaş sistem çağrılarını (ör. <code>read</code>) otomatik yeniden başlatır; aksi halde çağrı <code>EINTR</code> ile döner ve bunu elle ele almak gerekir. Bu yüzden yeni kodda her zaman <code>sigaction</code> tercih edilir.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">Sinyal gönderme ve teslim işi çekirdekte <code>kernel/signal.c</code>\'de yapılır. Gönderme anında sinyal yalnızca kaydedilir; teslim, süreç çekirdekten kullanıcı alanına (user space) dönerken gerçekleşir.</p>' +
+      '<ol class="chain">' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://man7.org/linux/man-pages/man2/kill.2.html" target="_blank" rel="noopener">kill() / raise()</a><span class="where">glibc</span><p>Hedef sürece sinyal yollar; çekirdekte kill syscall\'ına iner.</p></div></li>' +
+      '<li class="boundary"><div>sistem çağrısı sınırı · kullanıcı → çekirdek</div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/__send_signal_locked" target="_blank" rel="noopener">send_signal → __send_signal_locked</a><span class="where">kernel/signal.c</span><p>Sinyali hedefin pending kümesine ekler, bloklu değilse süreci uyandırır. Teslim etmez, yalnızca kaydeder.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/get_signal" target="_blank" rel="noopener">get_signal()</a><span class="where">kernel/signal.c</span><p>Süreç kullanıcıya dönerken çağrılır; teslim edilecek, bloklu olmayan sinyali seçer.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://elixir.bootlin.com/linux/latest/C/ident/handle_signal" target="_blank" rel="noopener">handle_signal → setup_rt_frame</a><span class="where">arch/x86/kernel/signal.c</span><p>Kullanıcı yığınına sinyal çerçevesini (signal frame) kurar, dönüşü sigreturn\'e ayarlar, handler\'a atlar.</p></div></li>' +
+      '<li><div class="rail"><i></i><u></u></div><div class="body"><a class="fn" href="https://man7.org/linux/man-pages/man2/sigreturn.2.html" target="_blank" rel="noopener">rt_sigreturn()</a><span class="where">syscall</span><p>Handler bitince çağrılır; çekirdek eski bağlamı (context) yığından geri yükler.</p></div></li>' +
+      '</ol>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. Bir handler kur ve tetikle', p: 'raise() ile kendine SIGINT yolla; handler\'ın çalıştığını ve gelen sinyal numarasının 2 (SIGINT) olduğunu gör.',
+        shells: [{ label: 'terminal', copy: 'gcc -Wall -o sig sig.c && ./sig', pre: '<span class="c">$</span> gcc -Wall -o sig sig.c &amp;&amp; ./sig\npid=628, SIGINT icin handler kuruldu\nhandler calisti, gelen sinyal=<span class="hi">2</span> (SIGINT=2)' }] },
+      { h3: '2. Pending ve blocked\'ı /proc\'ta gör', p: 'SIGINT\'i blokla, sonra kendine yolla: teslim edilmez, hem SigBlk hem SigPnd\'de bit 2 (değer 0x2) yanar.',
+        shells: [{ label: 'terminal', copy: 'gcc -o sigblk sigblk.c && ./sigblk', pre: '<span class="c">$</span> ./sigblk\nSIGINT gonderildi ama blocked; pending\'de bekliyor\n<span class="y">SigPnd:\t0000000000000002</span>\n<span class="y">SigBlk:\t0000000000000002</span>   <span class="c"># bit 2 = SIGINT</span>' }] },
+      { h3: '3. Yakalanamayanı dene', p: 'SIGKILL (9) için handler kurmayı dene; sigaction hata döner (EINVAL). SIGKILL ve SIGSTOP çekirdek tarafından her zaman uygulanır.',
+        shells: [{ label: 'terminal', copy: 'kill -l | head -4', pre: '<span class="c">$</span> kill -l\n 1) SIGHUP   2) SIGINT   3) SIGQUIT   4) SIGILL\n 9) <span class="hi">SIGKILL</span>  ...  19) <span class="hi">SIGSTOP</span>   <span class="c"># ikisi de yakalanamaz</span>' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Bir sinyal bloklu (blocked) olduğunda ne olur?', opts: ['Kaybolur', 'Beklemede (pending) kalır, blok kalkınca teslim edilir', 'Süreci hemen öldürür'], answer: 'Beklemede (pending) kalır, blok kalkınca teslim edilir',
+        ok: 'Doğru. Bloklu sinyal pending kümesinde bekler; maske kalkınca teslim edilir. SigPnd ve SigBlk ikisinde de biti yanar.', no: 'İpucu: /proc/self/status\'taki SigPnd satırını hatırla — sinyal kayboluyor mu, bekliyor mu?' },
+      { q: 'Hangi iki sinyal yakalanamaz, bloklanamaz ve yok sayılamaz?', opts: ['SIGINT ve SIGTERM', 'SIGKILL ve SIGSTOP', 'SIGSEGV ve SIGCHLD'], answer: 'SIGKILL ve SIGSTOP',
+        ok: 'Doğru. SIGKILL (9) ve SIGSTOP (19) her zaman çekirdek tarafından uygulanır; bu yüzden takılan bir süreç kill -9 ile durdurulabilir.', no: 'İpucu: "kill -9" neden her zaman işe yarar?' },
+      { q: 'Handler bittikten sonra program nasıl kesildiği yerden devam eder?', opts: ['exit() ile', 'rt_sigreturn ile bağlam geri yüklenerek', 'fork() ile'], answer: 'rt_sigreturn ile bağlam geri yüklenerek',
+        ok: 'Doğru. Çekirdek handler\'dan dönüşü sigreturn\'e ayarlar; sigreturn yığına kurulan çerçeveyi sökerek eski bağlamı (context) geri yükler.', no: 'İpucu: çekirdek handler\'a atlarken dönüş adresini neye ayarlamıştı?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Linux Modül 8', title: 'Dosya tanımlayıcıları ve VFS', desc: 'fd → açık dosya → inode katmanları ve dup2 ile yönlendirme (redirection) nasıl çalışır?' },
+  sources: [
+    { href: 'https://man7.org/linux/man-pages/man7/signal.7.html', text: 'man 7 signal', note: 'sinyallere genel bakış' },
+    { href: 'https://man7.org/linux/man-pages/man2/sigaction.2.html', text: 'man 2 sigaction', note: 'handler kaydı' },
+    { href: 'https://man7.org/linux/man-pages/man2/sigreturn.2.html', text: 'man 2 sigreturn', note: 'dönüş mekanizması' },
+    { href: 'https://elixir.bootlin.com/linux/latest/source/kernel/signal.c', text: 'kernel/signal.c', note: 'Elixir' },
+    { href: 'https://0xax.gitbooks.io/linux-insides/content/', text: 'linux-insides', note: 'çekirdek kaynak gezintisi' }
+  ],
+  pageTitle: 'Sinyaller'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

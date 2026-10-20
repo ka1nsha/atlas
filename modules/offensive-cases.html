@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Tarihsel Zincirler</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: vaka kartı */
+.case { border: 1.5px solid var(--track); border-radius: var(--r); background: var(--track-soft); padding: 14px 16px; display: grid; gap: 10px; min-width: 0; }
+.case-h { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.case-h b { font-family: var(--f-display); font-size: 20px; color: var(--track); letter-spacing: -.01em; }
+.case-h .yr { font-family: var(--f-mono); font-size: 12px; color: var(--muted); }
+.case-rows { display: grid; gap: 8px; }
+.case-row { display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 10px; font-size: 13.5px; min-width: 0; }
+@media (max-width: 460px) { .case-row { grid-template-columns: 1fr; gap: 1px; } }
+.case-row .lbl { font-family: var(--f-mono); font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); padding-top: 2px; }
+.case-row .val { min-width: 0; overflow-wrap: anywhere; }
+.case-row.vuln .val { font-weight: 600; }
+.case-row.lesson .val { color: var(--fg); }
+.pattern { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 2px; }
+.pattern .p { font-family: var(--f-mono); font-size: 11px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); background: var(--surface); }
+.pattern .p.on { border-color: var(--track); color: var(--track); background: var(--track-soft); }
+.pattern .sep { color: var(--muted); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var MODULE = {
+  track: 'offensive',
+  crumbs: 'ofansif › tarihsel zincirler › modül 10',
+  eyebrow: 'Ofansif izlek · Modül 10 · Vaka analizi',
+  titleHTML: 'Tarihsel zincirler <code>neyi öğretir</code>?',
+  lede: 'Ünlü exploit ve jailbreak zincirleri, bir önceki modüldeki mimarinin gerçek dünyadaki örnekleridir. Bu modül onların tekniğini değil, mimari dersini çıkarır: her biri hangi zafiyet sınıfını (vulnerability class) kullandı, hangi korumayı yendi ve savunma için ne öğretti? Somut teknik, adres, offset ya da çalışır kod yoktur.',
+  meta: ['~16 dk', 'ön koşul: jailbreak anatomisi', 'bağlam: kamuya açık analiz özeti'],
+  ethic: '<b>İlke.</b> Bu modül yalnızca <b>kamuya açık</b> güvenlik analizlerinin yüksek seviyeli bir özetidir; herhangi bir cihaza uygulanabilir talimat, exploit, adres ya da kod <b>içermez</b>. Her vaka için yalnızca yıl, hedef, zafiyet sınıfı, yenilen koruma ve alınan ders verilir. Amaç, bu zincirlerden savunma mimarisi dersi çıkarmaktır; ayrıntı için kamuya açık kaynaklara yönlendirilir.',
+  intuition: {
+    paras: [
+      'Bir güvenlik araştırmacısı için tekil bir exploit\'in offset\'leri birkaç ay içinde eskir; kalıcı olan, o zincirin <strong>neden işe yaradığı</strong> ve savunmanın onu nasıl öldürebileceğidir. Tarihsel vakalara bu gözle bakıldığında hepsi aynı deseni tekrar eder: bir giriş noktası, bir zafiyet sınıfı, yenilen bir koruma katmanı.',
+      'Aşağıdaki vakalar bu yüzden teknikleriyle değil, <strong>desenleriyle</strong> incelenir. Aynı zafiyet sınıfının (ör. use-after-free, type confusion, mantık hatası / logic bug) yıllar içinde farklı hedeflerde tekrar belirmesi, savunmanın nereye yatırım yapması gerektiğini doğrudan söyler.'
+    ],
+    ideas: [
+      { b: 'Teknik eskir, desen kalır', span: 'Offset ve adresler yamayla ölür; zafiyet sınıfı ve mimari ders yıllarca geçerli kalır.' },
+      { b: 'Aynı sınıflar tekrar eder', span: 'Bellek güvenliği hataları ve mantık hataları (logic bugs) farklı cihazlarda defalarca görülür.' },
+      { b: 'Her vaka bir savunma dersi', span: 'Yenilen koruma, bir sonraki neslin neyi sertleştirmesi gerektiğini gösterir.' }
+    ]
+  },
+  deepDive: {
+    heading: 'Derinlemesine: dört dönüm noktası ve verdikleri ders',
+    html: `<p class="lead">Laboratuvardaki iOS zincirleri tek bir platformun hikâyesiydi. Burada dört <strong>platform-ötesi</strong> dönüm noktası vakasını ele alıyoruz — her biri farklı bir bug sınıfını (bug class) temsil eder ve bugün standart olan bir savunmanın neden gerekli olduğunu kanıtlamıştır. Hiçbir exploit kodu, offset ya da adım yoktur; yalnızca "ne oldu, hangi sınıftandı, hangi savunma önlerdi" sorusu. Alıntılar resmi CVE kayıtlarından alınmıştır.</p>
+
+<h3>1. Heartbleed — eksik bounds check (CVE-2014-0160, 2014)</h3>
+<p>OpenSSL'in TLS <code>heartbeat</code> uzantısı, karşı taraftan gelen "bu kadar bayt geri gönder" isteğindeki uzunluk alanını, gerçekte gelen veri boyutuna karşı doğrulamıyordu. Saldırgan küçük bir paketle büyük bir uzunluk belirtince, sunucu kendi process belleğinden o kadar baytı yanıtta geri gönderiyordu — bu bir <strong>out-of-bounds read</strong> (buffer over-read) idi. Sonuç: özel anahtarlar, oturum çerezleri, parolalar sızabiliyordu.</p>
+<div class="manpage src-docs"><div class="ref">NVD · CVE-2014-0160</div><p class="orig">… Heartbeat Extension packets, which allows remote attackers to obtain sensitive information … that trigger a buffer over-read …</p><p>Resmi kayıt, zafiyetin özünü tek cümlede verir: Heartbeat paketleri bir <strong>buffer over-read</strong> tetikliyor ve uzaktaki saldırganın hassas bilgiyi okumasına izin veriyor. Dikkat: bu bir yazma (write) değil, yalnızca <strong>okuma</strong> hatasıdır — kod çalıştırmaz, ama sır sızdırır.</p></div>
+<p><strong>Ders.</strong> Tek bir eksik uzunluk doğrulaması dünya çapında bir kriz yarattı. Bir okuma primitifinin bile (write olmadan) ne kadar yıkıcı olabileceğini gösterdi; bu, bilgi sızıntısının (information disclosure) neden ciddiye alınması gerektiğinin ders kitabı örneğidir. Savunma: her uzunluk/sınır alanının kaynağa karşı doğrulanması, fuzzing ile sınır testleri ve bellek-güvenli ayrıştırma.</p>
+
+<h3>2. Dirty COW — race condition (CVE-2016-5195, 2016)</h3>
+<p>Linux çekirdeğinin copy-on-write (CoW) mekanizmasında bir <strong>race condition</strong> vardı: iki işlemin zamanlaması belirli biçimde çakıştırıldığında, salt-okunur (read-only) olması gereken bir bellek eşlemesine (memory mapping) yazılabiliyordu. Bu, sıradan bir kullanıcının çekirdek yardımıyla yetki yükseltmesine (privilege escalation) olanak verdi.</p>
+<div class="manpage src-docs"><div class="ref">NVD · CVE-2016-5195</div><p class="orig">Race condition in mm/gup.c in the Linux kernel 2.x through 4.x before 4.8.3 allows local users to gain privileges by …</p><p>Kayıt bug sınıfını açıkça adlandırır: <code>mm/gup.c</code> içinde bir <strong>race condition</strong>. Zafiyet, copy-on-write'ın yanlış ele alınmasını kullanarak read-only bir eşlemeye yazmaya ve böylece yetki kazanmaya izin veriyordu. Yaklaşık on bir yıl boyunca çekirdekte sessizce durdu.</p></div>
+<p><strong>Ders.</strong> Bellek bozulması (memory corruption) olmadan, yalnızca <strong>zamanlama</strong> ile de güvenlik sınırı aşılabilir. Yarış koşulları gözle görülmesi en zor bug sınıflarından biridir çünkü kod tek başına okunduğunda "doğru" görünür; hata yalnızca eşzamanlılıkta ortaya çıkar. Savunma: paylaşılan duruma erişimde doğru kilitleme (locking), TOCTOU pencerelerini kapatmak ve eşzamanlılık testleri.</p>
+
+<h3>3. Stagefright — parser bir saldırı yüzeyidir (CVE-2015-1538, 2015)</h3>
+<p>Android'in <code>libstagefright</code> medya kütüphanesinde, bir MP4 dosyasındaki tablo boyutlarını işleyen fonksiyonda bir <strong>integer overflow</strong> vardı. Hazırlanmış bir medya dosyası (örneğin bir MMS ile gelen) ayrıştırılırken çarpma taşması, yetersiz boyutlu bir tampon ayrılmasına ve ardından bellek bozulmasına yol açıyordu. En çarpıcı yanı: kurbanın dosyayı açması bile gerekmeyebiliyordu — ayrıştırma otomatik tetikleniyordu.</p>
+<div class="manpage src-docs"><div class="ref">NVD · CVE-2015-1538</div><p class="orig">Integer overflow in the SampleTable::setSampleToChunkParams function in SampleTable.cpp in libstagefright …</p><p>Kayıt hem bug sınıfını (<strong>integer overflow</strong>) hem de tam konumu (<code>SampleTable.cpp</code>) verir. Hazırlanmış MP4 "atom"ları, kontrol edilmeyen bir çarpma yoluyla kod çalıştırmaya giden yolu açıyordu. Ders açısından önemli olan: hata, güvenilmeyen girdiyi ayrıştıran koddaydı.</p></div>
+<p><strong>Ders.</strong> Güvenilmeyen (untrusted) girdiyi ayrıştıran her <strong>parser</strong> birinci sınıf bir saldırı yüzeyidir (attack surface) — özellikle medya, görüntü ve font ayrıştırıcıları gibi karmaşık, C/C++ ile yazılmış bileşenler. Stagefright'tan sonra Android, medya ayrıştırmayı ayrı bir süreçte izole etti (sandboxing) ve aylık güvenlik güncellemesi sürecini başlattı. Savunma: parser izolasyonu, bellek-güvenli diller ve integer overflow denetimleri.</p>
+
+<h3>4. checkm8 — yamalanamaz güven kökü (2019)</h3>
+<p>checkm8, birçok iPhone neslinin (A5–A11) <strong>Boot ROM</strong>'unda bulunan bir use-after-free sınıfı zafiyettir. Boot ROM, cihaz açılışındaki ilk ve en güvenilir kod katmanıdır — güven kökü (root of trust). Önemi tekniğinde değil, <strong>konumundadır</strong>: Boot ROM silikona yazılıdır ve salt-okunurdur, dolayısıyla bir yazılım yamasıyla düzeltilemez. Bu nedenle etkilenen nesil cihazlarda kalıcıdır.</p>
+<div class="manpage src-docs"><div class="ref">kavramsal · kamuya açık analiz</div><p class="orig">unpatchable: a Boot ROM is mask-programmed and read-only, so a software update cannot change it.</p><p>Bu kutu resmi bir CVE alıntısı değil, vakanın mimari dersinin özetidir. Çekirdeği ne kadar sertleştirirseniz sertleştirin, güven zincirinin <strong>en altı</strong> değiştirilemez bir bug içeriyorsa, üstteki tüm korumalar o temelin üzerinde durur. Sonraki nesiller bu dersle güven kökünü güncellenebilir katmanlara taşıdı.</p></div>
+<p><strong>Ders.</strong> Güvenlik kararlarının <strong>değiştirilebilir</strong> (updatable) katmanlarda alınması gerekir; değiştirilemez donanıma gömülen bir hata kalıcı bir risk olur. Bu, Apple'ın sonradan SPTM/TXM gibi bileşenleri ayrı, güncellenebilir güven alanlarına taşımasının arkasındaki mantığın bir parçasıdır (bkz. macOS güvenlik modülleri).</p>
+
+<h3>5. Desenleri yan yana koymak</h3>
+<p>Dört vaka dört ayrı bug sınıfını temsil eder; hepsinin ortak öğrettiği şey, savunmanın hangi yere yatırım yapması gerektiğidir.</p>
+<div class="deflist">
+<div><dt>Heartbleed → OOB read</dt><dd>Bir okuma primitifi bile kritiktir; sınır doğrulaması ve information disclosure yüzeyleri ciddiye alınmalı.</dd></div>
+<div><dt>Dirty COW → race condition</dt><dd>Bellek bozulması olmadan, yalnızca zamanlama ile sınır aşılır; doğru locking ve TOCTOU kapatma şart.</dd></div>
+<div><dt>Stagefright → integer overflow</dt><dd>Untrusted girdiyi işleyen parser birinci sınıf attack surface'tir; izolasyon ve bellek güvenliği gerekir.</dd></div>
+<div><dt>checkm8 → yamalanamaz root of trust</dt><dd>Güven kökü değiştirilebilir olmalı; değiştirilemez donanıma gömülen hata kalıcı risktir.</dd></div>
+</div>
+<p>Bu dört örnek, bir önceki modüldeki soyut bug sınıflarının gerçek dünyadaki karşılıklarıdır. Teknik ayrıntı için her vakanın sorumlu, kamuya açık analizine (NVD kayıtları, Project Zero, satıcı advisory'leri) başvurulmalıdır.</p>`
+  },
+  lab: {
+    intro: 'Her adım bir tarihsel vakayı yüksek seviyede özetliyor: hedef, giriş noktası, zafiyet sınıfı, yenilen koruma ve ders. Hepsinin aynı boru hattının (pipeline) bir örneği olduğuna dikkat et — değişen, zincirin hangi halkasına ağırlık verdikleri.',
+    codeLabel: 'vaka listesi (kamuya açık)', cmd: '# tarihsel zincirler — mimari ders',
+    foot: 'Yalnızca kamuya açık, yüksek seviyeli özet. Teknik ayrıntı için aşağıdaki kaynaklara bakılmalı.',
+    code: [
+      { t: '<span class="cm">// aynı desenin farklı örnekleri</span>' },
+      { t: 'evasi0n     <span class="cm">// userland + kernel zinciri</span>' },
+      { t: 'Pangu       <span class="cm">// imza/enforcement zayıflıkları</span>' },
+      { t: 'Pegasus     <span class="cm">// sıfır-tıklama giriş + LPE</span>', danger: true },
+      { t: 'mach_portal <span class="cm">// Mach port hakkı yönetimi</span>' },
+      { t: 'checkm8     <span class="cm">// yamanamaz bootrom bug</span>', danger: true }
+    ],
+    steps: [
+      { i: 0, name: 'evasi0n', year: '2013', target: 'iOS 6 (iPhone/iPad)', entry: 'Kullanıcı tarafından çalıştırılan araç (USB)',
+        vuln: 'Mantık hataları + yol/izin zinciri (logic bugs)', broke: 'Kod imzalama + sandbox', on: [1,1,0,0],
+        lesson: 'Bellek bozulması olmadan, yalnızca mantık ve dosya-sistemi izin hatalarının zincirlenmesiyle de tam kontrol kazanılabilir. Savunma: her ayrıcalıklı adımda yetki doğrulaması.',
+        term: ['[evasi0n · 2013] userland + kernel mantık zinciri'] },
+      { i: 1, name: 'Pangu', year: '2014–2016', target: 'iOS 7–9',
+        entry: 'Kullanıcı tarafından çalıştırılan araç', vuln: 'Karışık: info leak + kernel bellek hatası', broke: 'KASLR + kod imzalama', on: [1,1,1,0],
+        lesson: 'Bir çekirdek bilgi sızıntısı (info leak) olmadan KASLR aşılamaz; sızıntı her modern zincirin ön koşuludur. Savunma: adres sızıntısı yüzeylerini daraltmak.',
+        term: ['[Pangu · 2014+] info leak → kernel R/W'] },
+      { i: 2, name: 'Pegasus (Trident)', year: '2016', target: 'iOS 9 (hedefli gözetim)',
+        entry: 'Sıfır/tek tıklama (zero/one-click) — tarayıcı', vuln: 'Tarayıcıda bellek bozulması + kernel UAF', broke: 'Sandbox + KASLR + kod imzalama (uçtan uca)', on: [1,1,1,1],
+        lesson: 'Tek bir bağlantı, tam bir zinciri (tarayıcıdan çekirdeğe) tetikleyebilir. Sıfır-tıklama (zero-click) saldırılar, kullanıcı etkileşimi gerektirmeden çalıştığı için en tehlikelisidir. Savunma: saldırı yüzeyi azaltma, Lockdown benzeri sıkı modlar.',
+        term: ['[Pegasus · 2016] zero-click → tam zincir'] },
+      { i: 3, name: 'mach_portal', year: '2016', target: 'iOS 10',
+        entry: 'Cihazda çalışan kod', vuln: 'Mach port hakkı (right) referans yönetimi hatası', broke: 'Çekirdek bütünlüğü (port güveni)', on: [0,1,1,1],
+        lesson: 'Bellek taşması olmadan, yalnızca bir kaynak yönetimi / referans sayımı hatası (Mach port haklarının yanlış yönetimi) bile çekirdek kontrolüne yol açabilir. Savunma: IPC nesnelerinin yaşam döngüsünü titiz doğrulamak.',
+        term: ['[mach_portal · 2016] Mach port hakkı hatası'] },
+      { i: 4, name: 'checkm8', year: '2019', target: 'Birçok iPhone (A5–A11) — Boot ROM',
+        entry: 'Fiziksel (USB/DFU)', vuln: 'Boot ROM\'da UAF (use-after-free)', broke: 'Güven kökü (root of trust) — yamanamaz', on: [0,0,1,1],
+        lesson: 'Donanımdaki Boot ROM salt-okunur olduğu için bir yazılım yamasıyla DÜZELTİLEMEZ; o nesil cihazlarda kalıcı bir zafiyet oluşturur. Savunma: güven kökünü değiştirilebilir/güncellenebilir katmanlara taşımak (sonraki nesiller bunu yaptı).',
+        term: ['[checkm8 · 2019] bootrom UAF — yamanamaz'] }
+    ],
+    render: function (s, stateEl, u) {
+      var P = ['giriş', 'userland', 'çekirdek', 'kalıcı/derin'];
+      var pat = P.map(function (p, k) {
+        return '<span class="p' + (s.on[k] ? ' on' : '') + '">' + u.esc(p) + '</span>' + (k < P.length - 1 ? '<span class="sep">→</span>' : '');
+      }).join('');
+      function row(lbl, val, cls) { return '<div class="case-row ' + (cls || '') + '"><span class="lbl">' + lbl + '</span><span class="val">' + u.esc(val) + '</span></div>'; }
+      stateEl.innerHTML =
+        '<p class="lab-label">Vaka ' + (s.i + 1) + ' / 5</p>' +
+        '<div class="case"><div class="case-h"><b>' + u.esc(s.name) + '</b><span class="yr">' + u.esc(s.year) + '</span></div>' +
+        '<div class="case-rows">' +
+          row('Hedef', s.target) +
+          row('Giriş noktası', s.entry) +
+          row('Zafiyet sınıfı', s.vuln, 'vuln') +
+          row('Yenilen koruma', s.broke) +
+          row('Ders', s.lesson, 'lesson') +
+        '</div>' +
+        '<div><p class="lab-label" style="margin:2px 0 4px">Zincirin ağırlık verdiği halkalar</p><div class="pattern">' + pat + '</div></div>' +
+        '</div>';
+    }
+  },
+  underHood: {
+    heading: 'Kaputun altında: desenleri yan yana koyunca',
+    html: '<p class="prose">Vakaları tek tabloda topladığımızda ortak ders netleşir: aynı birkaç zafiyet sınıfı, yıllar içinde farklı hedeflerde tekrar eder ve her biri belirli bir koruma katmanını yener. Bu tablo, "neyi öğreniyoruz" sorusunun özetidir.</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Vaka</th><th>Yıl</th><th>Zafiyet sınıfı</th><th>Yenilen koruma</th><th>Ders</th></tr></thead><tbody>' +
+      '<tr><td><b>evasi0n</b></td><td>2013</td><td>Mantık / izin hataları (logic bugs)</td><td>Kod imzalama, sandbox</td><td>Bellek hatası olmadan da zincir kurulur</td></tr>' +
+      '<tr><td><b>Pangu</b></td><td>2014–16</td><td>Info leak + kernel bellek hatası</td><td>KASLR, kod imzalama</td><td>Sızıntı, KASLR\'nin ön koşuludur</td></tr>' +
+      '<tr><td><b>Pegasus</b></td><td>2016</td><td>Bellek bozulması + kernel UAF</td><td>Uçtan uca (sandbox→kernel)</td><td>Sıfır-tıklama (zero-click) en tehlikelisi</td></tr>' +
+      '<tr><td><b>mach_portal</b></td><td>2016</td><td>Mach port hakkı yönetimi</td><td>Çekirdek nesne bütünlüğü</td><td>Kaynak/referans hatası da yeterli</td></tr>' +
+      '<tr><td><b>checkm8</b></td><td>2019</td><td>Boot ROM UAF</td><td>Güven kökü (yamanamaz)</td><td>Güven kökü güncellenebilir olmalı</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px">İki büyük örüntü öne çıkar. Birincisi: <strong>bellek güvenliği hataları</strong> (use-after-free, taşma, type confusion) baskın kök nedendir — bu yüzden bellek-güvenli diller ve MTE gibi donanım etiketleme en yüksek getirili savunmalardır. İkincisi: <strong>mantık ve kaynak-yönetimi hataları</strong> (izin kontrolleri, Mach port hakları) bellek bozulması olmadan da tam kontrole yol açar — yani yalnızca "bellek güvenliği" yetmez, her güven sınırında titiz doğrulama gerekir.</p>' +
+      '<p class="prose" style="margin-top:14px">Bu modül kasıtlı olarak teknik ayrıntı vermez. Her vakanın sorumlu, derin analizi için aşağıdaki kamuya açık kaynaklar birincil referanstır.</p>'
+  },
+  pipeline: { intro: 'Vakaların hepsi, önceki modüllerdeki aynı sömürü boru hattının (exploitation pipeline) birer örneğidir: değişen tek şey, her zincirin hangi halkaya ağırlık verdiği ve hangi korumayı yendiğidir.' },
+  tryIt: {
+    heading: 'Oku ve analiz et',
+    items: [
+      { h3: '1. Bir vakayı boru hattına oturt', p: 'Bu modülde komut çalıştırılmaz. Kamuya açık bir analiz (ör. bir Project Zero yazısı) seç ve onu sömürü boru hattının aşamalarına eşle: bug → sızıntı → keyfi okuma/yazma → kontrol. Hangi aşamaya ne kadar ağırlık verilmiş?' },
+      { h3: '2. Zafiyet sınıflarını say', p: 'Birkaç vakayı yan yana koy ve zafiyet sınıflarını (vulnerability classes) işaretle. Hangi sınıf tekrar ediyor? Bu, bir savunmacının önce nereyi sertleştirmesi gerektiğini doğrudan gösterir.' }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Bir exploit\'in offset ve adresleri yamayla eskirken, yıllarca geçerli kalan nedir?', opts: ['Tam exploit kodu', 'Zafiyet sınıfı ve mimari ders', 'Hedefin seri numarası'], answer: 'Zafiyet sınıfı ve mimari ders',
+        ok: 'Doğru. Teknik ayrıntı yamayla ölür; zafiyet sınıfı (vulnerability class) ve savunma dersi kalıcıdır. Bu yüzden vakaları desenleriyle inceleriz.', no: 'İpucu: yamadan sonra ne eskir, ne kalır?' },
+      { q: 'checkm8 (Boot ROM UAF) neden yazılım yamasıyla düzeltilemedi?', opts: ['Apple unuttu', 'Boot ROM salt-okunur, güven köküdür', 'Çok küçük olduğu için'], answer: 'Boot ROM salt-okunur, güven köküdür',
+        ok: 'Doğru. Boot ROM donanıma yazılı ve değiştirilemez olduğu için o nesil cihazlarda kalıcı bir zafiyet oluşturdu. Ders: güven kökü güncellenebilir olmalı.', no: 'İpucu: Boot ROM nereye yazılı ve değiştirilebilir mi?' },
+      { q: 'mach_portal ve evasi0n hangi ortak dersi verir?', opts: ['Bellek bozulması olmadan da tam kontrol mümkün', 'Jailbreak imkansızdır', 'Sadece fiziksel erişim işe yarar'], answer: 'Bellek bozulması olmadan da tam kontrol mümkün',
+        ok: 'Doğru. İkisi de (biri izin/mantık, diğeri Mach port hakkı yönetimi) bellek taşması olmadan zincir kurdu. Ders: her güven sınırında titiz doğrulama gerekir, yalnızca bellek güvenliği yetmez.', no: 'İpucu: ikisi de klasik bir bellek taşması kullanmadı; ortak nokta ne?' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · Ofansif Modül 11', title: 'Zafiyet keşfi: fuzzing', desc: 'Bu zafiyet sınıfları pratikte nasıl bulunur? Fuzzing ile otomatik bug keşfi.' },
+  sources: [
+    { href: 'https://projectzero.google/', text: 'Project Zero', note: 'zincirlerin birincil, sorumlu analizleri' },
+    { href: 'https://newosxbook.com/toc3.html', text: 'Levin — OS Internals Cilt III', note: 'jailbreak vaka analizleri' },
+    { href: 'https://www.amnesty.org/en/latest/research/2021/07/forensic-methodology-report-how-to-catch-nso-groups-pegasus/', text: 'Amnesty — Pegasus adli raporu', note: 'tarihsel referans' }
+  ],
+  pageTitle: 'Tarihsel Zincirler'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>

@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="tr"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Kod İmzalama (macOS)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Schibsted+Grotesk:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="../assets/site.css">
+<style>
+/* bu modüle özel: imza yapısı + sayfa hash ızgarası + doğrulama kararı */
+.sig { display: grid; gap: 8px; }
+.sig-row { border: 1.5px solid var(--line); border-radius: 8px; background: var(--surface); padding: 8px 10px; display: grid; gap: 3px; min-width: 0; opacity: .5; transition: opacity .2s, border-color .2s, background .2s; }
+.sig-row.on { opacity: 1; border-color: var(--track); background: var(--track-soft); }
+.sig-row b { font-family: var(--f-mono); font-size: 12.5px; }
+.sig-row span { font-size: 11.5px; color: var(--muted); }
+.pagehash { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.ph { width: 34px; height: 20px; border-radius: 4px; border: 1px solid var(--ok); background: var(--ok-soft); color: var(--ok); font-family: var(--f-mono); font-size: 9.5px; display: grid; place-items: center; }
+.ph.bad { border-color: var(--bad); background: var(--bad-soft); color: var(--bad); font-weight: 700; }
+.verdict2 { margin-top: 12px; display: flex; gap: 8px; align-items: center; font-family: var(--f-mono); font-size: 13.5px; }
+.verdict2 .d { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.verdict2.ok { color: var(--ok); } .verdict2.ok .d { background: var(--ok); }
+.verdict2.bad { color: var(--bad); } .verdict2.bad .d { background: var(--bad); }
+.verdict2.wait { color: var(--muted); } .verdict2.wait .d { background: var(--muted); }
+</style>
+</head><body>
+<script src="../assets/engine.js"></script>
+<script>
+var SIG = [
+  { key: 'macho', lbl: 'Mach-O + __LINKEDIT', sub: 'İmza bloğu __LINKEDIT\'in sonunda; LC_CODE_SIGNATURE ona işaret eder.' },
+  { key: 'cd',    lbl: 'Code Directory (kod dizini)', sub: 'Her kod sayfasının (page) ayrı hash\'i + özel bir cdhash (tüm dizinin hash\'i).' },
+  { key: 'ent',   lbl: 'Entitlements (yetkiler)', sub: 'Gömülü bir plist: bu ikiliye hangi ayrıcalıkların verildiği.' },
+  { key: 'req',   lbl: 'Requirements (gereksinimler)', sub: 'İmzanın hangi kurallara uyması gerektiği (örn. imzalayan takım kimliği).' },
+  { key: 'cms',   lbl: 'CMS imza + sertifika zinciri', sub: 'cdhash, geliştirici sertifikasıyla imzalanır; zincir Apple köküne (root) çıkar.' }
+];
+
+var MODULE = {
+  track: 'macos',
+  crumbs: 'macos › kod imzalama › modül 15',
+  eyebrow: 'Modül 15 · macOS / iOS · Güvenlik mimarisi',
+  titleHTML: '<code>Kod imzalama</code>: her sayfa mühürlenir',
+  lede: 'macOS ve iOS\'ta çalışan kod, kaynağını ve bütünlüğünü kanıtlamak zorundadır. İmza, Mach-O\'nun içine gömülür; çekirdek bir sayfayı belleğe almadan önce hash\'ini kontrol eder. Bu modülde imza yapısını ve doğrulama akışını gezeceğiz.',
+  meta: ['~18 dk', 'ön koşul: Mach-O, karma (hash) fikri', 'bağlam: XNU, AMFI'],
+  intuition: {
+    paras: [
+      'Bir ikiliyi (binary) imzalamak, ona yalnızca bir mühür eklemek değildir; içeriğinin <strong>her sayfasının (page)</strong> karma değerini (hash) bir tabloya yazmaktır. Bu tabloya <strong>kod dizini (code directory)</strong> denir ve kendisi de imzalanır.',
+      'Bu tasarım güçlüdür: çekirdek, bir kod sayfasını ilk kez belleğe getirdiğinde o sayfanın hash\'ini kod dizinindekiyle karşılaştırır. Tek bir baytın değişmesi bile o sayfanın hash\'ini bozar; değiştirilmiş kod çalışamadan reddedilir. Doğrulama çalışma anında (runtime), sayfa sayfa yapılır — yükleme anında tek seferlik değil.',
+      'İmzanın geçerliliği bir <strong>sertifika zinciriyle (certificate chain)</strong> Apple\'ın köküne bağlanır; <strong>yetkiler (entitlements)</strong> ise ikiliye hangi ayrıcalıkların verildiğini belirler. macOS\'ta ek bir katman, <strong>noterleme (notarization)</strong>, Apple\'ın ikiliyi önceden taramış olmasını şart koşar.'
+    ],
+    ideas: [
+      { b: 'Sayfa sayfa hash', span: 'Kod dizini her kod sayfasının ayrı hash\'ini tutar; bütünlük sayfa düzeyinde korunur.' },
+      { b: 'Çalışma anında kontrol', span: 'Çekirdek (AMFI) sayfayı belleğe alırken hash\'i doğrular; değişmiş sayfa çalışamaz.' },
+      { b: 'Kimlik + yetki', span: 'Sertifika zinciri kimi; entitlements neyi yapabileceğini söyler. İkisi ayrı sorudur.' }
+    ]
+  },
+  lab: {
+    intro: 'Soldaki <code>codesign -dvvv</code> çıktısı (temsilî) imza bileşenlerini sıralar; sağda imza yapısı ve son adımlarda çekirdeğin sayfa sayfa doğrulaması canlanır. Son adımda bir bayt değiştirip ne olduğunu görüyoruz.',
+    codeLabel: 'codesign -dvvv (temsilî)', cmd: 'codesign -dvvv app',
+    foot: 'macOS araçları bu konteynerde çalışmaz; codesign çıktısı temsilîdir. Kavramlar gerçektir.',
+    code: [
+      { t: '<span class="cm">Executable=/path/app</span>' },
+      { t: 'Identifier=com.ornek.app' },
+      { t: 'Format=Mach-O thin (arm64)' },
+      { t: '<span class="cm">CodeDirectory</span> v=20500 size=1204' },
+      { t: '  hashType=sha256 <span class="n">pageSize=4096</span>' },
+      { t: '  <span class="t">CDHash</span>=3a7f...9c2b' },
+      { t: '<span class="cm">Entitlements</span> (plist)' },
+      { t: '  com.apple.security.app-sandbox = <span class="n">true</span>' },
+      { t: '<span class="cm">Authority</span>=Apple Development: Deniz' },
+      { t: '<span class="cm">Authority</span>=Apple Worldwide Developer Relations' },
+      { t: '<span class="cm">Authority</span>=Apple Root CA' },
+      { t: '<span class="cm">Sealed Resources</span> ... Notarized=yes' }
+    ],
+    steps: [
+      { pc: [0, 2], title: 'İmza nerede durur', view: 'sig', hi: ['macho'], verdict: 'wait', vt: 'imza okunuyor…', hashes: 'ok',
+        text: 'İmza, Mach-O\'nun <code>__LINKEDIT</code> bölütünün (segment) sonuna gömülüdür; <code>LC_CODE_SIGNATURE</code> yükleme komutu ona işaret eder. Yani imza ayrı bir dosya değil, ikilinin bir parçasıdır.' },
+      { pc: [3, 4, 5], title: 'Kod dizini: sayfa hash\'leri', view: 'sig', hi: ['macho', 'cd'], verdict: 'wait', vt: 'kod dizini: 6 sayfa hash\'i', hashes: 'ok',
+        text: 'Kod dizini (code directory) ikilinin her kod sayfasının ayrı hash\'ini tutar (burada SHA-256, 4 KB sayfa). Tüm dizinin kendi hash\'i <strong>cdhash</strong>\'tir — imzanın özeti. Aşağıdaki yeşil kutucuklar sayfa hash\'lerini temsil eder.' },
+      { pc: [6, 7], title: 'Yetkiler', view: 'sig', hi: ['macho', 'cd', 'ent'], verdict: 'wait', vt: 'entitlements okundu', hashes: 'ok',
+        text: 'Yetkiler (entitlements) gömülü bir plist\'tir: bu ikiliye hangi ayrıcalıkların verildiğini söyler (örn. app-sandbox, belirli donanıma erişim). Kimlik ayrı, yetki ayrı sorudur: "sen kimsin" ile "ne yapabilirsin" farklı şeylerdir.' },
+      { pc: [8, 9, 10], title: 'Sertifika zinciri', view: 'sig', hi: ['macho', 'cd', 'ent', 'req', 'cms'], verdict: 'ok', vt: 'cdhash imzası geçerli · zincir Apple köküne çıkıyor', hashes: 'ok',
+        text: 'cdhash, geliştiricinin özel anahtarıyla imzalanır (CMS). Sertifika zinciri geliştirici → Apple WWDR → Apple Root CA şeklinde köke (root) çıkar. Çekirdek bu zinciri ve requirements\'ı doğrular: imza geçerli ve beklenen taraftan.' },
+      { pc: [], title: 'Çalışma anında sayfa kontrolü', view: 'sig', hi: ['cd'], verdict: 'ok', vt: 'her sayfa hash\'i eşleşti → çalışır', hashes: 'ok',
+        text: 'Program çalışırken çekirdek (AMFI) her kod sayfasını belleğe ilk aldığında hash\'ini kod dizinindekiyle karşılaştırır. Hepsi eşleşirse sayfa çalıştırılabilir olur. Doğrulama yükleme anında tek sefer değil, sayfa sayfa ve çalışma boyuncadır.' },
+      { pc: [], title: 'Bir baytı değiştir', view: 'sig', hi: ['cd'], verdict: 'bad', vt: 'sayfa 3 hash uyuşmuyor → SIGKILL', hashes: 'bad',
+        text: 'Saldırgan kod sayfalarından birini değiştirsin. O sayfanın hash\'i artık kod dizinindekiyle uyuşmaz. Çekirdek sayfayı belleğe alırken uyuşmazlığı görür ve süreci anında öldürür. İmza yeniden hesaplanmadan değiştirilmiş kod çalışamaz — imzayı yeniden hesaplamak ise geliştiricinin özel anahtarını gerektirir.' }
+    ],
+    render: function (s, stateEl, u) {
+      var rows = SIG.map(function (m) {
+        var on = (s.hi || []).indexOf(m.key) >= 0;
+        return '<div class="sig-row' + (on ? ' on' : '') + '"><b>' + u.esc(m.lbl) + '</b><span>' + u.esc(m.sub) + '</span></div>';
+      }).join('');
+      var cells = '';
+      for (var i = 1; i <= 6; i++) {
+        var bad = s.hashes === 'bad' && i === 3;
+        cells += '<div class="ph' + (bad ? ' bad' : '') + '">' + (bad ? '✗' : 'p' + i) + '</div>';
+      }
+      var vcls = s.verdict === 'ok' ? 'ok' : s.verdict === 'bad' ? 'bad' : 'wait';
+      stateEl.innerHTML =
+        '<p class="lab-label">İmza yapısı (Mach-O içinde)</p><div class="sig">' + rows + '</div>' +
+        '<p class="lab-label" style="margin-top:14px">Kod sayfası hash\'leri</p><div class="pagehash" id="phBox">' + cells + '</div>' +
+        '<div class="verdict2 ' + vcls + '"><span class="d"></span><span>' + u.esc(s.vt) + '</span></div>';
+      if (s.hashes === 'bad') ATLAS.flash(document.getElementById('phBox'), true);
+    }
+  },
+  deepDive: {
+    heading: "Derinlemesine: imza nasıl mühürlenir ve zorlanır?",
+    html: `<p class="lead">Code signing, macOS ve iOS'ta kodun kimliğini ve bütünlüğünü garanti eden mekanizmadır: bir binary'nin her bellek sayfası hash'lenir, bir sertifikayla imzalanır ve çekirdek bu hash'leri çalışma anında, sayfa belleğe girerken doğrular. Değiştirilmiş tek bir byte bile yakalanır. Bu bölüm codesign man page'ine ve Apple'ın code signing belgelerine dayanır.</p>
+
+<h3>1. İmza nerede durur: LC_CODE_SIGNATURE</h3>
+<p>İmza, Mach-O'nun içine gömülüdür. <strong>LC_CODE_SIGNATURE</strong> load command'i, <code>__LINKEDIT</code> segmentinin sonundaki bir imza blob'unu işaret eder. Bu blob aslında bir <strong>SuperBlob</strong>'dur: içinde Code Directory, entitlements, requirements ve CMS sertifika zinciri gibi birden çok alt blob'u slot'larda taşır.</p>
+<div class="manpage src-apple"><div class="ref">codesign</div><p class="orig">codesign — Create, check, and display code signatures</p><p>codesign imzayı üretir, doğrular ve içeriğini gösterir. Doğrulama, mühürlenmiş (sealed) bileşenlerin hiç değişmediğini — <em>all sealed components are unaltered</em> — teyit eder.</p></div>
+
+<h3>2. Code Directory: imzanın kalbi</h3>
+<p>İmzanın merkezinde <strong>Code Directory</strong> vardır. Binary sayfalara (page) bölünür ve her sayfanın hash'i burada bir <em>code slot</em>'ta tutulur. Ayrıca entitlements, requirements gibi parçaların hash'leri de <em>special slot</em>'larda durur. Tüm bu yapının hash'i <strong>cdhash</strong>'tir — bir binary'nin tek cümlelik kimliği; sistem güven kararlarını bu değere bağlar.</p>
+<div class="deflist">
+<div><dt>code slots</dt><dd>Her kod sayfasının (genelde 4 KB) ayrı hash'i. Böylece sadece dosya başı değil, her sayfa ayrı ayrı doğrulanabilir.</dd></div>
+<div><dt>special slots</dt><dd>Negatif indeksli slot'lar: Info.plist, requirements, resource directory, entitlements hash'leri.</dd></div>
+<div><dt>cdhash</dt><dd>Code Directory'nin kendi hash'i; binary'nin özeti. Trust cache ve AMFI bu değerle çalışır.</dd></div>
+<div><dt>hashType / pageSize</dt><dd>Hangi hash algoritması (SHA-256) ve sayfa boyutu kullanıldığı.</dd></div>
+</div>
+
+<h3>3. Entitlements: ne yapabileceğini belirler</h3>
+<p><strong>Entitlements</strong>, bir programa verilen yetkilerin (örn. belirli bir servise erişim, sandbox istisnaları) bir plist olarak imzaya gömülmüş halidir. İmzaya mühürlendiği için değiştirilemez; çekirdek ve servisler bir işleme izin verirken bu yetkilere bakar.</p>
+<div class="manpage src-apple"><div class="ref">codesign</div><p class="orig">embed its contents in the signature as entitlement data</p><p>İmzalama sırasında entitlement verisi imzanın içine gömülür. Böylece bir programın yetkileri, kodunun bütünlüğüyle aynı imza altında korunur — yetkileri taklit etmek (spoof) imzayı kırmayı gerektirir.</p></div>
+
+<h3>4. Requirements: kimin imzaladığını kısıtlar</h3>
+<p><strong>Requirement</strong>, bir kodun yalnızca bütün olmasını değil, <em>belirli bir kimlik tarafından</em> imzalanmış olmasını da şart koşan bir ifadedir. Örneğin "bu eklenti yalnızca ana uygulamayla ayni Team ID tarafından imzalanmışsa yüklensin". Doğrulama, kodun kendi bütünlük kontrolünün ötesinde bu şartı da denetler.</p>
+<div class="manpage src-apple"><div class="ref">codesign</div><p class="orig">the code requirement specified</p><p>Doğrulama, belirtilen code requirement'a göre yapılır: bir uygulama, kabul edeceği imzalayanları requirement ile tarif eder; böylece sahte ama "geçerli imzalı" bir binary reddedilir.</p></div>
+
+<h3>5. Certificate chain: güven nereden gelir</h3>
+<p>İmza bir CMS yapısıdır ve bir <strong>certificate chain</strong> taşır: geliştirici sertifikası → ara Apple sertifikaları → Apple root. Sistem bu zinciri güvenilir bir köke kadar doğrular. İki uç vardır: kimlikle imzalama (bir sertifikaya bağlı) ve <em>ad-hoc</em> imza (sertifika yok, yalnızca cdhash üretilir — iOS'ta sistem binary'leri sıkça böyledir ve güven trust cache'ten gelir).</p>
+
+<h3>6. Çalışma anında zorlama</h3>
+<p>İmza statik bir etiket değildir; çekirdek onu <em>çalışırken</em> zorlar. Bir kod sayfası ilk kez belleğe getirilirken (page fault), çekirdek o sayfanın hash'ini Code Directory'deki değerle karşılaştırır (<code>cs_validate_page</code>). Uymazsa süreç anında öldürülür. Yani bir binary belleğe yüklendikten sonra bile değiştirilemez.</p>
+<div class="deflist">
+<div><dt>notarization</dt><dd>macOS: Apple'ın binary'yi zararlı yazılım için taradığı ek onay. Sonuç bir "ticket" olarak dosyaya iliştirilir (stapling); Gatekeeper bunu kontrol eder.</dd></div>
+<div><dt>hardened runtime</dt><dd>Ek korumalar: imzasız kod enjeksiyonunu, DYLD_INSERT_LIBRARIES'i ve bellek koruma zayıflatmalarını engeller. Notarization için gereklidir.</dd></div>
+</div>
+<p>İmzayı <strong>kimin zorladığı</strong> ayrı bir modülün konusudur: çekirdekteki AMFI (AppleMobileFileIntegrity) ve kullanıcı alanındaki amfid, Code Directory doğrulamasını ve trust cache kontrolünü yapar — bkz. bir sonraki modül.</p>`
+  },
+  underHood: {
+    html: '<p class="prose">İmza doğrulama, kullanıcı alanındaki <code>amfid</code> ile çekirdekteki AMFI (AppleMobileFileIntegrity) arasında paylaşılır. Çekirdek sayfa hash\'ini zorlar; politika kararlarını amfid\'ye sorar.</p>' +
+      '<div class="tbl-wrap"><table class="bugs"><thead><tr><th>Bileşen</th><th>İçeriği</th><th>Görevi</th></tr></thead><tbody>' +
+      '<tr><td><b>Code directory</b></td><td>Sayfa sayfa hash + cdhash</td><td>Bütünlük: kod değişmedi mi</td></tr>' +
+      '<tr><td><b>Entitlements</b></td><td>Yetki plist\'i</td><td>Bu ikili neleri yapabilir</td></tr>' +
+      '<tr><td><b>Requirements</b></td><td>İmza kuralları</td><td>İmza kimden kabul edilir</td></tr>' +
+      '<tr><td><b>CMS + sertifika</b></td><td>İmzalı cdhash + zincir</td><td>Kimlik: imzalayan kim</td></tr>' +
+      '<tr><td><b>Notarization</b> (macOS)</td><td>Apple\'ın tarama bileti</td><td>Apple önceden taradı mı</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="prose" style="margin-top:14px">Zincirin çalışma anındaki uygulayıcısı: <code>vm_fault</code> bir kod sayfasını getirirken <code>cs_validate_page</code> çağrılır; hash eşleşmezse sayfa çalıştırılamaz işaretlenir ve süreç öldürülür. Bir sonraki modül (AMFI ve trust cache) bu zorlamanın çekirdek tarafını anlatır.</p>'
+  },
+  tryIt: {
+    items: [
+      { h3: '1. İmzayı incele (macOS)', p: 'codesign imzanın bileşenlerini döker: kod dizini, cdhash, sertifika zinciri, noterleme durumu.',
+        shells: [{ label: 'terminal (macOS, temsilî)', copy: 'codesign -dvvv /System/Applications/Calculator.app', pre: '<span class="c">$</span> codesign -dvvv app\nCodeDirectory v=20500 hashType=sha256 <span class="g">pageSize=4096</span>\nCDHash=3a7f...9c2b\nAuthority=Apple Development: Deniz\nAuthority=Apple Root CA\n<span class="g">Notarized=yes</span>' }] },
+      { h3: '2. Yetkileri gör (macOS)', p: 'Bir ikiliye verilen yetkileri (entitlements) plist olarak dök. Ayrıcalıklı ikililerde ilginç anahtarlar görürsün.',
+        shells: [{ label: 'terminal (macOS, temsilî)', copy: 'codesign -d --entitlements :- app', pre: '<span class="c">$</span> codesign -d --entitlements :- app\n&lt;dict&gt;\n  &lt;key&gt;com.apple.security.app-sandbox&lt;/key&gt;&lt;true/&gt;\n&lt;/dict&gt;' }] }
+    ]
+  },
+  quiz: {
+    questions: [
+      { q: 'Kod dizini (code directory) neyi saklar?', opts: ['Tüm ikilinin tek bir hash\'ini', 'Her kod sayfasının ayrı hash\'ini', 'Yalnızca sertifikayı'], answer: 'Her kod sayfasının ayrı hash\'ini',
+        ok: 'Doğru. Her sayfanın ayrı hash\'i tutulur; bu yüzden tek bir sayfanın değişmesi yalnızca o sayfanın kontrolünde yakalanır ve bütünlük sayfa düzeyinde korunur.', no: 'İpucu: doğrulama neden "sayfa sayfa" yapılabiliyor?' },
+      { q: 'Değiştirilmiş bir kod sayfası ne zaman yakalanır?', opts: ['Hiç', 'Derleme anında', 'Çekirdek sayfayı belleğe alırken (çalışma anında)'], answer: 'Çekirdek sayfayı belleğe alırken (çalışma anında)',
+        ok: 'Doğru. AMFI sayfayı belleğe getirirken hash\'i kontrol eder; uyuşmazsa süreç öldürülür. Doğrulama çalışma anında ve sayfa sayfadır.', no: 'İpucu: imza yükleme anında tek sefer mi, yoksa her sayfa için mi kontrol edilir?' },
+      { q: 'Sertifika zinciri ile entitlements farkı nedir?', opts: ['Aynı şeydir', 'Zincir "kim", entitlements "ne yapabilir" sorusudur', 'Entitlements kodu şifreler'], answer: 'Zincir "kim", entitlements "ne yapabilir" sorusudur',
+        ok: 'Doğru. Kimlik (sertifika zinciri) ve yetki (entitlements) ayrı sorulardır: imzalayanı doğrulamak, ikiliye ne izni verildiğini belirlemekten farklıdır.', no: 'İpucu: biri kimliği, diğeri ayrıcalığı belirtir.' }
+    ]
+  },
+  next: { eyebrow: 'Sıradaki · macOS Modül 16', title: 'AMFI ve trust cache', desc: 'Çekirdek imzayı tam olarak nasıl zorlar? amfid, provisioning profile ve trust cache ne iş görür?' },
+  sources: [
+    { href: 'https://newosxbook.com/toc3.html', text: 'Levin — OS Internals Cilt III', note: 'Bölüm 5: Code Signing' },
+    { href: 'https://developer.apple.com/documentation/security/code_signing_services', text: 'Apple — Code Signing Services' },
+    { href: 'https://github.com/apple-oss-distributions/xnu', text: 'xnu — cs_validate_page', note: 'bsd/kern/ubc_subr.c' }
+  ],
+  pageTitle: 'Kod İmzalama (macOS)'
+};
+ATLAS.build(MODULE);
+</script>
+</body></html>
